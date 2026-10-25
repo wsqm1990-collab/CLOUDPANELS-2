@@ -12,6 +12,7 @@ No iPad, abra no Safari → Compartilhar → **Adicionar à Tela de Início**. O
 - Toque duplo para zoom, gestos de deslizar, teclado
 - Baixar quadrinhos ou pastas inteiras para ler offline; arquivos importados ficam salvos no iPad
 - A sessão do MEGA fica lembrada no aparelho (a senha nunca é salva)
+- Assistente de quadrinhos com IA (Claude): recomendações, ordem de leitura, edições faltando, voz
 - Histórico, onde você parou e preferências sincronizam pelo seu MEGA (pasta CloudPanels), para continuar em outro aparelho
 
 ## Para desenvolvedores
