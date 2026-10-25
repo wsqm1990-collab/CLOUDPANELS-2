@@ -89,7 +89,7 @@ function settings(value, previous = defaultState().settings) {
   if (!value || typeof value !== 'object') return {...previous};
   return {language: ['en', 'pt-BR', 'es'].includes(value.language) ? value.language : previous.language,
     cacheMiB: integer(value.cacheMiB, previous.cacheMiB, 16, 256), readingDirection: ['ltr', 'rtl'].includes(value.readingDirection) ? value.readingDirection : previous.readingDirection,
-    readerFitMode: ['whole', 'fill', 'width'].includes(value.readerFitMode) ? value.readerFitMode : (previous.readerFitMode || 'whole'),
+    readerFitMode: ['whole', 'fill', 'width', 'screen'].includes(value.readerFitMode) ? value.readerFitMode : (previous.readerFitMode || 'whole'),
     readerGuided: typeof value.readerGuided === 'boolean' ? value.readerGuided : Boolean(previous.readerGuided),
     readerNavigationSeconds: [0, 3, 5, 8].includes(value.readerNavigationSeconds) ? value.readerNavigationSeconds : ([0, 3, 5, 8].includes(previous.readerNavigationSeconds) ? previous.readerNavigationSeconds : 3),
     readerSwipeResistance: [1, 2, 3, 4, 5].includes(value.readerSwipeResistance) ? value.readerSwipeResistance : ([1, 2, 3, 4, 5].includes(previous.readerSwipeResistance) ? previous.readerSwipeResistance : 3),
