@@ -533,7 +533,7 @@ body.account-is-locked{overflow:hidden}.account-is-locked .app-shell{visibility:
 /* Saved-on-device indicator */
 .comic-offline { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 650; color: var(--lime, #c5ef62); letter-spacing: .01em; }
 .comic-offline[hidden] { display: none; }
-.nav-item[hidden], .discover-label { display: none !important; }
+.nav-item[hidden] { display: none !important; }
 
 /* Installed iPad app: no Safari bars. Keep the status bar area clear and stop
    the whole page from bouncing or pull-to-refresh while reading. */
@@ -556,3 +556,21 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 }
 /* "Full screen (below the clock)": no margins except the status bar. */
 .reader-dialog.reader-overlay-controls.reader-fit-screen .reader-stage { padding: 0; background: #000; }
+
+/* Comics assistant */
+.ai-messages { display: grid; gap: 12px; margin: 6px 0 14px; }
+.ai-messages .message { max-width: 760px; }
+.ai-messages .message.user { justify-self: end; }
+.ai-rich p { margin: 0 0 8px; line-height: 1.55; }
+.ai-rich ul, .ai-rich ol { margin: 4px 0 10px; padding-left: 20px; line-height: 1.55; }
+.ai-rich li { margin: 3px 0; }
+.ai-comic-link { display: inline-flex; align-items: center; gap: 4px; margin: 2px 2px; padding: 3px 9px; border-radius: 999px; border: 1px solid #c5ef6255; background: #c5ef6214; color: var(--lime, #c5ef62); font-size: 13px; font-weight: 650; cursor: pointer; }
+.ai-pending { color: var(--muted, #8c9bb0); font-style: italic; }
+.ai-composer { display: flex; gap: 8px; align-items: flex-end; }
+.ai-composer textarea { flex: 1; min-height: 52px; resize: vertical; }
+.ai-mic { min-width: 52px; font-size: 20px; }
+.ai-mic.is-active { background: #c5ef62; color: #101a29; animation: ai-pulse 1.2s ease-in-out infinite; }
+@keyframes ai-pulse { 50% { box-shadow: 0 0 0 8px #c5ef6233; } }
+.ai-footer { flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; align-items: center; }
+.ai-toggle { display: inline-flex; gap: 7px; align-items: center; font-size: 13px; color: var(--muted, #b6c3d3); }
+.ai-steps { margin: 10px 0 4px; padding-left: 20px; line-height: 1.7; color: #c9d4e2; }
