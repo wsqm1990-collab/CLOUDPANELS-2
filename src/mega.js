@@ -87,7 +87,8 @@ function waitAbortable(promise, signal, onCancel) {
 }
 
 /** Read-only facade. Catalog descriptors never expose keys, sessions or SDK objects. */
-const SYNC_FOLDER = 'CloudPanels', SYNC_FILE = 'cloudpanels-biblioteca.json', SYNC_LIMIT = 16 * 1024 * 1024;
+const SYNC_FOLDER = 'CloudPanels', SYNC_FILE = 'cloudpanels-biblioteca.json', COVERS_FILE = 'cloudpanels-capas.json', SYNC_LIMIT = 16 * 1024 * 1024;
+const OUR_FILES = new Set([SYNC_FILE, COVERS_FILE]);
 
 export class MegaConnection {
   constructor({ sdk = { Storage, File: MEGAFile, API }, maxConcurrentReads = 2, logoutTimeoutMs = 3000 } = {}) {
@@ -230,8 +231,8 @@ export class MegaConnection {
     for (const node of root?.children || []) if (node?.directory && (node.children || []).some(child => !child.directory && child.name === SYNC_FILE)) found.add(node);
     return [...found];
   }
-  _syncFiles(folders = this._syncFolders()) {
-    return folders.flatMap(folder => (folder?.children || []).filter(node => node && !node.directory && node.name === SYNC_FILE))
+  _syncFiles(folders = this._syncFolders(), name = SYNC_FILE) {
+    return folders.flatMap(folder => (folder?.children || []).filter(node => node && !node.directory && node.name === name))
       .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
   }
   _syncFolder() {
@@ -244,9 +245,9 @@ export class MegaConnection {
     if (!this.canSync || typeof this._storage.reload !== 'function') return;
     await waitAbortable(this._storage.reload(true), signal);
   }
-  async readSyncFile({ signal } = {}) {
+  async readSyncFile({ signal, name = SYNC_FILE } = {}) {
     if (!this.canSync) return null;
-    for (const file of this._syncFiles()) {
+    for (const file of this._syncFiles(this._syncFolders(), name)) {
       checkSignal(signal);
       if (!(file.size >= 0) || file.size > SYNC_LIMIT) continue;
       try {
@@ -256,8 +257,9 @@ export class MegaConnection {
     }
     return null;
   }
-  async writeSyncFile(text, { signal } = {}) {
+  async writeSyncFile(text, { signal, name = SYNC_FILE } = {}) {
     if (!this.canSync) return false;
+    if (!OUR_FILES.has(name)) throw new MegaConnectionError('Unknown sync file.', 'SYNC_NAME');
     const data = new TextEncoder().encode(String(text));
     if (data.length > SYNC_LIMIT) throw new MegaConnectionError('Your reading history is too large to sync.', 'SYNC_SIZE');
     let folder = this._syncFolder();
@@ -273,8 +275,8 @@ export class MegaConnection {
     }
     this._syncFolderId = folder?.nodeId || this._syncFolderId; this._syncFolderNode = folder;
     try { if (folder?.nodeId) globalThis.localStorage?.setItem('cloudpanels-sync-folder', folder.nodeId); } catch {}
-    const previous = this._syncFiles(this._syncFolders());
-    const upload = folder.upload({ name: SYNC_FILE, size: data.length }, data);
+    const previous = this._syncFiles(this._syncFolders(), name);
+    const upload = folder.upload({ name, size: data.length }, data);
     upload.on?.('error', () => {});
     const created = await waitAbortable(upload.complete, signal);
     const remove = node => new Promise(resolve => {
@@ -287,15 +289,39 @@ export class MegaConnection {
     });
     const detach = node => { const parent = node.parent || this._syncFolders().find(f => f.children?.includes(node)); if (Array.isArray(parent?.children)) { const i = parent.children.indexOf(node); if (i >= 0) parent.children.splice(i, 1); } };
     for (const old of previous) { if (old === created) continue; await remove(old); detach(old); }
+    if (name !== SYNC_FILE) return true;
     // Tidy up extra CloudPanels folders left by earlier versions: they only
     // ever contained copies of this sync file, now replaced by the current one.
     for (const extra of this._syncFolders()) {
       if (extra === folder) continue;
-      const others = (extra.children || []).filter(child => child.directory || child.name !== SYNC_FILE);
+      const others = (extra.children || []).filter(child => child.directory || !OUR_FILES.has(child.name));
       if (others.length) continue;
       await remove(extra); detach(extra);
     }
     return true;
+  }
+
+  /**
+   * Upload a CBZ next to a comic and move the original to MEGA's Rubbish Bin
+   * (recoverable). The original is only touched after the upload is complete
+   * and has the expected size. Account logins only.
+   */
+  async replaceWithCbz(comicId, data, { signal } = {}) {
+    if (this.mode !== 'account') throw new MegaConnectionError('Converting needs your MEGA account login (not a link).', 'READ_ONLY');
+    const node = this._findNode(comicId);
+    const parent = node?.parent;
+    if (!node || node.directory || !parent?.directory || typeof parent.upload !== 'function') throw new MegaConnectionError('This comic is unavailable. Reconnect MEGA and try again.', 'NOT_FOUND');
+    const base = safeName(node.name).replace(/\.[^.]+$/, '');
+    const taken = new Set((parent.children || []).map(child => child.name));
+    let name = `${base}.cbz`;
+    for (let n = 2; taken.has(name) && n < 100; n++) name = `${base} (${n}).cbz`;
+    const upload = parent.upload({ name, size: data.length }, data);
+    upload.on?.('error', () => {});
+    const created = await waitAbortable(upload.complete, signal);
+    if (!created || created.size !== data.length) throw new MegaConnectionError('The converted file did not upload completely. The original was kept.', 'UPLOAD');
+    await new Promise(resolve => { try { node.delete(false, () => resolve()); } catch { resolve(); } });
+    const parentId = this._parents.get(comicId) ?? null;
+    return this._describe(created, parentId);
   }
 
   async suspend() { return this.disconnect({ revoke: false }); }

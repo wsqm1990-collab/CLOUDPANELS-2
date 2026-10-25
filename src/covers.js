@@ -129,6 +129,7 @@ export class CoverService {
     this.disk = disk === null ? null : disk || new IndexedCoverDisk(this.maxDiskBytes);
     this.memory = new Map(); this.memoryBytes = 0; this.jobs = new Map(); this.queue = [];
     this.running = 0; this.busy = false; this.closed = false; this.epoch = 0; this.diskQueue = Promise.resolve();
+    this.fresh = new Map(); // covers made on this device, to share through MEGA
   }
   _key(comic) { try { return coverCacheId(comic); } catch { return null; } }
   _memoryGet(key) {
@@ -210,7 +211,7 @@ export class CoverService {
       if (!page) return null;
       const blob = await this.thumbnail(page, { signal }); check(signal);
       if (!(blob instanceof Blob) || !blob.size || blob.type !== 'image/jpeg' || blob.size > MAX_THUMB_BYTES || job.epoch !== this.epoch || this.closed) return null;
-      this._remember(job.key, blob);
+      this._remember(job.key, blob); this.fresh.set(job.key, blob);
       await this._disk(() => job.epoch === this.epoch && !this.closed ? this.disk.put(job.key, blob) : null);
       check(signal); return blob;
     } catch (error) { if (signal.aborted || error?.name === 'AbortError') throw abortError(); return null; }
@@ -228,10 +229,36 @@ export class CoverService {
     try {
       const blob = await this.thumbnail(pageBlob);
       if (this.closed || epoch !== this.epoch || !(blob instanceof Blob) || !blob.size || blob.type !== 'image/jpeg' || blob.size > MAX_THUMB_BYTES) return null;
-      this._remember(key, blob);
+      this._remember(key, blob); this.fresh.set(key, blob);
       await this._disk(() => epoch === this.epoch && !this.closed ? this.disk.put(key, blob) : null);
       return blob;
     } catch { return null; }
+  }
+  /** Covers made here since the last share, as { key: base64 JPEG }. */
+  async takeFresh(limit = 300) {
+    const out = {};
+    for (const [key, blob] of [...this.fresh].slice(-limit)) {
+      try { const bytes = new Uint8Array(await blob.arrayBuffer()); let text = ''; for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); out[key] = btoa(text); } catch {}
+    }
+    return out;
+  }
+  clearFresh(keys) { for (const key of keys) this.fresh.delete(key); }
+  /** Store covers received from another device (only the missing ones). */
+  async importShared(map) {
+    let added = 0;
+    for (const [key, value] of Object.entries(map || {})) {
+      if (this.closed || typeof key !== 'string' || typeof value !== 'string' || value.length > MAX_THUMB_BYTES * 1.4) continue;
+      if (this.memory.has(key)) continue;
+      const existing = await this._disk(() => this.disk.get(key));
+      if (existing instanceof Blob && existing.size) continue;
+      try {
+        const raw = atob(value), bytes = new Uint8Array(raw.length); for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        if (bytes[0] !== 0xff || bytes[1] !== 0xd8) continue;
+        const blob = new Blob([bytes], { type: 'image/jpeg' });
+        this._remember(key, blob); await this._disk(() => this.disk.put(key, blob)); added++;
+      } catch {}
+    }
+    return added;
   }
   _stop() {
     this.epoch++;

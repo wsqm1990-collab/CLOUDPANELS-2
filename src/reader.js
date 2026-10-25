@@ -32,7 +32,7 @@ const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, n) => {
   for (let bit = 0; bit < 8; bit++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
   return n >>> 0;
 });
-function crc32(bytes) {
+export function crc32(bytes) {
   let crc = 0xffffffff;
   for (const value of bytes) crc = CRC_TABLE[(crc ^ value) & 255] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
@@ -434,6 +434,7 @@ async function archiveComic(source, read, signal, closed, { extract = libarchive
     },
     close() { closed.abort(); cache.clear(); files.length = 0; },
   };
+  if (comicInfo) book.comicInfoFile = comicInfo;
   if (comicInfo && typeof DOMParser !== 'undefined') {
     try { applyComicInfo(book, decoder.decode(new Uint8Array(await comicInfo.arrayBuffer()))); } catch {}
   }

@@ -297,3 +297,17 @@ test('legacy cleanup removes only metadata and clears local storage only after d
   assert.equal(await clearLegacyBrowserLibrary({indexedDB:failing,storage:{removeItem(){removedOnFailure=true}}}),false);assert.equal(removedOnFailure,false);
  }
 });
+
+test('replacing a converted comic keeps progress, panels, bookmarks, shelves and edits', async () => {
+  const { createBrowserLibraryStore } = await import('../src/store.js');
+  const store = await createBrowserLibraryStore({ indexedDB: null, fallbackStorage: { getItem: () => null, setItem() {} } });
+  store.upsertComics([{ id: 'mega:old1', name: 'Saga 01.cbr', size: 10, source: 'mega', path: 'Saga/Saga 01.cbr' }]);
+  store.updateComic('mega:old1', { title: 'My title' });
+  store.setProgress('mega:old1', { page: 5, panel: 1, pageCount: 20, status: 'reading' });
+  store.setFavorite('mega:old1', true);
+  const replaced = store.replaceComic('mega:old1', { id: 'mega:new1', name: 'Saga 01.cbz', size: 11, source: 'mega', path: 'Saga/Saga 01.cbz', format: 'cbz' });
+  assert.equal(replaced.metadata.title, 'My title');
+  assert.equal(store.state.comics.length, 1); assert.equal(store.state.comics[0].id, 'mega:new1');
+  assert.equal(store.state.progress['mega:new1'].page, 5); assert.equal(store.state.progress['mega:old1'], undefined);
+  assert.deepEqual(store.state.favorites, ['mega:new1']);
+});
