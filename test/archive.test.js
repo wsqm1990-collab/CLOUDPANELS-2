@@ -72,3 +72,26 @@ test('real RAR v4 and v5 archives are decoded (no images => explicit message)', 
 test('oversized full-archive formats are refused before downloading', async () => {
   await assert.rejects(openComic({ name: 'big.cbr', size: 301 * 1024 * 1024, async read(start, end) { if (end > 1024) throw new Error('must not download'); const head = new Uint8Array(end - start); head.set([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]); return head; } }, { extractArchive }), /300 MB/);
 });
+
+test('a library cover is taken from the start of a full-archive comic', async () => {
+  const { archiveCover } = await import('../src/reader.js');
+  const bytes = tar([['01.png', png], ['02.png', png], ['big.bin', new Uint8Array(200000)]]);
+  const source = sourceFor(bytes, 'Issue.cbr');
+  const cover = await archiveCover(source, { loadArchive: async () => Archive, headBytes: 4096 });
+  assert.equal(cover.type, 'image/png');
+  assert.ok(source.reads.every(([, end]) => end <= 4096), 'only the beginning is downloaded');
+  assert.equal(await archiveCover(sourceFor(zipSync({ 'a.png': png }), 'x.cbr'), { loadArchive: async () => Archive }), null);
+});
+
+test('RAR v4 and v5 entry headers are listed from the start of the file', async () => {
+  const { archiveHeadEntries } = await import('../src/reader.js');
+  for (const name of ['test-v4.rar', 'test-v5.rar']) {
+    const bytes = new Uint8Array(readFileSync(new URL('./fixtures/' + name, import.meta.url)));
+    const entries = archiveHeadEntries(bytes, 'rar').filter(e => !e.directory).map(e => e.name).sort();
+    assert.deepEqual(entries, ['.gitignore', 'README.md', 'addon/addon.py', 'addon/addon.xml'], name);
+    const first = archiveHeadEntries(bytes, 'rar').find(e => !e.directory);
+    const archive = await Archive.open(new Blob([bytes.subarray(0, first.end)]));
+    const file = await archive.extractSingleFile(first.name);
+    await archive.close(); assert.ok(file.size > 0, name + ' first entry extracts from a partial file');
+  }
+});

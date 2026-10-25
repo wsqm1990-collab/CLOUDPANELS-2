@@ -508,4 +508,109 @@ export async function openComic(source, { signal, onProgress, extractArchive } =
   } catch (error) { closed.abort(); session.dispose(); throw error; }
 }
 
+
+// Walk the entry headers present at the start of a RAR (v4/v5) or TAR file.
+// Each entry reports where its data ends, so a cover can be extracted from a
+// partial download. Returns entries in archive order.
+export function archiveHeadEntries(bytes, kind) {
+  const entries = [], view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), n = bytes.length;
+  const latin = new TextDecoder('latin1');
+  if (kind === 'tar') {
+    for (let pos = 0; pos + 512 <= n && entries.length < 10000;) {
+      if (bytes.subarray(pos, pos + 512).every(b => b === 0)) break;
+      const field = (o, l) => { const raw = bytes.subarray(pos + o, pos + o + l); const z = raw.indexOf(0); return decoder.decode(z >= 0 ? raw.subarray(0, z) : raw); };
+      const size = parseInt(field(124, 12).trim() || '0', 8) || 0, type = String.fromCharCode(bytes[pos + 156] || 48);
+      const prefix = field(257, 6).startsWith('ustar') ? field(345, 155) : '';
+      const name = (prefix ? prefix + '/' : '') + field(0, 100);
+      const dataEnd = pos + 512 + size;
+      if (type === '0' || type === '\0' || bytes[pos + 156] === 0) entries.push({ name, end: dataEnd, directory: false });
+      pos += 512 + Math.ceil(size / 512) * 512;
+    }
+    return entries;
+  }
+  if (kind !== 'rar' || n < 8) return entries;
+  if (bytes[6] === 0) { // RAR 4
+    for (let pos = 7; pos + 7 <= n && entries.length < 10000;) {
+      const type = bytes[pos + 2], flags = view.getUint16(pos + 3, true), size = view.getUint16(pos + 5, true);
+      if (size < 7) break;
+      let data = 0;
+      if (type === 0x73 && (flags & 0x80)) return []; // encrypted headers
+      if (type === 0x74) {
+        if (pos + 32 > n) break;
+        data = view.getUint32(pos + 7, true);
+        const nameSize = view.getUint16(pos + 26, true), high = flags & 0x100, nameAt = pos + (high ? 40 : 32);
+        if (high) data += view.getUint32(pos + 32, true) * 2 ** 32;
+        if (nameAt + nameSize > n) break;
+        let raw = bytes.subarray(nameAt, nameAt + nameSize); const z = raw.indexOf(0); if (z >= 0) raw = raw.subarray(0, z);
+        const name = (flags & 0x200 ? latin : decoder).decode(raw).replaceAll('\\', '/');
+        entries.push({ name, end: pos + size + data, directory: (flags & 0xe0) === 0xe0 });
+      } else if (type === 0x7b) break;
+      else if (flags & 0x8000) { if (pos + 11 > n) break; data = view.getUint32(pos + 7, true); }
+      pos += size + data;
+    }
+    return entries;
+  }
+  // RAR 5
+  let pos = 8;
+  const vint = () => { let value = 0, shift = 0; for (let i = 0; i < 10 && pos < n; i++) { const b = bytes[pos++]; value += (b & 127) * 2 ** shift; shift += 7; if (!(b & 128)) return value; } throw new Error('vint'); };
+  try {
+    while (pos + 6 < n && entries.length < 10000) {
+      const blockStart = pos; pos += 4;
+      const headerSize = vint(), headerStart = pos, type = vint(), flags = vint();
+      if (flags & 1) vint();
+      const data = flags & 2 ? vint() : 0;
+      if (type === 4) return [];
+      if (type === 5) break;
+      if (type === 2) {
+        const fileFlags = vint(); vint(); vint();
+        if (fileFlags & 2) pos += 4;
+        if (fileFlags & 4) pos += 4;
+        vint(); vint();
+        const nameLength = vint();
+        if (pos + nameLength > n) break;
+        entries.push({ name: decoder.decode(bytes.subarray(pos, pos + nameLength)), end: headerStart + headerSize + data, directory: Boolean(fileFlags & 1) });
+      }
+      pos = headerStart + headerSize + data;
+      if (pos <= blockStart) break;
+    }
+  } catch {}
+  return entries;
+}
+
+/**
+ * First page of a RAR/TAR comic from only the beginning of the file, for a
+ * library cover. Archivers usually store pages in order, so the first image
+ * entry is normally the cover. Returns null when it cannot be found cheaply.
+ */
+export async function archiveCover(source, { signal, loadArchive = browserArchive, headBytes = 3 * MiB, maxBytes = 24 * MiB } = {}) {
+  aborted(signal);
+  if (!source?.size) return null;
+  const readHead = async length => source.blob instanceof Blob ? new Uint8Array(await source.blob.slice(0, length).arrayBuffer()) : await source.read(0, length, { signal });
+  let head = await readHead(Math.min(source.size, headBytes));
+  const kind = containerKind(head);
+  if (kind !== 'rar' && kind !== 'tar') return null;
+  let entries = archiveHeadEntries(head, kind);
+  let first = entries.find(entry => !entry.directory && IMAGE.test(entry.name) && !/(?:^|\/)(?:__MACOSX|\.)/.test(entry.name));
+  if (!first && entries.length && head.length < source.size && head.length < maxBytes) {
+    head = await readHead(Math.min(source.size, maxBytes)); entries = archiveHeadEntries(head, kind);
+    first = entries.find(entry => !entry.directory && IMAGE.test(entry.name) && !/(?:^|\/)(?:__MACOSX|\.)/.test(entry.name));
+  }
+  if (!first) return null;
+  if (first.end > head.length) {
+    if (first.end > maxBytes || first.end > source.size) return null;
+    head = await readHead(first.end);
+  }
+  aborted(signal);
+  const Archive = await loadArchive();
+  let archive;
+  try {
+    archive = await Archive.open(new File([head], 'cover'));
+    const file = await archive.extractSingleFile(first.name);
+    if (!(file instanceof Blob) || !file.size) return null;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return new Blob([bytes], { type: sniffImage(bytes) });
+  } catch (error) { if (signal?.aborted) throw error; return null; }
+  finally { try { archive?.close(); } catch {} }
+}
+
 export const readerLimits = LIMITS;

@@ -86,6 +86,8 @@ export class ReadingRangeBuffer {
       this.ranges.delete(foundKey); this.ranges.set(foundKey, entry);
       return entry.bytes.subarray(start - entry.start, end - entry.start);
     }
+    const whole = this._fromWhole(start, end);
+    if (whole) return whole;
     const bytes = await this.source.read(start, end, { signal: signal || this.signal });
     this.signal?.throwIfAborted(); signal?.throwIfAborted();
     if (!(bytes instanceof Uint8Array) || bytes.length !== end - start) throw new Error('The cloud returned an incomplete page.');
@@ -102,8 +104,43 @@ export class ReadingRangeBuffer {
     }
     return bytes;
   }
-  clear() { this.ranges.clear(); this.bytes = 0; }
+  _fromWhole(start, end) {
+    if (!this.chunks || start === end) return null;
+    const size = ReadingRangeBuffer.CHUNK, first = Math.floor(start / size), last = Math.floor((end - 1) / size);
+    for (let i = first; i <= last; i++) if (!this.chunks[i]) return null;
+    if (first === last) return this.chunks[first].subarray(start - first * size, end - first * size);
+    const out = new Uint8Array(end - start);
+    for (let i = first, offset = 0; i <= last; i++) {
+      const from = Math.max(start, i * size) - i * size, to = Math.min(end, (i + 1) * size) - i * size;
+      out.set(this.chunks[i].subarray(from, to), offset); offset += to - from;
+    }
+    return out;
+  }
+  /** Bring the whole comic into temporary memory in the background, so page
+   * turns no longer wait for the cloud. Nothing is written to the device. */
+  async loadWhole(limit = 300 * MiB) {
+    if (this.chunks || this.source.blob || !(this.source.size > 0) || this.source.size > limit) return false;
+    const size = ReadingRangeBuffer.CHUNK, count = Math.ceil(this.source.size / size);
+    this.chunks = new Array(count);
+    try {
+      for (let i = 0; i < count; i++) {
+        this.signal?.throwIfAborted();
+        if (!this.chunks) return false;
+        const start = i * size, end = Math.min(this.source.size, start + size);
+        const bytes = await this.source.read(start, end, { signal: this.signal });
+        if (!this.chunks) return false;
+        if (!(bytes instanceof Uint8Array) || bytes.length !== end - start) throw new Error('Incomplete chunk.');
+        this.chunks[i] = bytes;
+      }
+      // The small page ranges are no longer needed once everything is here.
+      this.ranges.clear(); this.bytes = 0;
+      return true;
+    } catch { return false; }
+  }
+  get wholeBytes() { return this.chunks ? this.chunks.reduce((sum, chunk) => sum + (chunk?.length || 0), 0) : 0; }
+  clear() { this.ranges.clear(); this.bytes = 0; this.chunks = null; }
 }
+ReadingRangeBuffer.CHUNK = 4 * MiB;
 
 export function createReaderController({ store, onChange, onActivity, onCoverFirstPage, onNextComic } = {}) {
   if (!store) throw new Error('The reader needs a library store.');
@@ -1115,15 +1152,29 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!book || currentPage < 0 || loading || turning || editing || popup || (event.pointerType === 'mouse' && event.button !== 0)) return;
     gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, started: performance.now(), multiTouch: false, dragging: false, distance: 0,
       session: serial, page: pageSerial, panel, guided, overview, allowSwipe: swipeAllowed(), scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop };
-    if (gesture.allowSwipe) stage.setPointerCapture?.(event.pointerId);
+    // Touch pointers are only captured once a sideways page swipe is
+    // recognised: capturing at touch-down stops iPad Safari from scrolling.
+    if (gesture.allowSwipe && event.pointerType === 'mouse') stage.setPointerCapture?.(event.pointerId);
   });
   stage.addEventListener('pointermove', event => {
     if (!gesture || gesture.id !== event.pointerId || editing || activePointers.size > 1) return;
     const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
     gesture.distance = Math.max(gesture.distance, Math.hypot(dx, dy));
-    if (!gesture.allowSwipe) return;
-    if (!gesture.dragging && Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { resetGesture(); return; }
-    if (!gesture.dragging && Math.abs(dx) >= 44 && Math.abs(dx) >= Math.abs(dy) * 2.5) gesture.dragging = true;
+    if (!gesture.allowSwipe && !gesture.vertical) return;
+    if (!gesture.dragging && (gesture.vertical || (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)))) {
+      // Vertical movement scrolls the page. If the browser is not scrolling
+      // it natively (seen on iPad), follow the finger ourselves.
+      gesture.vertical = true;
+      const maxTop = stage.scrollHeight - stage.clientHeight;
+      if (maxTop > 2 && event.pointerType !== 'mouse' && (gesture.manual || (Math.abs(dy) > 18 && Math.abs(stage.scrollTop - gesture.scrollTop) < 2))) {
+        gesture.manual = true; event.preventDefault();
+        const now = performance.now(), top = clamp(gesture.scrollTop - dy, 0, maxTop);
+        gesture.velocity = gesture.lastMoveAt ? (stage.scrollTop - top) / Math.max(1, now - gesture.lastMoveAt) : 0;
+        gesture.lastMoveAt = now; stage.scrollTop = top;
+      }
+      return;
+    }
+    if (!gesture.dragging && Math.abs(dx) >= 44 && Math.abs(dx) >= Math.abs(dy) * 2.5) { gesture.dragging = true; try { stage.setPointerCapture?.(event.pointerId); } catch {} }
     if (!gesture.dragging) return;
     event.preventDefault(); dialog.classList.remove('reader-page-settling'); dialog.classList.add('reader-page-dragging');
     const distance = clamp(dx * .45, -stage.clientWidth * .8, stage.clientWidth * .8);
@@ -1133,6 +1184,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     activePointers.delete(event.pointerId);
     if (!gesture || gesture.id !== event.pointerId) return;
     const ended = gesture, dx = event.clientX - ended.x, dy = event.clientY - ended.y, duration = performance.now() - ended.started;
+    if (ended.vertical) {
+      resetGesture(false); suppressClicksUntil = performance.now() + 450;
+      if (ended.manual && Math.abs(ended.velocity || 0) > .2) scrollToPosition(stage.scrollLeft, stage.scrollTop - (ended.velocity || 0) * 320, true);
+      return;
+    }
     ended.distance = Math.max(ended.distance, Math.hypot(dx, dy));
     const unchanged = ended.session === serial && ended.page === pageSerial && ended.panel === panel && ended.guided === guided && ended.overview === overview && Math.abs(stage.scrollTop - ended.scrollTop) < 3;
     const delta = unchanged && ended.dragging && ended.allowSwipe && swipeAllowed() ? decideSwipe({ dx, dy, duration, width: stage.clientWidth, resistance: swipeResistance(), direction: rtl() ? 'rtl' : 'ltr', editing, multiTouch: ended.multiTouch || activePointers.size > 0 }) : 0;
@@ -1337,6 +1393,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         if (!metadata.characters?.length && opened.metadata?.characters) additions.characters = String(opened.metadata.characters).split(/[,;]/).map(s => s.trim()).filter(Boolean);
         if (Object.keys(additions).length) { store.updateComic(value.id, additions); checkSaved(); }
         await showPage(clamp(saved?.page || 0, 0, opened.pageCount - 1), saved?.panel || 0, { targetOverview: Boolean(saved?.overview) });
+        // Page-by-page formats (CBZ, images) continue downloading the rest of
+        // the comic into temporary memory, so the following pages open at once.
+        if (opened.type === 'cbz' && mySerial === serial) void rangeBuffer.loadWhole().then(done => { if (done && book === opened) schedulePrefetch(); });
       } catch (error) {
         if (mySerial !== serial || currentSession.signal.aborted) return;
         loading = false; updateControls();
@@ -1348,7 +1407,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // Closing also releases PDF worker/document memory and the current page,
     // rather than merely emptying a counter while decoded pages remain alive.
     clearBuffer() { teardown(); },
-    get bufferedBytes() { return (rangeBuffer?.bytes || 0) + (book?.bufferedBytes || 0); },
+    get bufferedBytes() { return (rangeBuffer?.bytes || 0) + (rangeBuffer?.wholeBytes || 0) + (book?.bufferedBytes || 0); },
   };
   return controller;
 }

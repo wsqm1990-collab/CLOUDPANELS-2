@@ -1,7 +1,9 @@
-import { openComic } from './reader.js';
+import { openComic, archiveCover } from './reader.js';
 
 const MiB = 1024 * 1024;
-const ALLOWED = new Set(['cbz', 'zip', 'jpg', 'jpeg', 'png', 'webp']);
+const ALLOWED = new Set(['cbz', 'zip', 'jpg', 'jpeg', 'png', 'webp', 'cbr', 'rar', 'cbt', 'tar']);
+// RAR/TAR covers come from the start of the file only (see archiveCover).
+const PARTIAL = new Set(['cbr', 'rar', 'cbt', 'tar']);
 const MAX_THUMB_BYTES = 512 * 1024;
 const abortError = () => new DOMException('Cover loading cancelled.', 'AbortError');
 const check = signal => { if (signal?.aborted) throw abortError(); };
@@ -107,6 +109,10 @@ class IndexedCoverDisk {
   async close() { try { (await this.opening)?.close(); } catch {} }
 }
 
+async function isZip(source, signal) {
+  try { const head = await source.read(0, Math.min(source.size, 4), { signal }); return head[0] === 0x50 && head[1] === 0x4b; } catch { return false; }
+}
+
 /** Lazy, deduplicated cover loading. The UI owns object URLs and their revocation. */
 export class CoverService {
   constructor({ getSource, maxConcurrent = 1, maxMemoryBytes = 12 * MiB, maxDiskBytes = 24 * MiB,
@@ -189,8 +195,17 @@ export class CoverService {
       check(signal);
       const source = await this.getSource(job.comic, { signal }); check(signal);
       if (!source) return null;
-      book = await this.openComic(source, { signal }); check(signal);
-      const page = await book.page(0, { signal }); check(signal);
+      const format = String(job.comic.format || job.comic.name?.split('.').pop() || '').toLowerCase();
+      let page = null;
+      if (PARTIAL.has(format)) {
+        page = await archiveCover(source, { signal }); check(signal);
+        // A ".cbr" that is really a ZIP is read like a CBZ below.
+      }
+      if (!page && (!PARTIAL.has(format) || this.allowFull(job.comic) || await isZip(source, signal))) {
+        book = await this.openComic(source, { signal }); check(signal);
+        page = await book.page(0, { signal }); check(signal);
+      }
+      if (!page) return null;
       const blob = await this.thumbnail(page, { signal }); check(signal);
       if (!(blob instanceof Blob) || !blob.size || blob.type !== 'image/jpeg' || blob.size > MAX_THUMB_BYTES || job.epoch !== this.epoch || this.closed) return null;
       this._remember(job.key, blob);
