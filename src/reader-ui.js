@@ -184,7 +184,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetch, prefetchTimer, gesture, settleTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
   let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0;
-  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [], lastTap;
+  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [], lastTap, appFullscreenAsked = false;
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
   const pageAnimation = () => store.state.settings.readerPageAnimation || 'slide';
   const pageDuration = () => store.state.settings.readerPageDuration || 420;
@@ -482,6 +482,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   // Called synchronously from a tap handler. Fill requests entry only; it never
   // toggles an already active fullscreen session off or takes ownership of it.
   function ensureFullscreen() {
+    if (installedApp()) return;
     if (fullscreenElement()) return;
     if (fullscreenRequest) {
       // A native promise can still acquire fullscreen after a slow permission
@@ -1231,7 +1232,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     activePointers.delete(event.pointerId);
     // In the installed iPad app, the first touch while reading also asks the
     // system to hide the clock and battery bar (a touch is required for this).
-    if (installedApp() && comic && !fullscreenElement() && !fullscreenRequest && fullscreenSupported()) ensureFullscreen();
+    // Installed app: if the system bars are still showing, ask once per app
+    // launch for true fullscreen. It is not left when closing a comic, so the
+    // system's "how to exit full screen" notice appears at most once.
+    if (installedApp() && comic && !appFullscreenAsked && !fullscreenElement() && !fullscreenRequest && fullscreenSupported() && !window.matchMedia?.('(display-mode: fullscreen)').matches) {
+      appFullscreenAsked = true;
+      try { const request = document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }); request?.catch?.(() => {}); } catch {}
+    }
     if (!gesture || gesture.id !== event.pointerId) return;
     const ended = gesture, dx = event.clientX - ended.x, dy = event.clientY - ended.y, duration = performance.now() - ended.started;
     if (ended.vertical) {
