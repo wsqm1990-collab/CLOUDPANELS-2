@@ -4,7 +4,7 @@ import { Inflate } from 'fflate';
 // requested for CBZ. PDFs are a bounded, temporary in-memory edition.
 const MiB = 1024 * 1024;
 const LIMITS = Object.freeze({ entry: 48 * MiB, directory: 16 * MiB,
-  entries: 10000, xml: MiB, pdf: 128 * MiB, archive: 400 * MiB, request: 4 * MiB,
+  entries: 10000, xml: MiB, pdf: 128 * MiB, archive: 300 * MiB, request: 4 * MiB,
   imagePixels: 24_000_000, imageDimension: 16384 });
 const IMAGE = /\.(?:jpe?g|png|webp)$/i;
 const decoder = new TextDecoder('utf-8');
@@ -327,11 +327,12 @@ async function libarchiveExtract(blob, signal, loadArchive = browserArchive) {
 }
 
 async function archiveComic(source, read, signal, closed, { extract = libarchiveExtract, onProgress, kind = 'rar' } = {}) {
-  if (source.size > LIMITS.archive) throw problem('Comics in this format larger than 400 MB cannot be opened on this device.');
-  const bytes = await readEdition(source, read, signal, onProgress);
+  if (source.size > LIMITS.archive) throw problem('Comics in this format larger than 300 MB cannot be opened on this device.');
+  // A file already on the device is handed over directly, without a copy.
+  const blob = source.blob instanceof Blob && source.blob.size === source.size ? source.blob : new Blob([await readEdition(source, read, signal, onProgress)]);
   aborted(signal);
   try { onProgress?.({ phase: 'extract' }); } catch {}
-  let entries = await extract(new Blob([bytes]), signal);
+  let entries = await extract(blob, signal);
   aborted(signal);
   const files = [];
   let comicInfo;

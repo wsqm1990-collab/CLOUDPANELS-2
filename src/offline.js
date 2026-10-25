@@ -78,7 +78,7 @@ export class OfflineLibrary {
   async source(id, name) {
     const blob = await this.get(id);
     if (!blob) return null;
-    return { name, size: blob.size, offline: true, async read(start, end, { signal } = {}) {
+    return { name, size: blob.size, offline: true, blob, async read(start, end, { signal } = {}) {
       signal?.throwIfAborted();
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > blob.size) throw new Error('Invalid file range.');
       const bytes = new Uint8Array(await blob.slice(start, end).arrayBuffer());

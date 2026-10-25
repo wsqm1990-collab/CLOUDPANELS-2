@@ -70,5 +70,5 @@ test('real RAR v4 and v5 archives are decoded (no images => explicit message)', 
 });
 
 test('oversized full-archive formats are refused before downloading', async () => {
-  await assert.rejects(openComic({ name: 'big.cbr', size: 401 * 1024 * 1024, async read(start, end) { if (end > 1024) throw new Error('must not download'); const head = new Uint8Array(end - start); head.set([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]); return head; } }, { extractArchive }), /400 MB/);
+  await assert.rejects(openComic({ name: 'big.cbr', size: 301 * 1024 * 1024, async read(start, end) { if (end > 1024) throw new Error('must not download'); const head = new Uint8Array(end - start); head.set([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]); return head; } }, { extractArchive }), /300 MB/);
 });

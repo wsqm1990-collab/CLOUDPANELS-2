@@ -220,7 +220,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const ERROR_PT = {
     'The cloud returned an incomplete page. Please try again.': 'A nuvem enviou uma página incompleta. Tente novamente.',
     'This comic archive could not be opened. It may be damaged or use an unsupported format.': 'Não foi possível abrir este quadrinho. O arquivo pode estar danificado ou usar um formato não suportado.',
-    'Comics in this format larger than 400 MB cannot be opened on this device.': 'Quadrinhos neste formato com mais de 400 MB não abrem neste aparelho.',
+    'Comics in this format larger than 300 MB cannot be opened on this device.': 'Quadrinhos neste formato com mais de 300 MB não abrem neste aparelho.',
     'No JPEG, PNG or WebP comic pages were found in this archive.': 'Nenhuma página JPEG, PNG ou WebP foi encontrada neste arquivo.',
     'Password-protected comics are not supported.': 'Quadrinhos protegidos por senha não são suportados.',
     'Password-protected ZIP comics are not supported.': 'Quadrinhos protegidos por senha não são suportados.',
@@ -1324,7 +1324,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const budget = clamp(Number(store.state.settings.cacheMiB) || 64, 16, 256) * MiB;
       rangeBuffer = new ReadingRangeBuffer(source, budget, currentSession.signal);
       try {
-        const opened = await openComic({ name: source.name || value.name, size: source.size,
+        const opened = await openComic({ name: source.name || value.name, size: source.size, blob: source.blob,
           read: rangeBuffer.read.bind(rangeBuffer) }, { signal: currentSession.signal,
           onProgress: info => { if (mySerial !== serial || !loading) return;
             if (info.phase === 'download' && info.total > 8 * MiB) statusMessage(text().downloading(Math.floor(info.loaded / info.total * 100)));

@@ -248,3 +248,7 @@ Kotlin standard library (AndroidX dependency)
 Copyright JetBrains s.r.o. and Kotlin Programming Language contributors.
 Licensed under the Apache License, Version 2.0 reproduced above.
 https://kotlinlang.org/
+
+libarchive.js 2.0.2 — MIT License — https://github.com/nika-begiashvili/libarchivejs
+Includes libarchive (BSD 2-Clause) compiled to WebAssembly. RAR decompression code in
+libarchive is derived from unrar and used only for extraction.
