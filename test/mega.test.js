@@ -408,3 +408,20 @@ test('actual pinned SDK restores a saved session by guarded tree reload and only
     await connection.disconnect(); assert.deepEqual(network, ['f', 'f', 'sml']);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('reading history sync writes one current file in a CloudPanels folder and reads the newest', async () => {
+  const { MegaConnection } = await import('../src/mega.js');
+  const made = [];
+  const node = (name, extra = {}) => ({ name, ...extra });
+  const root = node('Cloud Drive', { directory: true, children: [] });
+  root.mkdir = async name => { const folder = node(name, { directory: true, children: [], parent: root }); folder.upload = (opt, data) => { const file = node(opt.name, { size: data.length, timestamp: 100 + made.length, data, delete(_, cb) { file.deleted = true; cb(); }, async downloadBuffer() { return file.data; } }); made.push(file); folder.children.push(file); return { complete: Promise.resolve(file), on() {} }; }; root.children.push(folder); return folder; };
+  const connection = new MegaConnection();
+  connection.mode = 'account'; connection._storage = { root };
+  assert.equal(await connection.readSyncFile(), null);
+  await connection.writeSyncFile('{"v":1}');
+  await connection.writeSyncFile('{"v":2}');
+  const folder = root.children.find(child => child.name === 'CloudPanels');
+  assert.equal(folder.children.length, 1); assert.equal(made[0].deleted, true);
+  assert.equal(await connection.readSyncFile(), '{"v":2}');
+  connection.mode = 'link'; assert.equal(connection.canSync, false); assert.equal(await connection.writeSyncFile('x'), false);
+});
