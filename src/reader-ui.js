@@ -147,7 +147,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetch, prefetchTimer, gesture, settleTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
   let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0;
-  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [];
+  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [], lastTap;
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
   const pageAnimation = () => store.state.settings.readerPageAnimation || 'slide';
   const pageDuration = () => store.state.settings.readerPageDuration || 420;
@@ -1070,15 +1070,17 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!book || currentPage < 0 || loading || editing || analysisPending || !positionCommitted) return;
     const saved = persist(true); updateControls(); statusMessage(saved ? text().finished : text().marked);
   }
-  function zoom(multiplier) {
+  function zoom(multiplier, point) {
     if (!book || currentPage < 0 || loading || editing) return;
     cancelCamera();
-    const oldWidth = pageWidth || fitWidth(), ratioX = (stage.scrollLeft + stage.clientWidth / 2 - wrap.offsetLeft) / oldWidth;
-    const oldHeight = oldWidth * imageHeight / imageWidth, ratioY = (stage.scrollTop + stage.clientHeight / 2 - wrap.offsetTop) / oldHeight;
+    const box = stage.getBoundingClientRect();
+    const focusX = point ? point.x - box.left : stage.clientWidth / 2, focusY = point ? point.y - box.top : stage.clientHeight / 2;
+    const oldWidth = pageWidth || fitWidth(), ratioX = (stage.scrollLeft + focusX - wrap.offsetLeft) / oldWidth;
+    const oldHeight = oldWidth * imageHeight / imageWidth, ratioY = (stage.scrollTop + focusY - wrap.offsetTop) / oldHeight;
     setPageWidth(clamp(oldWidth * multiplier, fitWidth() * .5, Math.max(fitWidth() * 8, imageWidth * 2)));
     paintPanels();
-    scrollToPosition(wrap.offsetLeft + ratioX * pageWidth - stage.clientWidth / 2,
-      wrap.offsetTop + ratioY * pageWidth * imageHeight / imageWidth - stage.clientHeight / 2);
+    scrollToPosition(wrap.offsetLeft + ratioX * pageWidth - (point ? stage.clientWidth / 2 : focusX),
+      wrap.offsetTop + ratioY * pageWidth * imageHeight / imageWidth - (point ? stage.clientHeight / 2 : focusY));
   }
   function resetGesture(animate = true) {
     const previous = gesture; gesture = undefined;
@@ -1131,9 +1133,22 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       event.preventDefault(); suppressClicksUntil = performance.now() + 450;
       void move(tapDelta); return;
     }
-    if (unchanged && !ended.dragging && !ended.multiTouch && !activePointers.size && ended.distance < 9 && Math.abs(dx) < 9 && Math.abs(dy) < 9 && Math.abs(stage.scrollLeft - ended.scrollLeft) < 3 && duration < 400 && x > .25 && x < .75 && y > .15 && y < .85 && !editing && !popup) {
+    if (unchanged && !ended.dragging && !ended.multiTouch && !activePointers.size && ended.distance < 9 && Math.abs(dx) < 9 && Math.abs(dy) < 9 && Math.abs(stage.scrollLeft - ended.scrollLeft) < 3 && duration < 400 && !editing && !popup && (x > .25 && x < .75 || (isZoomed() && !guided))) {
       suppressClicksUntil = performance.now() + 450;
-      setImmersive(!immersive);
+      // Double tap zooms into that spot (or back to the fitted page); a single
+      // tap still shows or hides the controls after a short wait.
+      const now = performance.now();
+      if (lastTap && now - lastTap.time < 300 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40) {
+        clearTimeout(lastTap.timer); lastTap = undefined;
+        if (book && currentPage >= 0 && !loading) {
+          if (isZoomed()) layoutPage(); else zoom(2.2, { x: event.clientX, y: event.clientY });
+          syncGestureMode();
+        }
+        return;
+      }
+      if (lastTap) clearTimeout(lastTap.timer);
+      const centred = y > .15 && y < .85 && x > .25 && x < .75;
+      lastTap = { time: now, x: event.clientX, y: event.clientY, timer: setTimeout(() => { lastTap = undefined; if (centred) setImmersive(!immersive); }, 300) };
     }
   });
   function endPointer(event) {
