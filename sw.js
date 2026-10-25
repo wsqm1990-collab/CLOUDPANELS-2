@@ -1,4 +1,4 @@
-const CACHE='cloudpanels-shell-8b08ce20037d';
+const CACHE='cloudpanels-shell-2904e822a13d';
 const FILES=["./","THIRD_PARTY_NOTICES.txt","app.js","apple-touch-icon.png","brand-emblem.png","favicon-32.png","icon-192.png","icon-512.png","icon-maskable-512.png","index.html","manifest.webmanifest","panel-worker.js","samples/reader-demo.pdf","styles.css","vendor/chunk-NWZEC5ZN.js","vendor/chunk-P5H26DWG.js","vendor/libarchive/libarchive.wasm","vendor/libarchive/worker-bundle.js","vendor/libarchive-KNYDPHCC.js","vendor/panel-detection-HY5KNYZR.js","vendor/pdf-N467THD4.js","vendor/pdf.worker.mjs","vendor/wasm/LICENSE_JBIG2","vendor/wasm/LICENSE_OPENJPEG","vendor/wasm/LICENSE_PDFJS_JBIG2","vendor/wasm/LICENSE_PDFJS_OPENJPEG","vendor/wasm/LICENSE_PDFJS_QCMS","vendor/wasm/LICENSE_QCMS","vendor/wasm/jbig2.wasm","vendor/wasm/jbig2_nowasm_fallback.js","vendor/wasm/openjpeg.wasm","vendor/wasm/openjpeg_nowasm_fallback.js","vendor/wasm/qcms_bg.wasm","vendor/wasm/quickjs-eval.js","vendor/wasm/quickjs-eval.wasm"];
 const SCOPE=new URL('./', self.location.href);
 const URLS=new Set(FILES.map(f=>new URL(f, SCOPE).href));
