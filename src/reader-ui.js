@@ -217,12 +217,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const showImage = visible => { image.hidden = !visible; image.style.display = visible ? 'block' : 'none'; };
   const activity = (busy, open = Boolean(comic)) => { onActivity?.({ busy, open }); };
   const fullscreenTarget = document.documentElement;
-  const fitMode = () => ['whole', 'fill', 'width'].includes(store.state.settings.readerFitMode) ? store.state.settings.readerFitMode : 'whole';
+  const fitMode = () => ['whole', 'fill', 'width', 'screen'].includes(store.state.settings.readerFitMode) ? store.state.settings.readerFitMode : 'whole';
   const modeLabels = () => language() === 'pt-BR'
-    ? { title: 'Enquadramento da página', whole: 'Página inteira', fill: 'Preencher tela', width: 'Ajustar à largura', note: 'Página inteira mostra todas as bordas. Ajustar à largura permite rolar na vertical. Preencher tela deixa algumas bordas fora da área visível; use Mover página para explorá-las. Deslize para os lados para trocar de página.', cancel: 'Cancelar' }
+    ? { title: 'Enquadramento da página', whole: 'Página inteira', fill: 'Preencher tela', screen: 'Tela toda (abaixo do relógio)', width: 'Ajustar à largura', note: 'Página inteira mostra todas as bordas. Ajustar à largura permite rolar na vertical. Preencher tela deixa algumas bordas fora da área visível; use Mover página para explorá-las. Deslize para os lados para trocar de página.', cancel: 'Cancelar' }
     : language() === 'es'
-      ? { title: 'Ajuste de página', whole: 'Página completa', fill: 'Llenar pantalla', width: 'Ajustar al ancho', note: 'Página completa muestra todos los bordes. Ajustar al ancho permite desplazarse verticalmente. Llenar pantalla deja algunos bordes fuera de la vista; usa Mover página para explorarlos. Desliza a los lados para pasar páginas.', cancel: 'Cancelar' }
-      : { title: 'Page fit', whole: 'Whole page', fill: 'Fill screen', width: 'Fit width', note: 'Whole page shows every edge. Fit width lets you scroll vertically. Fill screen leaves some edges outside the view; use Move page to explore them. Swipe sideways to turn pages.', cancel: 'Cancel' };
+      ? { title: 'Ajuste de página', whole: 'Página completa', fill: 'Llenar pantalla', screen: 'Pantalla completa (bajo el reloj)', width: 'Ajustar al ancho', note: 'Página completa muestra todos los bordes. Ajustar al ancho permite desplazarse verticalmente. Llenar pantalla deja algunos bordes fuera de la vista; usa Mover página para explorarlos. Desliza a los lados para pasar páginas.', cancel: 'Cancelar' }
+      : { title: 'Page fit', whole: 'Whole page', fill: 'Fill screen', screen: 'Full screen (below the clock)', width: 'Fit width', note: 'Whole page shows every edge. Fit width lets you scroll vertically. Fill screen leaves some edges outside the view; use Move page to explore them. Swipe sideways to turn pages.', cancel: 'Cancel' };
   const panLabels = () => language() === 'pt-BR' ? { move: 'Mover página', resume: 'Voltar à leitura', hint: 'Deslize para trocar de página · Mover página permite explorar as bordas', panHint: 'Arraste para explorar as bordas · Toque em Voltar à leitura para trocar páginas' }
     : language() === 'es' ? { move: 'Mover página', resume: 'Volver a leer', hint: 'Desliza para pasar páginas · Mover página permite explorar los bordes', panHint: 'Arrastra para explorar los bordes · Toca Volver a leer para pasar páginas' }
       : { move: 'Move page', resume: 'Resume reading', hint: 'Swipe to turn pages · Use Move page to explore the edges', panHint: 'Drag to explore the edges · Tap Resume reading to turn pages' };
@@ -374,6 +374,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     panButton.textContent = panMode ? panLabels().resume : panLabels().move; resumeButton.textContent = panLabels().resume; resumeButton.hidden = !panMode;
     dialog.classList.toggle('reader-panning', panMode);
     dialog.classList.toggle('reader-fit-fill', fitMode() === 'fill' && !editing && !guided);
+    dialog.classList.toggle('reader-fit-screen', fitMode() === 'screen' && !editing && !guided);
     syncGestureMode(); syncQuickNavigation();
     if (!navigationSessionShown && ready && !loading && !analysisPending && positionCommitted) {
       navigationSessionShown = true; navigationTimer.reveal();
@@ -444,7 +445,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function swipeAllowed() { return canSwipePages({ pageWidth, baselineWidth: baselineWidth(), browserScale: window.visualViewport?.scale || 1, panning: panMode, guided, guidedReady: guided && !analysisPending, editing, popup: Boolean(popup), loading: loading || turning }); }
   function isZoomed() { const baseline = baselineWidth(); return !baseline || Math.abs(pageWidth - baseline) > Math.max(1, baseline * .035) || (window.visualViewport?.scale || 1) > 1.035; }
   function syncGestureMode() {
-    stage.style.touchAction = swipeAllowed() ? 'pan-y pinch-zoom' : 'pan-x pan-y pinch-zoom';
+    // When a tall page must be scrolled while sideways swipes turn pages, the
+    // reader moves the page itself (with momentum and pinch-zoom). iPad Safari's
+    // own scrolling fought the page-turn gesture and felt stuck.
+    const tall = stage.scrollHeight - stage.clientHeight > 2;
+    stage.style.touchAction = swipeAllowed() ? (tall && !panMode ? 'none' : 'pan-y pinch-zoom') : 'pan-x pan-y pinch-zoom';
   }
   function showHint(message, duration = 4500) { clearTimeout(hintTimer); fitHint.textContent = message; fitHint.hidden = false; hintTimer = setTimeout(() => { fitHint.hidden = true; }, duration); }
   function setPanMode(value, { hint = true } = {}) {
@@ -561,6 +566,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     dialog.classList.toggle('reader-overlay-controls', !editing);
     dialog.classList.toggle('reader-guided', guided && !editing);
     dialog.classList.toggle('reader-fit-fill', fitMode() === 'fill' && !editing && !guided);
+    dialog.classList.toggle('reader-fit-screen', fitMode() === 'screen' && !editing && !guided);
     const rect = guided && guidedMode === 'panels' && !editing ? overview ? (guidedWholeFills() ? undefined : { x: 0, y: 0, width: 1, height: 1 }) : panels()[panel] : undefined;
     if (rect) {
       const available = availableSize(), aspect = imageWidth / imageHeight;
@@ -597,7 +603,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         const guidedFill = guidedWholeFills();
         const fit = pageFit({ mode: editing ? 'whole' : guided ? guidedFitMode() : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height });
         setPageWidth(fit.width);
-        const topY = guidedFill ? (guidedFillFromBottom ? wrap.offsetTop + fit.height : 0) : widthViewY !== null ? wrap.offsetTop + widthViewY * fit.height : !guided && !editing && fitMode() === 'width' ? 0 : Math.max(0, (fit.height - available.height) / 2);
+        const topY = guidedFillFromBottom && (guidedFill || ['width', 'fill', 'screen'].includes(fitMode())) && widthViewY === null ? wrap.offsetTop + fit.height : guidedFill ? 0 : widthViewY !== null ? wrap.offsetTop + widthViewY * fit.height : !guided && !editing && ['width', 'fill', 'screen'].includes(fitMode()) ? 0 : Math.max(0, (fit.height - available.height) / 2);
         guidedFillFromBottom = false;
         scrollToPosition(Math.max(0, (fit.width - available.width) / 2), topY, smooth && guidedFill);
       }
@@ -609,8 +615,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (editing) finishEditing({ wholePage: true });
     cancelAnalysis(); panMode = false; guided = false; overview = false; guidedFallbackPage = -1; panel = 0; hidePopup(); store.setSettings({ readerFitMode: mode, readerGuided: false }); checkSaved(); observePersistence();
     positionCommitted = true; updateControls(); setImmersive(true); layoutPage(); persist(); updateControls(); normalStatus();
-    clearTimeout(hintTimer); fitHint.hidden = mode !== 'fill';
-    if (mode === 'fill') {
+    clearTimeout(hintTimer); fitHint.hidden = mode !== 'fill' && mode !== 'screen';
+    if (mode === 'fill' || mode === 'screen') {
       fitHint.textContent = panLabels().hint;
       hintTimer = setTimeout(() => { fitHint.hidden = true; }, 4500);
       // Still in the original click task, before any awaited work. A rejected
@@ -624,7 +630,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const heading = document.createElement('h3'); heading.textContent = labels.title;
     const note = document.createElement('p'); note.textContent = labels.note; note.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;';
     const controls = document.createElement('div'); controls.className = 'row'; menu.append(heading, note, controls);
-    for (const mode of ['whole', 'width', 'fill']) {
+    for (const mode of ['whole', 'width', 'fill', 'screen']) {
       const button = popupButton(controls, labels[mode], () => selectFitMode(mode), fitMode() === mode);
       button.setAttribute('aria-pressed', String(fitMode() === mode));
     }
@@ -1099,7 +1105,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function move(delta) {
     if (!book || currentPage < 0 || loading || turning || editing || popup || analysisPending || !positionCommitted) return;
     // A filled landscape page is read top to bottom before turning.
-    if (guidedWholeFills() && !isZoomed()) {
+    const scrollsPage = guidedWholeFills() || (!guided && !editing && ['width', 'fill', 'screen'].includes(fitMode()));
+    if (scrollsPage && !isZoomed() && stage.scrollHeight - stage.clientHeight > 4) {
       const maxTop = stage.scrollHeight - stage.clientHeight, step = stage.clientHeight * .8;
       if (delta > 0 && stage.scrollTop < maxTop - 4) { scrollToPosition(stage.scrollLeft, Math.min(maxTop, stage.scrollTop + step), true); return; }
       if (delta < 0 && stage.scrollTop > 4) { scrollToPosition(stage.scrollLeft, Math.max(0, stage.scrollTop - step), true); return; }
@@ -1147,8 +1154,31 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     dialog.classList.toggle('reader-page-settling', animate); wrap.style.setProperty('--reader-drag-x', '0px');
     clearTimeout(settleTimer); settleTimer = setTimeout(() => dialog.classList.remove('reader-page-settling'), 160);
   }
+  let momentumFrame, pinch;
+  const touchPoints = new Map();
+  function stopMomentum() { if (momentumFrame) cancelAnimationFrame(momentumFrame); momentumFrame = undefined; }
+  function startMomentum(velocity) {
+    stopMomentum();
+    let v = clamp(velocity, -4, 4), last = performance.now();
+    const step = now => {
+      const dt = Math.min(48, now - last); last = now;
+      const maxTop = stage.scrollHeight - stage.clientHeight, before = stage.scrollTop;
+      stage.scrollTop = clamp(before + v * dt, 0, Math.max(0, maxTop));
+      v *= Math.pow(.94, dt / 16);
+      if (Math.abs(v) < .02 || stage.scrollTop === before) { momentumFrame = undefined; return; }
+      momentumFrame = requestAnimationFrame(step);
+    };
+    momentumFrame = requestAnimationFrame(step);
+  }
+  const ownsTouch = () => stage.style.touchAction === 'none';
   stage.addEventListener('pointerdown', event => {
+    stopMomentum();
     activePointers.add(event.pointerId);
+    if (event.pointerType !== 'mouse') touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointers.size === 2 && ownsTouch() && touchPoints.size === 2 && book && !editing && !popup) {
+      const [a, b] = [...touchPoints.values()];
+      pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1 };
+    }
     if (activePointers.size > 1 || cancelledPointers.size) { if (gesture) gesture.multiTouch = true; resetGesture(); return; }
     if (!book || currentPage < 0 || loading || turning || editing || popup || (event.pointerType === 'mouse' && event.button !== 0)) return;
     gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, started: performance.now(), multiTouch: false, dragging: false, distance: 0,
@@ -1158,19 +1188,28 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (gesture.allowSwipe && event.pointerType === 'mouse') stage.setPointerCapture?.(event.pointerId);
   });
   stage.addEventListener('pointermove', event => {
+    if (touchPoints.has(event.pointerId)) touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch && touchPoints.size === 2) {
+      const [a, b] = [...touchPoints.values()], distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      event.preventDefault();
+      if (Math.abs(distance / pinch.distance - 1) > .01) { zoom(distance / pinch.distance, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }); pinch.distance = distance; }
+      return;
+    }
     if (!gesture || gesture.id !== event.pointerId || editing || activePointers.size > 1) return;
     const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
     gesture.distance = Math.max(gesture.distance, Math.hypot(dx, dy));
     if (!gesture.allowSwipe && !gesture.vertical) return;
-    if (!gesture.dragging && (gesture.vertical || (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)))) {
-      // Vertical movement scrolls the page. If the browser is not scrolling
-      // it natively (seen on iPad), follow the finger ourselves.
+    if (!gesture.dragging && (gesture.vertical || (Math.abs(dy) > 6 && Math.abs(dy) > Math.abs(dx)))) {
       gesture.vertical = true;
       const maxTop = stage.scrollHeight - stage.clientHeight;
-      if (maxTop > 2 && event.pointerType !== 'mouse' && (gesture.manual || (Math.abs(dy) > 18 && Math.abs(stage.scrollTop - gesture.scrollTop) < 2))) {
-        gesture.manual = true; event.preventDefault();
-        const now = performance.now(), top = clamp(gesture.scrollTop - dy, 0, maxTop);
-        gesture.velocity = gesture.lastMoveAt ? (stage.scrollTop - top) / Math.max(1, now - gesture.lastMoveAt) : 0;
+      // Follow the finger directly when the reader owns touch scrolling, or as
+      // a fallback whenever the browser is not scrolling by itself.
+      if (maxTop > 2 && event.pointerType !== 'mouse' && (gesture.manual || ownsTouch() || (Math.abs(dy) > 18 && Math.abs(stage.scrollTop - gesture.scrollTop) < 2))) {
+        if (!gesture.manual) { gesture.manual = true; gesture.anchorY = event.clientY; gesture.anchorTop = stage.scrollTop; }
+        event.preventDefault();
+        const now = performance.now(), top = clamp(gesture.anchorTop - (event.clientY - gesture.anchorY), 0, maxTop);
+        const instant = gesture.lastMoveAt ? (top - stage.scrollTop) / Math.max(1, now - gesture.lastMoveAt) : 0;
+        gesture.velocity = gesture.velocity === undefined ? instant : gesture.velocity * .3 + instant * .7;
         gesture.lastMoveAt = now; stage.scrollTop = top;
       }
       return;
@@ -1182,6 +1221,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     wrap.style.setProperty('--reader-drag-x', `${distance}px`);
   });
   stage.addEventListener('pointerup', event => {
+    touchPoints.delete(event.pointerId); if (touchPoints.size < 2) pinch = undefined;
     activePointers.delete(event.pointerId);
     // In the installed iPad app, the first touch while reading also asks the
     // system to hide the clock and battery bar (a touch is required for this).
@@ -1190,7 +1230,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const ended = gesture, dx = event.clientX - ended.x, dy = event.clientY - ended.y, duration = performance.now() - ended.started;
     if (ended.vertical) {
       resetGesture(false); suppressClicksUntil = performance.now() + 450;
-      if (ended.manual && Math.abs(ended.velocity || 0) > .2) scrollToPosition(stage.scrollLeft, stage.scrollTop - (ended.velocity || 0) * 320, true);
+      if (ended.manual && performance.now() - (ended.lastMoveAt || 0) < 90 && Math.abs(ended.velocity || 0) > .15) startMomentum(ended.velocity);
       return;
     }
     ended.distance = Math.max(ended.distance, Math.hypot(dx, dy));
@@ -1229,6 +1269,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     }
   });
   function endPointer(event) {
+    touchPoints.delete(event.pointerId); if (touchPoints.size < 2) pinch = undefined;
     activePointers.delete(event.pointerId); cancelledPointers.delete(event.pointerId);
     if (gesture?.id === event.pointerId) { suppressClicksUntil = performance.now() + 600; resetGesture(); }
   }

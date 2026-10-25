@@ -16,6 +16,7 @@ export function wholePageFit({ imageWidth, imageHeight, availableWidth, availabl
  * filling the view. Width/fill overflow remains scrollable, not clipped away.
  */
 export function pageFit({ mode = 'whole', imageWidth, imageHeight, availableWidth, availableHeight } = {}) {
+  if (mode === 'screen') mode = 'fill'; // fills the area below the status bar
   if (mode === 'width') {
     if (![imageWidth, imageHeight, availableWidth].every(value => Number.isFinite(value) && value > 0)) return { width: 0, height: 0 };
     const height = imageHeight * (availableWidth / imageWidth);
