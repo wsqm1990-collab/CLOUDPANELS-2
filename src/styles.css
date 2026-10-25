@@ -547,6 +547,12 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
   .library-grid, .comic-grid { grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)) !important; gap: 26px 20px !important; }
 }
 
-/* "Full screen (below the clock)": fills everything except the status bar. */
-.reader-dialog.reader-overlay-controls.reader-fit-screen .reader-stage { padding: env(safe-area-inset-top, 0px) 0 0 0; }
-.reader-dialog.reader-fit-screen .reader-stage { background: #000; }
+/* The reading area itself starts below the clock/battery bar, so a scrolled
+   page never slides underneath it. ("Fill screen" keeps using every pixel.) */
+.reader-dialog.reader-overlay-controls:not(.reader-fit-fill) .reader-stage {
+  padding-top: 0;
+  margin-top: env(safe-area-inset-top, 0px);
+  height: calc(100% - env(safe-area-inset-top, 0px));
+}
+/* "Full screen (below the clock)": no margins except the status bar. */
+.reader-dialog.reader-overlay-controls.reader-fit-screen .reader-stage { padding: 0; background: #000; }
