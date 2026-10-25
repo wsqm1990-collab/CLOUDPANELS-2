@@ -92,7 +92,7 @@ const selectedComicIds=new Set();
 let filters = {status:'all',publisher:'',series:'',character:'',sort:'title',group:''};
 let modalGeneration = 0, modalAbort = null, toastTimer, opening = false, pendingLocalId = null;
 const conversation = [];
-const covers = new CoverService({getSource:comic=>resolveSource(comic), allowFull:comic=>offline.has(comic.id)&&['cbr','rar','cb7','7z','cbt','tar'].includes(String(comic.format).toLowerCase()), ...(accounts ? {disk:null} : {})});
+const covers = new CoverService({getSource:comic=>resolveSource(comic), maxConcurrent:2, maxMemoryBytes:24*1024*1024, maxDiskBytes:48*1024*1024, allowFull:comic=>offline.has(comic.id)&&['cbr','rar','cb7','7z','cbt','tar'].includes(String(comic.format).toLowerCase()), ...(accounts ? {disk:null} : {})});
 let rememberedConnection = null, restoringConnection = null;
 let coverObserver=null,coverEpoch=0;
 const coverRequests=new Map(),coverTargets=new Map(),coverURLs=new Set();
