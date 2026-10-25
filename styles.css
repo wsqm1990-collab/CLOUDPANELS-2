@@ -574,3 +574,14 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .ai-footer { flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; align-items: center; }
 .ai-toggle { display: inline-flex; gap: 7px; align-items: center; font-size: 13px; color: var(--muted, #b6c3d3); }
 .ai-steps { margin: 10px 0 4px; padding-left: 20px; line-height: 1.7; color: #c9d4e2; }
+
+/* Keep the name and tagline under the logo inside the sidebar on every iPad width. */
+.sidebar .brand { min-width: 0; max-width: 100%; margin-right: 0; font-size: 19px; gap: 8px; }
+.sidebar .brand > .brand-emblem { width: 38px; height: 38px; }
+.sidebar .brand > span { min-width: 0; flex: 1 1 auto; }
+.sidebar .brand small { white-space: nowrap; font-size: 5.6px; letter-spacing: .62px; margin-top: 5px; }
+@media (min-width: 1300px) {
+  .sidebar .brand { font-size: 21px; gap: 10px; }
+  .sidebar .brand > .brand-emblem { width: 44px; height: 44px; }
+  .sidebar .brand small { font-size: 6.4px; letter-spacing: 1px; }
+}
