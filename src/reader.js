@@ -309,24 +309,36 @@ function browserUnrar(bytes, signal) {
  * entry). Tries the official unrar first, then libarchive, and accepts a result
  * only when it matches the entry's size and checksum.
  */
-async function decodeRarEntry(synthetic, entry, { loadArchive = browserArchive, unrar = browserUnrar, signal } = {}) {
-  const good = bytes => bytes && (!entry.size || bytes.length === entry.size) && (!Number.isInteger(entry.crc) || crc32(bytes) === entry.crc);
+async function decodeRarEntry(synthetic, entry, { loadArchive = browserArchive, unrar = browserUnrar, signal, strict = false } = {}) {
+  const sizeOk = bytes => bytes && (!entry.size || bytes.length === entry.size);
+  const crcOk = bytes => !Number.isInteger(entry.crc) || crc32(bytes) === entry.crc;
   const attempts = [];
-  if (unrar) attempts.push(() => unrar(synthetic, signal));
-  attempts.push(async () => {
+  if (unrar) attempts.push(['unrar', () => unrar(synthetic, signal)]);
+  attempts.push(['libarchive', async () => {
     const Archive = await loadArchive(); let archive;
     try { archive = await Archive.open(new File([synthetic], 'page')); return new Uint8Array(await (await archive.extractSingleFile(entry.name)).arrayBuffer()); }
     finally { try { archive?.close(); } catch {} }
-  });
-  let last = null;
-  for (const attempt of attempts) {
-    try { const bytes = await attempt(); if (good(bytes)) return bytes; last = bytes; }
-    catch (error) { if (signal?.aborted) throw error; }
+  }]);
+  const report = [];
+  let fallback = null;
+  for (const [label, attempt] of attempts) {
+    try {
+      const bytes = await attempt();
+      const row = { decoder: label, length: bytes?.length ?? null, crc: bytes ? crc32(bytes) >>> 0 : null, head: bytes ? hex(bytes.subarray(0, 8)) : '', tail: bytes ? hex(bytes.subarray(Math.max(0, bytes.length - 8))) : '' };
+      report.push(row);
+      if (sizeOk(bytes) && crcOk(bytes)) return bytes;
+      if (sizeOk(bytes) && !fallback) fallback = bytes;
+    } catch (error) { if (signal?.aborted) throw error; report.push({ decoder: label, error: String(error?.message || error).slice(0, 160) }); }
   }
+  const details = { name: entry.name, stored: false, start: entry.start, end: entry.end, size: entry.size, expectedCrc: Number.isInteger(entry.crc) ? entry.crc >>> 0 : null,
+    inputCrc: crc32(synthetic) >>> 0, inputLength: synthetic.length, header: hex(synthetic.subarray(0, Math.min(synthetic.length, 128))), decoders: report, check: 'crc', ...(entry.diag || {}) };
+  // Show the best result instead of nothing; the report records what went wrong.
+  if (fallback && !strict) { try { globalThis.dispatchEvent?.(new CustomEvent('cloudpanels-error', { detail: { where: 'page-check', error: new Error('Page integrity check failed; showing best result.'), extra: details } })); } catch {} return fallback; }
   const error = problem('This page could not be unpacked correctly (integrity check failed).');
-  error.details = { name: entry.name, stored: false, start: entry.start, end: entry.end, size: entry.size, received: last?.length ?? null, check: 'crc' };
+  error.details = details;
   throw error;
 }
+function hex(bytes) { return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''); }
 
 let archiveReady = false;
 // RAR (v4/v5), 7z and TAR are decoded by libarchive compiled to WebAssembly in
@@ -446,8 +458,17 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
         } else {
           const head = await read(0, listing.preamble, combined.signal), body = await read(entry.start, entry.end, combined.signal);
           const synthetic = new Uint8Array(head.length + body.length); synthetic.set(head); synthetic.set(body, head.length);
-          try { bytes = await decodeRarEntry(synthetic, entry, { loadArchive, unrar, signal: combined.signal }); }
-          catch (error) { if (error.details) error.details = { ...error.details, index, kind, solid: listing.solid }; error.message = `Page ${index + 1} could not be unpacked correctly (integrity check failed).`; throw error; }
+          try { bytes = await decodeRarEntry(synthetic, entry, { loadArchive, unrar, signal: combined.signal, strict: true }); }
+          catch (error) {
+            if (!error.details) throw error;
+            // Read the compressed data again straight from the cloud and retry;
+            // if it still does not check out, show the best result and log why.
+            const fresh = await (source.readFresh || source.read)(entry.start, entry.end, { signal: combined.signal });
+            const again = new Uint8Array(head.length + fresh.length); again.set(head); again.set(fresh, head.length);
+            const freshDiffers = crc32(fresh) !== crc32(body);
+            try { bytes = await decodeRarEntry(again, { ...entry, diag: { index, kind, solid: listing.solid, freshDiffers, firstTry: error.details.decoders } }, { loadArchive, unrar, signal: combined.signal }); }
+            catch (second) { if (second.details) second.details = { ...second.details, index, kind, solid: listing.solid, freshDiffers }; second.message = `Page ${index + 1} could not be unpacked correctly (integrity check failed).`; throw second; }
+          }
         }
         aborted(combined.signal);
         if (expected && bytes.length !== expected) {
