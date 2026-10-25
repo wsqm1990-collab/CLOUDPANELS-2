@@ -436,7 +436,7 @@ async function fileSource(file) {
 }
 async function demoSource(format) {
   if(!['cbz','pdf'].includes(format))throw new Error(t('demoError'));
-  if(!demoFiles.has(format)){const response=await fetch('/samples/reader-demo.'+format,{credentials:'same-origin',cache:'no-store'});if(!response.ok)throw new Error(t('demoError'));const blob=await response.blob();if(blob.size>24*1024*1024)throw new Error(t('demoError'));demoFiles.set(format,new File([blob],'reader-demo.'+format,{type:format==='pdf'?'application/pdf':'application/zip'}));}
+  if(!demoFiles.has(format)){const response=await fetch('samples/reader-demo.'+format,{credentials:'same-origin',cache:'no-store'});if(!response.ok)throw new Error(t('demoError'));const blob=await response.blob();if(blob.size>24*1024*1024)throw new Error(t('demoError'));demoFiles.set(format,new File([blob],'reader-demo.'+format,{type:format==='pdf'?'application/pdf':'application/zip'}));}
   return fileSource(demoFiles.get(format));
 }
 async function resolveSource(comic){
@@ -754,8 +754,8 @@ document.addEventListener('keydown',event=>{if(event.key==='/'&&!modal.open&&!do
 window.addEventListener('offline',()=>toast(t('offline')));
 window.addEventListener('pagehide',()=>{try{store.flush?.();}catch{}});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')store.flush?.();});
-if(false){ // APK assets are bundled; no service-worker cache can retain an old app.
-  const registerWorker=()=>{navigator.serviceWorker.register('/sw.js').catch(()=>{});};
+if('serviceWorker' in navigator && location.protocol==='https:'){ // Lets the installed iPad app start without a connection.
+  const registerWorker=()=>{navigator.serviceWorker.register('sw.js').catch(()=>{});};
   if(document.readyState==='complete')registerWorker();else window.addEventListener('load',registerWorker,{once:true});
 }
 appReady=true;

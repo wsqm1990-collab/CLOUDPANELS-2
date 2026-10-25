@@ -147,7 +147,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetch, prefetchTimer, gesture, settleTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
   let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0;
-  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole';
+  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false;
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
   const pageAnimation = () => store.state.settings.readerPageAnimation || 'slide';
   const pageDuration = () => store.state.settings.readerPageDuration || 420;
@@ -344,10 +344,21 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     wrap.style.marginTop = `${Math.max(0, remaining / 2)}px`;
     if (syncGestures) syncGestureMode();
   }
+  // In Panel view, a whole page (no recognised panels, or the overview after
+  // the last panel) fills the screen width when the iPad is in landscape,
+  // instead of leaving wide empty bars at the sides. The page then scrolls.
+  function guidedWholeFills() {
+    if (!guided || editing || !imageWidth || !imageHeight) return false;
+    if (guidedMode === 'panels' && !overview && panels()[panel]) return false;
+    const available = availableSize();
+    if (available.width <= available.height) return false;
+    return wholePageFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width < available.width * .92;
+  }
+  function guidedFitMode() { return guidedWholeFills() ? 'width' : 'whole'; }
   function baselineWidth() {
     const available = availableSize(), rect = guided && guidedMode === 'panels' && !editing && !overview ? panels()[panel] : undefined;
     if (rect) return guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect })?.width || fitWidth();
-    return pageFit({ mode: guided || editing ? 'whole' : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width;
+    return pageFit({ mode: editing ? 'whole' : guided ? guidedFitMode() : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width;
   }
   function swipeAllowed() { return canSwipePages({ pageWidth, baselineWidth: baselineWidth(), browserScale: window.visualViewport?.scale || 1, panning: panMode, guided, guidedReady: guided && !analysisPending, editing, popup: Boolean(popup), loading: loading || turning }); }
   function isZoomed() { const baseline = baselineWidth(); return !baseline || Math.abs(pageWidth - baseline) > Math.max(1, baseline * .035) || (window.visualViewport?.scale || 1) > 1.035; }
@@ -382,6 +393,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   // Called synchronously from a tap handler. Fill requests entry only; it never
   // toggles an already active fullscreen session off or takes ownership of it.
   function ensureFullscreen() {
+    // The installed Home Screen app already runs without Safari's bars.
+    if (window.navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches || window.matchMedia?.('(display-mode: fullscreen)').matches) return;
     if (fullscreenElement()) return;
     if (fullscreenRequest) {
       // A native promise can still acquire fullscreen after a slow permission
@@ -465,10 +478,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     dialog.classList.toggle('reader-overlay-controls', !editing);
     dialog.classList.toggle('reader-guided', guided && !editing);
     dialog.classList.toggle('reader-fit-fill', fitMode() === 'fill' && !editing && !guided);
-    const rect = guided && guidedMode === 'panels' && !editing ? overview ? { x: 0, y: 0, width: 1, height: 1 } : panels()[panel] : undefined;
+    const rect = guided && guidedMode === 'panels' && !editing ? overview ? (guidedWholeFills() ? undefined : { x: 0, y: 0, width: 1, height: 1 }) : panels()[panel] : undefined;
     if (rect) {
       const available = availableSize(), aspect = imageWidth / imageHeight;
       const target = guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect });
+      guidedFillFromBottom = false;
       if (!target) return;
       const style = getComputedStyle(stage), centerX = parseFloat(style.paddingLeft || 0) + available.width / 2, centerY = parseFloat(style.paddingTop || 0) + available.height / 2;
       const startWidth = pageWidth || fitWidth();
@@ -497,9 +511,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     } else {
       if (!keepZoom) {
         const available = availableSize();
-        const fit = pageFit({ mode: guided || editing ? 'whole' : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height });
+        const guidedFill = guidedWholeFills();
+        const fit = pageFit({ mode: editing ? 'whole' : guided ? guidedFitMode() : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height });
         setPageWidth(fit.width);
-        scrollToPosition(Math.max(0, (fit.width - available.width) / 2), widthViewY !== null ? wrap.offsetTop + widthViewY * fit.height : !guided && !editing && fitMode() === 'width' ? 0 : Math.max(0, (fit.height - available.height) / 2));
+        const topY = guidedFill ? (guidedFillFromBottom ? wrap.offsetTop + fit.height : 0) : widthViewY !== null ? wrap.offsetTop + widthViewY * fit.height : !guided && !editing && fitMode() === 'width' ? 0 : Math.max(0, (fit.height - available.height) / 2);
+        guidedFillFromBottom = false;
+        scrollToPosition(Math.max(0, (fit.width - available.width) / 2), topY, smooth && guidedFill);
       }
       paintPanels();
     }
@@ -964,6 +981,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   function move(delta) {
     if (!book || currentPage < 0 || loading || turning || editing || popup || analysisPending || !positionCommitted) return;
+    // A filled landscape page is read top to bottom before turning.
+    if (guidedWholeFills() && !isZoomed()) {
+      const maxTop = stage.scrollHeight - stage.clientHeight, step = stage.clientHeight * .8;
+      if (delta > 0 && stage.scrollTop < maxTop - 4) { scrollToPosition(stage.scrollLeft, Math.min(maxTop, stage.scrollTop + step), true); return; }
+      if (delta < 0 && stage.scrollTop > 4) { scrollToPosition(stage.scrollLeft, Math.max(0, stage.scrollTop - step), true); return; }
+      if (delta < 0) guidedFillFromBottom = true;
+    }
     const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta });
     if (step.kind === 'panel' || step.kind === 'overview') {
       panel = step.panel; overview = step.overview; layoutPage({ smooth: true }); persist(); updateControls(); normalStatus();

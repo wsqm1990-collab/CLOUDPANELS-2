@@ -49,7 +49,7 @@ function safeMessage(error, labels) {
 function brandedCard(container, labels) {
   const card = node('section', 'account-card');
   const brand = node('div', 'account-brand');
-  const icon = node('img', 'brand-emblem'); icon.src = '/brand-emblem.png'; icon.alt = ''; icon.width = 52; icon.height = 52;
+  const icon = node('img', 'brand-emblem'); icon.src = 'brand-emblem.png'; icon.alt = ''; icon.width = 52; icon.height = 52;
   const wordmark = node('span', 'brand-wordmark', 'Cloud'); wordmark.append(node('span', 'brand-light', 'Panels'));
   brand.append(icon, wordmark);
   const header = node('div', 'account-brand-header'); header.append(brand);

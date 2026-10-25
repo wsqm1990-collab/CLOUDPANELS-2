@@ -56,7 +56,7 @@ async function runPixels(pixels, { signal, direction, workerFactory }) {
 /** Analyze only the currently decoded page, using a small, disposable raster. */
 export async function analyzePagePanels(image, { signal, direction = 'ltr',
   canvasFactory = () => document.createElement('canvas'),
-  workerFactory = () => new Worker('/panel-worker.js', { type: 'module' }),
+  workerFactory = () => new Worker(new URL('panel-worker.js', document.baseURI), { type: 'module' }),
 } = {}) {
   signal?.throwIfAborted();
   const dimensions = analysisDimensions(image.naturalWidth || image.width, image.naturalHeight || image.height);
