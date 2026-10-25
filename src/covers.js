@@ -13,7 +13,9 @@ const budget = (value, fallback, maximum) => Number.isSafeInteger(value) && valu
 export function coverCacheId(comic) {
   if (!comic || !['mega', 'local', 'demo'].includes(comic.source) || typeof comic.id !== 'string' || !/^[a-z][a-z0-9_-]*:[A-Za-z0-9:_-]{1,180}$/i.test(comic.id)
     || !Number.isSafeInteger(comic.size) || comic.size <= 0 || typeof comic.name !== 'string' || !comic.name || comic.name.length > 1024 || /[\u0000-\u001f\u007f]/.test(comic.name)) throw new TypeError('Invalid comic cover identity.');
-  return JSON.stringify(['cloudpanels-cover-v1', comic.source, comic.id, comic.size, comic.name]);
+  // v2 for RAR/TAR: earlier covers could show a page other than the first.
+  const version = /\.(?:cbr|rar|cbt|tar)$/i.test(comic.name) ? 'cloudpanels-cover-v2' : 'cloudpanels-cover-v1';
+  return JSON.stringify([version, comic.source, comic.id, comic.size, comic.name]);
 }
 
 /** Thumbnail pixels remain local. No edition or full-resolution page is persisted. */

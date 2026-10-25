@@ -73,14 +73,30 @@ test('oversized full-archive formats are refused before downloading', async () =
   await assert.rejects(openComic({ name: 'big.cbr', size: 301 * 1024 * 1024, async read(start, end) { if (end > 1024) throw new Error('must not download'); const head = new Uint8Array(end - start); head.set([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]); return head; } }, { extractArchive }), /300 MB/);
 });
 
-test('a library cover is taken from the start of a full-archive comic', async () => {
+test('the cover is the first page in reading order even when stored out of order', async () => {
   const { archiveCover } = await import('../src/reader.js');
-  const bytes = tar([['01.png', png], ['02.png', png], ['big.bin', new Uint8Array(200000)]]);
+  const other = png.slice(); other[19] = 9; // a different (still valid-looking) page
+  const bytes = tar([['pages/10.png', other], ['pages/02.png', other], ['notes.txt', new Uint8Array(3000)], ['pages/01.png', png], ['big.bin', new Uint8Array(300000)]]);
   const source = sourceFor(bytes, 'Issue.cbr');
-  const cover = await archiveCover(source, { loadArchive: async () => Archive, headBytes: 4096 });
+  const cover = await archiveCover(source, { loadArchive: async () => Archive });
   assert.equal(cover.type, 'image/png');
-  assert.ok(source.reads.every(([, end]) => end <= 4096), 'only the beginning is downloaded');
+  assert.deepEqual(new Uint8Array(await cover.arrayBuffer()), png);
+  assert.ok(source.reads.reduce((sum, [a, b]) => sum + b - a, 0) < bytes.length / 2, 'the big entry is never downloaded');
   assert.equal(await archiveCover(sourceFor(zipSync({ 'a.png': png }), 'x.cbr'), { loadArchive: async () => Archive }), null);
+});
+
+test('a single entry of a non-solid RAR is extracted from only its own bytes', async () => {
+  const { listArchive } = await import('../src/reader.js');
+  for (const name of ['test-v4.rar', 'test-v5.rar']) {
+    const bytes = new Uint8Array(readFileSync(new URL('./fixtures/' + name, import.meta.url)));
+    const list = await listArchive(async (a, b) => bytes.slice(a, b), bytes.length, 'rar');
+    assert.equal(list.complete, true, name);
+    const target = list.entries.find(entry => entry.name === 'README.md');
+    const synthetic = new Uint8Array([...bytes.subarray(0, list.preamble), ...bytes.subarray(target.start, target.end)]);
+    const archive = await Archive.open(new Blob([synthetic]));
+    const file = await archive.extractSingleFile('README.md'); await archive.close();
+    assert.equal(file.size, 28, name + (list.solid ? ' (solid)' : ''));
+  }
 });
 
 test('RAR v4 and v5 entry headers are listed from the start of the file', async () => {
