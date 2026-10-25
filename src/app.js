@@ -44,10 +44,10 @@ Object.assign(copy['pt-BR'],{syncPaused:'A sincronização entre aparelhos está
 
 // ---- Diagnostics: a small local log of errors the user can copy and send ----
 const DIAG_KEY='cloudpanels-diagnostics-v1';
-function scrub(text){return String(text||'').replace(/sk-ant-[A-Za-z0-9_\-]+/g,'[key]').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/https?:\/\/[^\s"')]+/g,u=>u.split('?')[0].replace(/\/[^/]{24,}/g,'/[id]')).slice(0,600);}
+function scrub(text,limit=600){return String(text||'').replace(/sk-ant-[A-Za-z0-9_\-]+/g,'[key]').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/https?:\/\/[^\s"')]+/g,u=>u.split('?')[0].replace(/\/[^/]{24,}/g,'/[id]')).slice(0,limit);}
 function diag(where,error,extra){
   try{const list=JSON.parse(localStorage.getItem(DIAG_KEY)||'[]');
-    list.push({at:new Date().toISOString(),where,message:scrub(error?.message||error),code:error?.code||error?.status||'',name:error?.name||'',stack:scrub(String(error?.stack||'').split('\n').slice(0,4).join(' | ')),extra:extra?scrub(JSON.stringify(extra)):undefined,version:document.querySelector('.sidebar-version span')?.textContent||''});
+    list.push({at:new Date().toISOString(),where,message:scrub(error?.message||error),code:error?.code||error?.status||'',name:error?.name||'',stack:scrub(String(error?.stack||'').split('\n').slice(0,4).join(' | ')),extra:extra?scrub(JSON.stringify(extra),2400):undefined,version:document.querySelector('.sidebar-version span')?.textContent||''});
     localStorage.setItem(DIAG_KEY,JSON.stringify(list.slice(-80)));}catch{}
 }
 window.addEventListener('error',event=>diag('window',event.error||event.message));

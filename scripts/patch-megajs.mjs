@@ -39,6 +39,12 @@ replaceOnce(
   '            };\n            reader.read().then(read);\n          } else {\n            throw Error("Single connection streaming not supported by fetch");',
   '            };\n            return reader.read().then(read);\n          } else {\n            throw Error("Single connection streaming not supported by fetch");'
 );
+// Upstream bug: a combined piece shorter than one AES block was stored with the
+// previous remainder twice, shifting every following byte of the download.
+replaceOnce(
+  '      if (!end) {\n        last = last ? import_buffer.Buffer.concat([last, chunk]) : chunk;',
+  '      if (!end) {\n        last = chunk;'
+);
 const banner = '// CloudPanels: reviewed lifecycle-only patch of MEGAJS 1.3.10 (MIT).\n';
 await writeFile(outputPath, banner + patched);
 console.log(JSON.stringify({ sdk: 'megajs', version: metadata.version, lifecyclePatch: true,
