@@ -16,6 +16,8 @@ for (const file of ['index.html', 'styles.css', 'apple-touch-icon.png', 'brand-e
 await cp('src/samples', path.join(dist, 'samples'), {recursive: true});
 await cp('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs', path.join(dist, 'vendor/pdf.worker.mjs'));
 await mkdir(path.join(dist, 'vendor/libarchive'), {recursive: true});
+await mkdir(path.join(dist, 'vendor/unrar'), {recursive: true});
+for (const file of ['worker.js', 'libunrar.js', 'libunrar.js.mem', 'license.txt']) await cp(path.join('vendor/unrar', file), path.join(dist, 'vendor/unrar', file));
 for (const file of ['worker-bundle.js', 'libarchive.wasm']) await cp(path.join('node_modules/libarchive.js/dist', file), path.join(dist, 'vendor/libarchive', file));
 for (const folder of ['cmaps', 'standard_fonts', 'wasm', 'iccs']) await cp(path.join('node_modules/pdfjs-dist', folder), path.join(dist, 'vendor', folder), {recursive: true});
 const meta = await readFile('src/index.html', 'utf8');

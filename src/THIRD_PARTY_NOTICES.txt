@@ -252,3 +252,7 @@ https://kotlinlang.org/
 libarchive.js 2.0.2 — MIT License — https://github.com/nika-begiashvili/libarchivejs
 Includes libarchive (BSD 2-Clause) compiled to WebAssembly. RAR decompression code in
 libarchive is derived from unrar and used only for extraction.
+
+libunrar-js (https://github.com/wcchoi/libunrar-js) — MIT License; Emscripten build of
+RARLab's UnRAR source code, used under the UnRAR license (extraction only). See
+vendor/unrar/license.txt.
