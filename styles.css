@@ -585,3 +585,10 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
   .sidebar .brand > .brand-emblem { width: 44px; height: 44px; }
   .sidebar .brand small { font-size: 6.4px; letter-spacing: 1px; }
 }
+
+/* The page uses the full width and height, including the camera cut-out area
+   on phones held sideways. Only the top status bar (iPad) is kept clear. */
+.reader-dialog .reader-stage.reader-stage, .reader-dialog.reader-guided .reader-stage, .reader-dialog.reader-immersive .reader-stage, .reader-dialog.reader-overlay-controls .reader-stage {
+  padding-left: 0; padding-right: 0; padding-bottom: 0;
+}
+.reader-dialog.reader-guided .reader-stage { padding-top: 0; }
