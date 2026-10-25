@@ -1088,6 +1088,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (candidate?.url && candidate.url !== currentURL) { URL.revokeObjectURL(candidate.url); pendingURLs.delete(candidate.url); }
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
       pageTransition.cancel(); turning = false; loading = false; activity(false); updateControls();
+      try { window.dispatchEvent(new CustomEvent('cloudpanels-error', { detail: { where: 'page', error, extra: { page: index + 1, format: comic?.format, size: comic?.size, ...(error?.details || {}) } } })); } catch {}
       statusMessage(error?.message || text().pageFailed, true, () => showPage(index, targetPanel, { prompt, targetOverview }));
     } finally {
       if (previousURL && previousURL !== currentURL) URL.revokeObjectURL(previousURL);

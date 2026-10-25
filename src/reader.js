@@ -370,17 +370,39 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
       const combined = joinedSignals(signal, closed.signal, requestSignal);
       try {
         const entry = pages[index];
+        const expected = Number.isSafeInteger(entry.size) && entry.size > 0 ? entry.size : null;
         let bytes;
-        if (entry.stored) bytes = await read(entry.dataStart, entry.end, combined.signal);
-        else {
+        if (entry.stored) {
+          // A stored page is exactly `size` bytes starting at its data offset.
+          const length = expected ?? (entry.end - entry.dataStart);
+          if (entry.dataStart + length > source.size) throw problem('This page lies outside the comic file.');
+          bytes = await read(entry.dataStart, entry.dataStart + length, combined.signal);
+        } else {
           const head = await read(0, listing.preamble, combined.signal), body = await read(entry.start, entry.end, combined.signal);
           const synthetic = new Uint8Array(head.length + body.length); synthetic.set(head); synthetic.set(body, head.length);
-          const Archive = await loadArchive(); let archive;
-          try { archive = await Archive.open(new File([synthetic], 'page')); const file = await archive.extractSingleFile(entry.name); bytes = new Uint8Array(await file.arrayBuffer()); }
-          catch (error) { if (combined.signal.aborted) throw error; throw problem('This compressed page is damaged or unsupported.'); }
-          finally { try { archive?.close(); } catch {} }
+          const Archive = await loadArchive();
+          const decode = async whole => {
+            let archive;
+            try {
+              archive = await Archive.open(new File([synthetic], 'page'));
+              if (!whole) return new Uint8Array(await (await archive.extractSingleFile(entry.name)).arrayBuffer());
+              const found = []; (function walk(node) { for (const value of Object.values(node || {})) value instanceof Blob ? found.push(value) : walk(value); })(await archive.extractFiles());
+              return found[0] ? new Uint8Array(await found[0].arrayBuffer()) : null;
+            } finally { try { archive?.close(); } catch {} }
+          };
+          try { bytes = await decode(false); } catch (error) { if (combined.signal.aborted) throw error; }
+          // Some decoders return a short result; try the other extraction path.
+          if (!bytes || (expected && bytes.length !== expected)) { try { const again = await decode(true); if (again && (!expected || again.length === expected)) bytes = again; } catch (error) { if (combined.signal.aborted) throw error; } }
+          if (!bytes) throw problem('This compressed page is damaged or unsupported.');
         }
         aborted(combined.signal);
+        if (expected && bytes.length !== expected) {
+          // Never show a cut-off page: forget the saved page list and report it.
+          try { const all = JSON.parse(localStorage.getItem(LISTING_CACHE) || '{}'); delete all[key]; localStorage.setItem(LISTING_CACHE, JSON.stringify(all)); } catch {}
+          const error = problem(`Page ${index + 1} arrived incomplete (${bytes.length} of ${expected} bytes${entry.stored ? '' : ', compressed'}). Please reopen the comic.`);
+          error.details = { index, name: entry.name, stored: entry.stored, start: entry.start, dataStart: entry.dataStart, end: entry.end, expected, received: bytes.length, kind, solid: listing.solid };
+          throw error;
+        }
         const blob = new Blob([bytes], { type: sniffImage(bytes) });
         cache.set(index, blob); while (cache.size > 3) cache.delete(cache.keys().next().value);
         return blob;

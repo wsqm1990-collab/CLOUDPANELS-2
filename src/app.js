@@ -51,6 +51,7 @@ function diag(where,error,extra){
 }
 window.addEventListener('error',event=>diag('window',event.error||event.message));
 window.addEventListener('unhandledrejection',event=>diag('promise',event.reason));
+window.addEventListener('cloudpanels-error',event=>diag(event.detail?.where||'reader',event.detail?.error,event.detail?.extra));
 function diagnosticsReport(){try{const list=JSON.parse(localStorage.getItem(DIAG_KEY)||'[]');return list.length?JSON.stringify({app:'CloudPanels',ua:navigator.userAgent,entries:list},null,1):'';}catch{return '';}}
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
