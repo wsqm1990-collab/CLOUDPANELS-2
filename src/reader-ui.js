@@ -459,7 +459,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (result?.catch) void result.catch(() => {});
     } catch { /* The user agent retains control of fullscreen. */ }
   }
+  const installedApp = () => window.navigator.standalone === true || Boolean(window.matchMedia?.('(display-mode: standalone)').matches);
   function fullscreenFallback() {
+    // The installed app already hides Safari; stay quiet if the system keeps the clock.
+    if (installedApp()) return;
     showHint(language() === 'pt-BR' ? 'O navegador não permitiu ocultar suas barras. Abra no Chrome/Safari ou use o atalho na tela inicial.' : language() === 'es' ? 'El navegador no permitió ocultar sus barras. Abre en Chrome/Safari o desde la pantalla de inicio.' : 'The browser did not allow its bars to hide. Open in Chrome/Safari or use a home-screen shortcut.', 6500);
   }
   function finishFullscreenRequest(state, failed = false) {
@@ -474,8 +477,6 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   // Called synchronously from a tap handler. Fill requests entry only; it never
   // toggles an already active fullscreen session off or takes ownership of it.
   function ensureFullscreen() {
-    // The installed Home Screen app already runs without Safari's bars.
-    if (window.navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches || window.matchMedia?.('(display-mode: fullscreen)').matches) return;
     if (fullscreenElement()) return;
     if (fullscreenRequest) {
       // A native promise can still acquire fullscreen after a slow permission
@@ -1182,6 +1183,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   });
   stage.addEventListener('pointerup', event => {
     activePointers.delete(event.pointerId);
+    // In the installed iPad app, the first touch while reading also asks the
+    // system to hide the clock and battery bar (a touch is required for this).
+    if (installedApp() && comic && !fullscreenElement() && !fullscreenRequest && fullscreenSupported()) ensureFullscreen();
     if (!gesture || gesture.id !== event.pointerId) return;
     const ended = gesture, dx = event.clientX - ended.x, dy = event.clientY - ended.y, duration = performance.now() - ended.started;
     if (ended.vertical) {
