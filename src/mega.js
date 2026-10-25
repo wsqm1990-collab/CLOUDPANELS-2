@@ -348,6 +348,35 @@ export class MegaConnection {
     return true;
   }
 
+  /**
+   * Comics in MEGA's Rubbish Bin that have a converted .cbz copy elsewhere:
+   * these were moved there by CloudPanels' converter and can be put back.
+   */
+  trashedConversions() {
+    if (this.mode !== 'account') return [];
+    const files = Object.values(this._storage?.files || {}), trash = this._storage?.trash;
+    if (!trash) return [];
+    const inTrash = node => { for (let p = node?.parent, i = 0; p && i < 64; p = p.parent, i++) if (p === trash) return true; return false; };
+    const result = [];
+    for (const node of files) {
+      if (!node || node.directory || !inTrash(node) || !/\.(?:cbr|rar|cb7|7z|cbt|tar)$/i.test(node.name || '')) continue;
+      const base = node.name.replace(/\.[^.]+$/, '');
+      const copy = files.find(other => other && !other.directory && !inTrash(other) && other.parent?.directory && (other.name === `${base}.cbz` || new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(\\d+\\)\\.cbz$`).test(other.name || '')));
+      if (!copy) continue;
+      result.push({ id: this._register(node, null), name: node.name, size: node.size, folder: copy.parent.name, cbzId: this._register(copy, null), cbzName: copy.name });
+    }
+    return result;
+  }
+  /** Put a trashed original back next to its .cbz copy, then move the copy to the Rubbish Bin. */
+  async restoreConversion(item) {
+    const original = this._findNode(item?.id), copy = this._findNode(item?.cbzId);
+    if (!original || !copy?.parent?.directory) throw new MegaConnectionError('This file is no longer available.', 'NOT_FOUND');
+    const target = copy.parent;
+    await new Promise((resolve, reject) => { try { original.moveTo(target, error => error ? reject(error) : resolve()); } catch (error) { reject(error); } });
+    await new Promise((resolve, reject) => { try { copy.delete(false, error => error ? reject(error) : resolve()); } catch (error) { reject(error); } });
+    return true;
+  }
+
   async suspend() { return this.disconnect({ revoke: false }); }
 
   roots() { return this._rootNodes.map(node => this._describe(node, null)); }
