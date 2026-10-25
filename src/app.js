@@ -6,6 +6,7 @@ import {createReaderController} from './reader-ui.js';
 import {CoverService} from './covers.js';
 import {OfflineLibrary} from './offline.js';
 import {streamToCbz,verifyCbz} from './convert.js';
+import {clearArchiveListings} from './reader.js';
 import {assistantStore,libraryContext,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder} from './app-helpers.js';
 
@@ -816,7 +817,7 @@ function renderSettings() {
     settingRow(t('navigationButtons'),t('navigationButtonsDetail'),selectControl(t('navigationButtons'),[0,3,5,8].map(seconds=>[String(seconds),t(seconds?'navigation'+seconds:'navigationOff')]),String(store.state.settings.readerNavigationSeconds??3),value=>{store.setSettings({readerNavigationSeconds:Number(value)});changed();},'input')),
     settingRow(t('swipeResistance'),t('swipeResistanceDetail'),swipeResistanceControl()),
     settingRow(t('buffer'),t('bufferDetail'),selectControl(t('buffer'),[16,32,64,128,256].map(n=>[String(n),n+' MB']),String(store.state.settings.cacheMiB),value=>{store.setSettings({cacheMiB:Number(value)});changed();},'input')),
-    settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();toast(t('bufferCleared'));render();},'button secondary compact')),
+    settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();clearArchiveListings();toast(t('bufferCleared'));render();},'button secondary compact')),
     settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();toast(t('coversCleared'));render();},'button secondary compact')),
     element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
     settingRow(t('diagTitle'),diagnosticsReport()?t('diagDetail'):t('diagEmpty'),action(t('diagCopy'),async()=>{const report=diagnosticsReport()||t('diagEmpty');try{await navigator.clipboard.writeText(report);toast(t('diagCopied'));}catch{const {body}=openModal(t('diagTitle'));const area=element('textarea',{class:'input',rows:12,readonly:true});area.value=report;body.append(area);area.select();}},'button secondary compact')),

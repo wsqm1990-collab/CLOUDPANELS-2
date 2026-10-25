@@ -1439,7 +1439,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const budget = clamp(Number(store.state.settings.cacheMiB) || 64, 16, 256) * MiB;
       rangeBuffer = new ReadingRangeBuffer(source, budget, currentSession.signal);
       try {
-        const opened = await openComic({ name: source.name || value.name, size: source.size, blob: source.blob,
+        const opened = await openComic({ name: source.name || value.name, size: source.size, blob: source.blob, readFresh: source.read?.bind(source),
           read: rangeBuffer.read.bind(rangeBuffer) }, { signal: currentSession.signal,
           onProgress: info => { if (mySerial !== serial || !loading) return;
             if (info.phase === 'download' && info.total > 8 * MiB) statusMessage(text().downloading(Math.floor(info.loaded / info.total * 100)));

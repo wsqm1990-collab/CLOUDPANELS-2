@@ -134,3 +134,16 @@ test('a compressed page of a non-solid RAR is decoded from its own bytes when st
   const readme = list.entries.find(e => e.name === 'README.md');
   assert.equal(typeof readme.dataStart, 'number'); assert.equal(typeof readme.stored, 'boolean');
 });
+
+test('RAR entry checksums are read from the headers and match the real data', async () => {
+  const { listArchive, crc32 } = await import('../src/reader.js');
+  for (const name of ['test-v4.rar', 'test-v5.rar']) {
+    const bytes = new Uint8Array(readFileSync(new URL('./fixtures/' + name, import.meta.url)));
+    const list = await listArchive(async (a, b) => bytes.slice(a, b), bytes.length, 'rar');
+    const entry = list.entries.find(e => e.name === 'README.md');
+    const archive = await Archive.open(new Blob([bytes]));
+    const file = await archive.extractSingleFile('README.md'); await archive.close();
+    assert.equal(entry.crc, crc32(new Uint8Array(await file.arrayBuffer())), name);
+    assert.equal(entry.size, file.size, name);
+  }
+});

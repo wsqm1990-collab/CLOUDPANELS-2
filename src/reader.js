@@ -326,7 +326,8 @@ async function libarchiveExtract(blob, signal, loadArchive = browserArchive) {
   } finally { signal?.removeEventListener('abort', stop); stop(); }
 }
 
-const LISTING_CACHE = 'cloudpanels-archive-listings-v2';
+const LISTING_CACHE = 'cloudpanels-archive-listings-v3';
+export function clearArchiveListings() { try { for (const key of Object.keys(localStorage)) if (key.startsWith('cloudpanels-archive-listings')) localStorage.removeItem(key); } catch {} }
 function cachedListing(key) { try { return JSON.parse(localStorage.getItem(LISTING_CACHE) || '{}')[key] || null; } catch { return null; } }
 function rememberListing(key, value) {
   try {
@@ -350,7 +351,7 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
     try { onProgress?.({ phase: 'index' }); } catch {}
     const result = await listArchive((start, end, s2) => read(start, end, s2 || signal), source.size, kind, { signal });
     if (result.encrypted || !result.entries.length) return null;
-    listing = { solid: result.solid, preamble: result.preamble, entries: result.entries.filter(e => !e.directory && isPageName(e.name)).map(({ name, start, end, dataStart, stored, encrypted, size }) => ({ name, start, end, dataStart, stored, encrypted, size })) };
+    listing = { solid: result.solid, preamble: result.preamble, entries: result.entries.filter(e => !e.directory && isPageName(e.name)).map(({ name, start, end, dataStart, stored, encrypted, size, crc }) => ({ name, start, end, dataStart, stored, encrypted, size, crc: Number.isInteger(crc) ? crc : null })) };
     if (listing.entries.length) rememberListing(key, listing);
   }
   const pages = listing.entries.filter(e => !e.encrypted).sort((a, b) => natural.compare(a.name, b.name));
@@ -377,6 +378,15 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
           const length = expected ?? (entry.end - entry.dataStart);
           if (entry.dataStart + length > source.size) throw problem('This page lies outside the comic file.');
           bytes = await read(entry.dataStart, entry.dataStart + length, combined.signal);
+          if (Number.isInteger(entry.crc) && crc32(bytes) !== entry.crc) {
+            // The cloud returned damaged data: read it once more from scratch.
+            bytes = await (source.readFresh || source.read)(entry.dataStart, entry.dataStart + length, { signal: combined.signal });
+            if (crc32(bytes) !== entry.crc) {
+              const error = problem(`Page ${index + 1} arrived damaged from the cloud (integrity check failed). Please try again.`);
+              error.details = { index, name: entry.name, stored: true, dataStart: entry.dataStart, size: length, kind, check: 'crc' };
+              throw error;
+            }
+          }
         } else {
           const head = await read(0, listing.preamble, combined.signal), body = await read(entry.start, entry.end, combined.signal);
           const synthetic = new Uint8Array(head.length + body.length); synthetic.set(head); synthetic.set(body, head.length);
@@ -394,6 +404,11 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
           // Some decoders return a short result; try the other extraction path.
           if (!bytes || (expected && bytes.length !== expected)) { try { const again = await decode(true); if (again && (!expected || again.length === expected)) bytes = again; } catch (error) { if (combined.signal.aborted) throw error; } }
           if (!bytes) throw problem('This compressed page is damaged or unsupported.');
+          if (Number.isInteger(entry.crc) && crc32(bytes) !== entry.crc) {
+            const error = problem(`Page ${index + 1} could not be unpacked correctly (integrity check failed).`);
+            error.details = { index, name: entry.name, stored: false, start: entry.start, end: entry.end, size: expected, kind, solid: listing.solid, check: 'crc' };
+            throw error;
+          }
         }
         aborted(combined.signal);
         if (expected && bytes.length !== expected) {
@@ -630,7 +645,7 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
       if (nameAt + nameSize > n) return null;
       let raw = bytes.subarray(nameAt, nameAt + nameSize); const z = raw.indexOf(0); if (z >= 0) raw = raw.subarray(0, z);
       const name = (flags & 0x200 ? new TextDecoder('latin1') : decoder).decode(raw).replaceAll('\\', '/');
-      return { next: abs + size + data, entry: { name, start: abs, end: abs + size + data, dataStart: abs + size, size: unpacked, stored: bytes[pos + 25] === 0x30, encrypted: Boolean(flags & 0x04), directory: (flags & 0xe0) === 0xe0, solidFile: Boolean(flags & 0x10) } };
+      return { next: abs + size + data, entry: { name, start: abs, end: abs + size + data, dataStart: abs + size, size: unpacked, crc: view.getUint32(pos + 16, true), stored: bytes[pos + 25] === 0x30, encrypted: Boolean(flags & 0x04), directory: (flags & 0xe0) === 0xe0, solidFile: Boolean(flags & 0x10) } };
     }
     if (flags & 0x8000) { if (pos + 11 > n) return null; return { next: abs + size + view.getUint32(pos + 7, true) }; }
     return { next: abs + size };
@@ -650,11 +665,12 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
     if (type === 2) {
       const fileFlags = vint(), unpacked = vint(); vint();
       if (fileFlags & 2) p += 4;
-      if (fileFlags & 4) p += 4;
+      let crc = null;
+      if (fileFlags & 4) { if (p + 4 > n) return null; crc = view.getUint32(p, true); p += 4; }
       const compression = vint(); vint();
       const nameLength = vint();
       if (p + nameLength > n) return null;
-      return { next, entry: { name: decoder.decode(bytes.subarray(p, p + nameLength)), start: abs, end: next, dataStart: base + headerStart + headerSize, size: unpacked, stored: ((compression >> 7) & 7) === 0, directory: Boolean(fileFlags & 1), solidFile: Boolean(compression & 0x40) } };
+      return { next, entry: { name: decoder.decode(bytes.subarray(p, p + nameLength)), start: abs, end: next, dataStart: base + headerStart + headerSize, size: unpacked, crc, stored: ((compression >> 7) & 7) === 0, directory: Boolean(fileFlags & 1), solidFile: Boolean(compression & 0x40) } };
     }
     return { next };
   } catch (error) { if (error instanceof RangeError) return null; return { stop: true }; }
