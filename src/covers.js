@@ -110,8 +110,11 @@ class IndexedCoverDisk {
 /** Lazy, deduplicated cover loading. The UI owns object URLs and their revocation. */
 export class CoverService {
   constructor({ getSource, maxConcurrent = 1, maxMemoryBytes = 12 * MiB, maxDiskBytes = 24 * MiB,
-    openComic: open = openComic, thumbnail = thumbnailCover, disk } = {}) {
+    openComic: open = openComic, thumbnail = thumbnailCover, disk, allowFull } = {}) {
     this.getSource = getSource; this.openComic = open; this.thumbnail = thumbnail;
+    // Formats read as a whole (CBR, PDF…) may still get covers when the file is
+    // already on the device, because no download is needed.
+    this.allowFull = typeof allowFull === 'function' ? allowFull : () => false;
     this.maxConcurrent = Math.max(1, Math.min(2, Math.floor(maxConcurrent) || 1));
     this.maxMemoryBytes = budget(maxMemoryBytes, 12 * MiB, 24 * MiB);
     this.maxDiskBytes = budget(maxDiskBytes, 24 * MiB, 48 * MiB);
@@ -154,7 +157,7 @@ export class CoverService {
     const format = String(comic.format || comic.name.split('.').pop()).toLowerCase();
     // A PDF cover must be seeded from a page already opened by the reader. It
     // must never trigger a whole-PDF download merely to decorate the library.
-    if (!ALLOWED.has(format) || typeof this.getSource !== 'function') return null;
+    if ((!ALLOWED.has(format) && !this.allowFull(comic)) || typeof this.getSource !== 'function') return null;
     let job = this.jobs.get(key);
     if (!job || job.controller.signal.aborted) {
       job = { key, comic, controller: new AbortController(), consumers: new Set(), priority, epoch: this.epoch, started: false };

@@ -217,7 +217,24 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     for (const [name, button] of Object.entries(featureButtons)) button.textContent = featureText()[name];
     applyAppearance(); syncQuickNavigation();
   }
+  const ERROR_PT = {
+    'The cloud returned an incomplete page. Please try again.': 'A nuvem enviou uma página incompleta. Tente novamente.',
+    'This comic archive could not be opened. It may be damaged or use an unsupported format.': 'Não foi possível abrir este quadrinho. O arquivo pode estar danificado ou usar um formato não suportado.',
+    'Comics in this format larger than 400 MB cannot be opened on this device.': 'Quadrinhos neste formato com mais de 400 MB não abrem neste aparelho.',
+    'No JPEG, PNG or WebP comic pages were found in this archive.': 'Nenhuma página JPEG, PNG ou WebP foi encontrada neste arquivo.',
+    'Password-protected comics are not supported.': 'Quadrinhos protegidos por senha não são suportados.',
+    'Password-protected ZIP comics are not supported.': 'Quadrinhos protegidos por senha não são suportados.',
+    'This file is not a recognizable comic archive.': 'Este arquivo não parece ser um quadrinho válido.',
+    'This page image exceeds the 24-megapixel browser reading limit.': 'Esta página é grande demais para abrir neste aparelho (limite de 24 megapixels).',
+    'This page exceeds the 48 MB reading limit.': 'Esta página passa do limite de 48 MB.',
+    'This comic file is empty.': 'Este arquivo está vazio.',
+    'This PDF could not be opened. It may be damaged or unsupported.': 'Não foi possível abrir este PDF. Ele pode estar danificado.',
+    'PDFs larger than 128 MB are not supported on this device. CBZ comics can be read page by page from the cloud.': 'PDFs com mais de 128 MB não abrem neste aparelho. Quadrinhos CBZ podem ser lidos página por página da nuvem.',
+    'Animated image pages are not supported.': 'Páginas animadas não são suportadas.',
+  };
+  const localError = message => language() === 'pt-BR' && ERROR_PT[message] ? ERROR_PT[message] : message;
   function statusMessage(message = '', isError = false, retry) {
+    if (isError) message = localError(message);
     lastStatus = message; errorStatus = isError; retryPage = retry;
     status.replaceChildren(document.createTextNode([message, storageWarning].filter(Boolean).join('\n')));
     status.style.color = isError || storageWarning ? 'var(--red, #ff919d)' : '';

@@ -12,7 +12,7 @@ await mkdir(dist, {recursive: true});
 for (const name of await readdir(dist)) await rm(path.join(dist, name), {recursive: true, force: true});
 await mkdir(path.join(dist, 'vendor'), {recursive: true});
 await build({entryPoints: { app: 'src/app.js', 'panel-worker': 'src/panel-worker.js' }, bundle: true, splitting: true, format: 'esm', platform: 'browser', target: ['safari15.4'], outdir: dist, entryNames: '[name]', chunkNames: 'vendor/[name]-[hash]', minify: true, legalComments: 'eof', logLevel: 'warning', define: {'process.env.NODE_ENV': '"production"'}});
-for (const file of ['index.html', 'styles.css', 'brand-emblem.png', 'favicon-32.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'manifest.webmanifest', 'THIRD_PARTY_NOTICES.txt']) await cp(path.join('src', file), path.join(dist, file));
+for (const file of ['index.html', 'styles.css', 'apple-touch-icon.png', 'brand-emblem.png', 'favicon-32.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'manifest.webmanifest', 'THIRD_PARTY_NOTICES.txt']) await cp(path.join('src', file), path.join(dist, file));
 await cp('src/samples', path.join(dist, 'samples'), {recursive: true});
 await cp('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs', path.join(dist, 'vendor/pdf.worker.mjs'));
 await mkdir(path.join(dist, 'vendor/libarchive'), {recursive: true});
