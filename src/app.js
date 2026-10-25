@@ -921,7 +921,7 @@ async function syncWithMega({pull=true,announce=false}={}){
   finally{sync.busy=false;refreshSyncStatus();}
 }
 function scheduleSync(delay=20000){clearTimeout(sync.timer);sync.timer=setTimeout(()=>{if(mega.canSync&&syncPayload()!==sync.lastText)void syncWithMega({pull:false});},delay);}
-setInterval(()=>{if(document.visibilityState==='visible'&&mega.canSync&&!sync.busy&&syncPayload()!==sync.lastText)void syncWithMega({pull:false});},45000);
+setInterval(()=>{if(document.visibilityState==='visible'&&mega.canSync&&!sync.busy&&syncPayload()!==sync.lastText)void syncWithMega({pull:false});},120000);
 document.addEventListener('visibilitychange',()=>{
   if(!mega.canSync)return;
   if(document.visibilityState==='hidden'){if(syncPayload()!==sync.lastText)void syncWithMega({pull:false});}

@@ -425,3 +425,24 @@ test('reading history sync writes one current file in a CloudPanels folder and r
   assert.equal(await connection.readSyncFile(), '{"v":2}');
   connection.mode = 'link'; assert.equal(connection.canSync, false); assert.equal(await connection.writeSyncFile('x'), false);
 });
+
+test('duplicate CloudPanels sync folders are merged into one, keeping the newest data', async () => {
+  const { MegaConnection } = await import('../src/mega.js');
+  const root = { name: 'Cloud Drive', directory: true, children: [] };
+  const file = (text, timestamp, parent) => { const f = { name: 'cloudpanels-biblioteca.json', size: text.length, timestamp, parent, async downloadBuffer() { return new TextEncoder().encode(text); }, delete(_, cb) { cb(); } }; return f; };
+  const folder = (name) => { const f = { name, directory: true, children: [], parent: root, delete(_, cb) { cb(); } }; f.upload = (opt, data) => { const n = file(new TextDecoder().decode(data), 999, f); f.children.push(n); return { complete: Promise.resolve(n), on() {} }; }; root.children.push(f); return f; };
+  const a = folder('CloudPanels'), b = folder('CloudPanels'), c = folder('CloudPanels'), comics = folder('CloudPanels');
+  a.children.push(file('{"old":1}', 10, a)); b.children.push(file('{"newest":1}', 30, b)); c.children.push(file('{"mid":1}', 20, c));
+  comics.children.push({ name: 'Saga 01.cbr', size: 5 }); // a user folder with comics is never touched
+  const connection = new MegaConnection(); connection.mode = 'account'; connection._storage = { root };
+  assert.equal(await connection.readSyncFile(), '{"newest":1}');
+  await connection.writeSyncFile('{"v":2}');
+  const remaining = root.children.filter(f => f.name === 'CloudPanels');
+  assert.equal(remaining.length, 2, 'one sync folder plus the user comics folder');
+  assert.ok(remaining.includes(comics));
+  const sync = remaining.find(f => f !== comics);
+  assert.deepEqual(sync.children.map(f => f.name), ['cloudpanels-biblioteca.json']);
+  assert.equal(await connection.readSyncFile(), '{"v":2}');
+  await connection.writeSyncFile('{"v":3}');
+  assert.equal(root.children.filter(f => f.name === 'CloudPanels').length, 2, 'no new folder is created');
+});

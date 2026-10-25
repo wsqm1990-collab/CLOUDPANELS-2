@@ -218,10 +218,24 @@ export class MegaConnection {
   // A small CloudPanels file in the user's own MEGA Cloud Drive carries the
   // library, progress and preferences between devices. Account logins only.
   get canSync() { return this.mode === 'account' && Boolean(this._storage?.root?.directory); }
-  _syncFolder() { return (this._storage?.root?.children || []).find(node => node?.directory && node.name === SYNC_FOLDER) || null; }
-  _syncFiles(folder = this._syncFolder()) {
-    return (folder?.children || []).filter(node => node && !node.directory && node.name === SYNC_FILE)
+  // Every Cloud Drive folder that holds (or is) the CloudPanels sync folder.
+  _syncFolders() {
+    const root = this._storage?.root, found = new Set();
+    for (const node of root?.children || []) if (node?.directory && node.name === SYNC_FOLDER) found.add(node);
+    const remembered = (this._syncFolderNode?.directory && this._syncFolderNode) || (this._syncFolderId && this._storage?.files?.[this._syncFolderId]);
+    if (remembered?.directory && !remembered.deleted) found.add(remembered);
+    for (const node of root?.children || []) if (node?.directory && (node.children || []).some(child => !child.directory && child.name === SYNC_FILE)) found.add(node);
+    return [...found];
+  }
+  _syncFiles(folders = this._syncFolders()) {
+    return folders.flatMap(folder => (folder?.children || []).filter(node => node && !node.directory && node.name === SYNC_FILE))
       .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+  }
+  _syncFolder() {
+    const folders = this._syncFolders();
+    if (!folders.length) return null;
+    const newest = this._syncFiles(folders)[0];
+    return (newest && folders.find(folder => folder.children?.includes(newest))) || folders[0];
   }
   async refreshTree({ signal } = {}) {
     if (!this.canSync || typeof this._storage.reload !== 'function') return;
@@ -244,15 +258,25 @@ export class MegaConnection {
     const data = new TextEncoder().encode(String(text));
     if (data.length > SYNC_LIMIT) throw new MegaConnectionError('Your reading history is too large to sync.', 'SYNC_SIZE');
     let folder = this._syncFolder();
-    if (!folder) folder = await waitAbortable(this._storage.root.mkdir(SYNC_FOLDER), signal);
-    const previous = this._syncFiles(folder);
+    if (!folder) {
+      folder = await waitAbortable(this._storage.root.mkdir(SYNC_FOLDER), signal);
+      if (folder && !folder.name) folder.name = SYNC_FOLDER;
+    }
+    this._syncFolderId = folder?.nodeId || this._syncFolderId; this._syncFolderNode = folder;
+    const previous = this._syncFiles(this._syncFolders());
     const upload = folder.upload({ name: SYNC_FILE, size: data.length }, data);
     upload.on?.('error', () => {});
     const created = await waitAbortable(upload.complete, signal);
-    for (const old of previous) {
-      if (old === created) continue;
-      try { await new Promise(resolve => old.delete(true, () => resolve())); } catch {}
-      if (Array.isArray(folder.children)) { const index = folder.children.indexOf(old); if (index >= 0) folder.children.splice(index, 1); }
+    const remove = node => new Promise(resolve => { try { node.deleted = true; node.delete(true, () => resolve()); } catch { resolve(); } });
+    const detach = node => { const parent = node.parent || this._syncFolders().find(f => f.children?.includes(node)); if (Array.isArray(parent?.children)) { const i = parent.children.indexOf(node); if (i >= 0) parent.children.splice(i, 1); } };
+    for (const old of previous) { if (old === created) continue; await remove(old); detach(old); }
+    // Tidy up extra CloudPanels folders left by earlier versions: they only
+    // ever contained copies of this sync file, now replaced by the current one.
+    for (const extra of this._syncFolders()) {
+      if (extra === folder) continue;
+      const others = (extra.children || []).filter(child => child.directory || child.name !== SYNC_FILE);
+      if (others.length) continue;
+      await remove(extra); detach(extra);
     }
     return true;
   }
