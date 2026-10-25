@@ -13,7 +13,7 @@ const STRINGS = {
   en: {
     library: 'Library', now: 'NOW READING', close: 'Close reader', markRead: 'Mark as read', marked: 'Read',
     previous: 'Previous page or panel', next: 'Next page or panel', previousShort: 'Previous', nextShort: 'Next', swipeResistance: 'Swipe resistance', swipeLevels: ['Very light', 'Light', 'Balanced', 'Firm', 'Very firm'], navigation: 'Reading navigation', navigationButtons: 'Navigation buttons', navigationOff: 'Off', navigationDelay: n => `Hide after ${n} seconds`, page: 'Page', pageOf: (p, n) => `Page ${p} of ${n}`,
-    loading: 'Opening comic…', loadingPage: p => `Loading page ${p}…`, loadingPdf: 'Loading PDF into temporary memory (maximum 128 MB)…', downloading: p => `Downloading comic… ${p}%`, extracting: 'Unpacking pages…',
+    loading: 'Opening comic…', loadingPage: p => `Loading page ${p}…`, loadingPdf: 'Loading PDF into temporary memory (maximum 128 MB)…', downloading: p => `Downloading comic… ${p}%`, extracting: 'Unpacking pages…', indexing: 'Large comic: finding its pages (only the first time)…',
     readHint: 'Your place is saved on this device.', panelStatus: (p, n) => `Panel ${p} of ${n}`, retry: 'Try again',
     failed: 'This comic could not be opened.', pageFailed: 'This page could not be displayed. Your previous position is unchanged.',
     reachedEnd: 'You have reached the last page. Mark this comic as read when you are finished.', finished: 'Marked as read. Your place is saved.',
@@ -29,7 +29,7 @@ const STRINGS = {
   'pt-BR': {
     library: 'Biblioteca', now: 'LENDO AGORA', close: 'Fechar leitor', markRead: 'Marcar como lido', marked: 'Lido',
     previous: 'Página ou quadro anterior', next: 'Próxima página ou quadro', previousShort: 'Anterior', nextShort: 'Próxima', swipeResistance: 'Resistência do deslize', swipeLevels: ['Muito leve', 'Leve', 'Equilibrada', 'Firme', 'Muito firme'], navigation: 'Navegação da leitura', navigationButtons: 'Botões de navegação', navigationOff: 'Desativados', navigationDelay: n => `Ocultar após ${n} segundos`, page: 'Página', pageOf: (p, n) => `Página ${p} de ${n}`,
-    loading: 'Abrindo quadrinho…', loadingPage: p => `Carregando página ${p}…`, loadingPdf: 'Carregando PDF na memória temporária (máximo de 128 MB)…', downloading: p => `Baixando quadrinho… ${p}%`, extracting: 'Preparando as páginas…',
+    loading: 'Abrindo quadrinho…', loadingPage: p => `Carregando página ${p}…`, loadingPdf: 'Carregando PDF na memória temporária (máximo de 128 MB)…', downloading: p => `Baixando quadrinho… ${p}%`, extracting: 'Preparando as páginas…', indexing: 'Quadrinho grande: localizando as páginas (só na primeira vez)…',
     readHint: 'Sua posição fica salva neste aparelho.', panelStatus: (p, n) => `Quadro ${p} de ${n}`, retry: 'Tentar novamente',
     failed: 'Não foi possível abrir este quadrinho.', pageFailed: 'Não foi possível exibir esta página. Sua posição anterior foi mantida.',
     reachedEnd: 'Você chegou à última página. Marque como lido quando terminar.', finished: 'Marcado como lido. Sua posição está salva.',
@@ -45,7 +45,7 @@ const STRINGS = {
   es: {
     library: 'Biblioteca', now: 'LEYENDO AHORA', close: 'Cerrar lector', markRead: 'Marcar como leído', marked: 'Leído',
     previous: 'Página o viñeta anterior', next: 'Página o viñeta siguiente', previousShort: 'Anterior', nextShort: 'Siguiente', swipeResistance: 'Resistencia del deslizamiento', swipeLevels: ['Muy ligera', 'Ligera', 'Equilibrada', 'Firme', 'Muy firme'], navigation: 'Navegación de lectura', navigationButtons: 'Botones de navegación', navigationOff: 'Desactivados', navigationDelay: n => `Ocultar tras ${n} segundos`, page: 'Página', pageOf: (p, n) => `Página ${p} de ${n}`,
-    loading: 'Abriendo cómic…', loadingPage: p => `Cargando página ${p}…`, loadingPdf: 'Cargando PDF en la memoria temporal (máximo 128 MB)…', downloading: p => `Descargando cómic… ${p}%`, extracting: 'Preparando las páginas…',
+    loading: 'Abriendo cómic…', loadingPage: p => `Cargando página ${p}…`, loadingPdf: 'Cargando PDF en la memoria temporal (máximo 128 MB)…', downloading: p => `Descargando cómic… ${p}%`, extracting: 'Preparando las páginas…', indexing: 'Cómic grande: buscando sus páginas (solo la primera vez)…',
     readHint: 'Tu posición se guarda en este dispositivo.', panelStatus: (p, n) => `Viñeta ${p} de ${n}`, retry: 'Reintentar',
     failed: 'No se pudo abrir este cómic.', pageFailed: 'No se pudo mostrar esta página. Se conserva tu posición anterior.',
     reachedEnd: 'Has llegado a la última página. Marca el cómic como leído cuando termines.', finished: 'Marcado como leído. Tu posición está guardada.',
@@ -257,7 +257,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const ERROR_PT = {
     'The cloud returned an incomplete page. Please try again.': 'A nuvem enviou uma página incompleta. Tente novamente.',
     'This comic archive could not be opened. It may be damaged or use an unsupported format.': 'Não foi possível abrir este quadrinho. O arquivo pode estar danificado ou usar um formato não suportado.',
-    'Comics in this format larger than 300 MB cannot be opened on this device.': 'Quadrinhos neste formato com mais de 300 MB não abrem neste aparelho.',
+    'This comic is over 300 MB and packed in a way that can only be opened whole, which is too big for this device. Saving it as CBZ (or a normal, non-solid CBR) lets it open page by page.': 'Este quadrinho tem mais de 300 MB e foi compactado de um jeito que só abre inteiro, grande demais para este aparelho. Em CBZ (ou CBR normal, não sólido) ele abre página por página.',
     'No JPEG, PNG or WebP comic pages were found in this archive.': 'Nenhuma página JPEG, PNG ou WebP foi encontrada neste arquivo.',
     'Password-protected comics are not supported.': 'Quadrinhos protegidos por senha não são suportados.',
     'Password-protected ZIP comics are not supported.': 'Quadrinhos protegidos por senha não são suportados.',
@@ -1442,7 +1442,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
           read: rangeBuffer.read.bind(rangeBuffer) }, { signal: currentSession.signal,
           onProgress: info => { if (mySerial !== serial || !loading) return;
             if (info.phase === 'download' && info.total > 8 * MiB) statusMessage(text().downloading(Math.floor(info.loaded / info.total * 100)));
-            else if (info.phase === 'extract') statusMessage(text().extracting); } });
+            else if (info.phase === 'extract') statusMessage(text().extracting);
+            else if (info.phase === 'index') statusMessage(text().indexing); } });
         if (mySerial !== serial || currentSession.signal.aborted) { opened.close(); return; }
         book = opened;
         // Supplement missing fields without overwriting the user's corrections.

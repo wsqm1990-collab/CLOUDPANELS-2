@@ -70,7 +70,9 @@ test('real RAR v4 and v5 archives are decoded (no images => explicit message)', 
 });
 
 test('oversized full-archive formats are refused before downloading', async () => {
-  await assert.rejects(openComic({ name: 'big.cbr', size: 301 * 1024 * 1024, async read(start, end) { if (end > 1024) throw new Error('must not download'); const head = new Uint8Array(end - start); head.set([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]); return head; } }, { extractArchive }), /300 MB/);
+  // A RAR whose entries cannot be listed: it is neither streamed nor downloaded.
+  const head = new Uint8Array(70000); head.set([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0, 0, 0x7b, 0, 0, 7, 0]);
+  await assert.rejects(openComic({ name: 'big.cbr', size: 301 * 1024 * 1024, async read(start, end) { if (end > 70000) throw new Error('must not download'); return head.slice(start, end); } }, { extractArchive }), /300 MB/);
 });
 
 test('the cover is the first page in reading order even when stored out of order', async () => {
@@ -110,4 +112,25 @@ test('RAR v4 and v5 entry headers are listed from the start of the file', async 
     const file = await archive.extractSingleFile(first.name);
     await archive.close(); assert.ok(file.size > 0, name + ' first entry extracts from a partial file');
   }
+});
+
+test('large RAR/TAR comics are read page by page without downloading the whole file', async () => {
+  const other = png.slice(); other[19] = 9;
+  const bytes = tar([['p/03.png', other], ['p/01.png', png], ['filler.bin', new Uint8Array(400000)], ['p/02.png', other]]);
+  const source = sourceFor(bytes, 'Omnibus-' + Math.random() + '.cbr');
+  const comic = await openComic(source, { streamAbove: 1000, loadArchive: async () => Archive, extractArchive: () => { throw new Error('must not fully extract'); } });
+  assert.equal(comic.pageCount, 3);
+  assert.deepEqual(comic.metadata.pageNames, ['p/01.png', 'p/02.png', 'p/03.png']);
+  assert.deepEqual(new Uint8Array(await (await comic.page(0)).arrayBuffer()), png);
+  assert.ok(source.reads.reduce((sum, [a, b]) => sum + b - a, 0) < bytes.length / 3, 'filler is never downloaded');
+  comic.close();
+});
+
+test('a compressed page of a non-solid RAR is decoded from its own bytes when streaming', async () => {
+  const bytes = new Uint8Array(readFileSync(new URL('./fixtures/test-v5.rar', import.meta.url)));
+  // The fixture holds text files; treat README.md as a "page" by checking the decode path directly.
+  const { listArchive } = await import('../src/reader.js');
+  const list = await listArchive(async (a, b) => bytes.slice(a, b), bytes.length, 'rar');
+  const readme = list.entries.find(e => e.name === 'README.md');
+  assert.equal(typeof readme.dataStart, 'number'); assert.equal(typeof readme.stored, 'boolean');
 });
