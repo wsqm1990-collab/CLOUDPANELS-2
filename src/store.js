@@ -205,6 +205,23 @@ export class LibraryStore {
     // Accept a metadata wrapper or direct metadata fields, never rename/move cloud files.
     entry.metadata = metadata(patch?.metadata || patch, entry.metadata); this.save(); return this.state.comics.find(c => c.id === id);
   }
+  /** A converted file replaces the original: progress, panels, bookmarks,
+   * favorites, collections and the user's metadata move to the new entry. */
+  replaceComic(oldId, value) {
+    const previous = this.state.comics.find(c => c.id === oldId);
+    if (!previous) return null;
+    const valid = comic({ ...value, metadata: previous.metadata, addedAt: previous.addedAt }, previous);
+    if (!valid) throw new Error('Invalid comic.');
+    const newId = valid.id, swap = id => id === oldId ? newId : id;
+    this.state.comics = this.state.comics.filter(c => c.id !== oldId && c.id !== newId).concat(valid);
+    if (this.state.progress[oldId]) { this.state.progress[newId] = this.state.progress[oldId]; delete this.state.progress[oldId]; }
+    if (this.state.panels[oldId]) { this.state.panels[newId] = this.state.panels[oldId]; delete this.state.panels[oldId]; }
+    this.state.favorites = [...new Set(this.state.favorites.map(swap))];
+    this.state.readLater = [...new Set(this.state.readLater.map(swap))];
+    this.state.bookmarks = this.state.bookmarks.map(b => b.comicId === oldId ? { ...b, comicId: newId } : b);
+    this.state.collections = this.state.collections.map(c => ({ ...c, comicIds: [...new Set(c.comicIds.map(swap))] }));
+    this.save(); return valid;
+  }
   removeComic(id) {
     this.state.comics = this.state.comics.filter(c => c.id !== id); delete this.state.progress[id]; delete this.state.panels[id];
     this.state.favorites = this.state.favorites.filter(value => value !== id);

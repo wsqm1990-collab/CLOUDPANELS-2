@@ -446,3 +446,22 @@ test('duplicate CloudPanels sync folders are merged into one, keeping the newest
   await connection.writeSyncFile('{"v":3}');
   assert.equal(root.children.filter(f => f.name === 'CloudPanels').length, 2, 'no new folder is created');
 });
+
+test('replacing with CBZ uploads next to the original and only then moves it to the Rubbish Bin', async () => {
+  const { MegaConnection } = await import('../src/mega.js');
+  const events = [];
+  const parent = { nodeId: 'folder01', name: 'Saga', directory: true, children: [] };
+  const original = { nodeId: 'orig0001', name: 'Saga 01.cbr', size: 50, parent, delete(permanent, cb) { events.push(['delete', permanent]); cb(); } };
+  parent.children.push(original);
+  parent.upload = (opt, data) => { events.push(['upload', opt.name]); const node = { nodeId: 'new00001', name: opt.name, size: data.length, parent }; parent.children.push(node); return { complete: Promise.resolve(node), on() {} }; };
+  const connection = new MegaConnection(); connection.mode = 'account'; connection._storage = { root: parent, files: { orig0001: original } }; connection._rootNodes = [parent];
+  connection._register(original, 'mega:folder01');
+  const result = await connection.replaceWithCbz('mega:orig0001', new Uint8Array(70));
+  assert.deepEqual(events, [['upload', 'Saga 01.cbz'], ['delete', false]]);
+  assert.equal(result.id, 'mega:new00001'); assert.equal(result.format, 'cbz');
+  // A failed upload never touches the original.
+  events.length = 0; original.name = 'Saga 02.cbr';
+  parent.upload = () => ({ complete: Promise.resolve({ nodeId: 'bad00001', size: 1 }), on() {} });
+  await assert.rejects(connection.replaceWithCbz('mega:orig0001', new Uint8Array(70)), /original was kept/);
+  assert.deepEqual(events, []);
+});

@@ -5,6 +5,7 @@ import {MegaConnection} from './mega.js';
 import {createReaderController} from './reader-ui.js';
 import {CoverService} from './covers.js';
 import {OfflineLibrary} from './offline.js';
+import {convertToCbz} from './convert.js';
 import {assistantStore,libraryContext,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder} from './app-helpers.js';
 
@@ -34,6 +35,9 @@ Object.assign(copy.es,{downloadOffline:'Guardar para leer sin conexión',downloa
 Object.assign(copy.en,{syncTitle:'Sync between devices',syncDetail:'Your library, reading progress and preferences are saved in your MEGA, in a CloudPanels folder. Sign in to the same MEGA on another device to continue where you stopped.',syncNow:'Sync now',syncNever:'Not synced yet.',syncAt:'Last synced at {time}.',syncBusy:'Syncing…',syncFailed:'Could not sync with MEGA. It will try again later.',syncNeedsAccount:'Sign in with your MEGA account (not a link) to sync between devices.',syncDone:'Synced with MEGA.'});
 Object.assign(copy['pt-BR'],{syncTitle:'Sincronizar entre aparelhos',syncDetail:'Sua biblioteca, onde você parou e suas preferências ficam salvos no seu MEGA, numa pasta CloudPanels. Entre no mesmo MEGA em outro aparelho para continuar de onde parou.',syncNow:'Sincronizar agora',syncNever:'Ainda não sincronizado.',syncAt:'Última sincronização às {time}.',syncBusy:'Sincronizando…',syncFailed:'Não foi possível sincronizar com o MEGA. Vou tentar de novo mais tarde.',syncNeedsAccount:'Entre com a sua conta do MEGA (não com link) para sincronizar entre aparelhos.',syncDone:'Sincronizado com o MEGA.'});
 Object.assign(copy.es,{syncTitle:'Sincronizar entre dispositivos',syncDetail:'Tu biblioteca, tu progreso y tus preferencias se guardan en tu MEGA, en una carpeta CloudPanels. Entra al mismo MEGA en otro dispositivo para seguir donde lo dejaste.',syncNow:'Sincronizar ahora',syncNever:'Aún no sincronizado.',syncAt:'Última sincronización a las {time}.',syncBusy:'Sincronizando…',syncFailed:'No se pudo sincronizar con MEGA. Se intentará más tarde.',syncNeedsAccount:'Entra con tu cuenta de MEGA (no con un enlace) para sincronizar.',syncDone:'Sincronizado con MEGA.'});
+Object.assign(copy.en,{convertOne:'Convert to CBZ',convertFolder:'Convert {count} to CBZ',convertTitle:'Convert to CBZ',convertText:'CBZ opens instantly and shows covers quickly. Each comic is downloaded, repackaged without changing its images, checked, and uploaded to the same folder with the same name. Only then does the original go to your MEGA Rubbish Bin, where you can still recover it. Your reading progress, panels, favorites and edits move to the new file.',convertStart:'Convert',convertCount:'{count} comics will be converted.',converting:'Converting {done}/{total}: {name}',convertStep:{open:'opening',pages:'pages {a}/{b}',verify:'checking',upload:'uploading'},convertDone:'{count} comics converted to CBZ.',convertFailed:'Could not convert {name}: {reason} The original was kept.',convertTooBig:'{name} is too large to convert on this device (over 250 MB); it was kept as it is.',convertCancel:'Cancel',convertCancelled:'Conversion stopped. Comics already converted stay converted; the rest were not touched.',convertNeedsAccount:'Converting needs your MEGA account login (not a link).'});
+Object.assign(copy['pt-BR'],{convertOne:'Converter para CBZ',convertFolder:'Converter {count} para CBZ',convertTitle:'Converter para CBZ',convertText:'O CBZ abre na hora e mostra as capas rápido. Cada quadrinho é baixado, reempacotado sem mexer nas imagens, conferido e enviado para a mesma pasta, com o mesmo nome. Só depois disso o original vai para a lixeira do MEGA, de onde ainda dá para recuperar. Seu progresso, quadros, favoritos e edições passam para o arquivo novo.',convertStart:'Converter',convertCount:'{count} quadrinhos serão convertidos.',converting:'Convertendo {done}/{total}: {name}',convertStep:{open:'abrindo',pages:'páginas {a}/{b}',verify:'conferindo',upload:'enviando'},convertDone:'{count} quadrinhos convertidos para CBZ.',convertFailed:'Não foi possível converter {name}: {reason} O original foi mantido.',convertTooBig:'{name} é grande demais para converter neste aparelho (mais de 250 MB) e foi mantido como está.',convertCancel:'Cancelar',convertCancelled:'Conversão interrompida. Os já convertidos continuam convertidos; os outros não foram mexidos.',convertNeedsAccount:'Para converter, entre com a sua conta do MEGA (não com link).'});
+copy.es.convertOne=copy.en.convertOne;
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
 let accountProfile = await openAccountGate({client:accounts});
@@ -373,7 +377,55 @@ function folderReadActions(comics,folder){
   return element('div',{class:'folder-read-actions row'},
     !folder.allRead?action(t('markFolderRead'),()=>markStories(ids,true),'text-button',{'data-folder-read':'read'}):null,
     folder.readCount||folder.readingCount?action(t('markFolderUnread'),()=>markStories(ids,false),'text-button',{'data-folder-read':'unread'}):null,
-    comics.some(c=>c.source!=='demo')?action(comics.every(c=>offline.has(c.id))?'✓ '+t('onDevice'):'⤓ '+t('downloadFolder'),()=>saveFolderOffline(comics),'text-button',{'data-folder-offline':'1'}):null);
+    comics.some(c=>c.source!=='demo')?action(comics.every(c=>offline.has(c.id))?'✓ '+t('onDevice'):'⤓ '+t('downloadFolder'),()=>saveFolderOffline(comics),'text-button',{'data-folder-offline':'1'}):null,
+    comics.some(convertible)?action('⇄ '+t('convertFolder',{count:comics.filter(convertible).length}),()=>askConvert(comics.filter(convertible)),'text-button'):null);
+}
+function convertible(comic){return comic?.source==='mega'&&['cbr','rar','cb7','7z','cbt','tar'].includes(String(comic.format).toLowerCase());}
+let conversion=null;
+function askConvert(list){
+  if(!list.length)return;
+  if(!mega.connected){toast(t('reconnect'));openConnection();return;}
+  if(mega.mode!=='account'){toast(t('convertNeedsAccount'));return;}
+  const {body}=openModal(t('convertTitle'));
+  body.append(text(t('convertText')),text(t('convertCount',{count:list.length})),
+    element('div',{class:'form-actions'},action(t('cancel'),closeModal,'button ghost'),action(t('convertStart'),()=>{closeModal();startConversion(list);},'button primary')));
+}
+function conversionPanel(){
+  let panel=document.querySelector('#conversion-panel');
+  if(!panel){panel=element('div',{id:'conversion-panel',class:'conversion-panel',role:'status'},element('span',{class:'conversion-text'}),element('div',{class:'conversion-bar'},element('span')),action(t('convertCancel'),()=>conversion?.controller.abort(),'text-button'));document.body.append(panel);}
+  return panel;
+}
+async function startConversion(list){
+  if(conversion){const ids=new Set(conversion.queue.map(c=>c.id));conversion.queue.push(...list.filter(c=>!ids.has(c.id)));conversion.total=conversion.queue.length+conversion.done;return;}
+  conversion={queue:list.slice(),done:0,total:list.length,converted:0,controller:new AbortController()};
+  const panel=conversionPanel(),label=panel.querySelector('.conversion-text'),bar=panel.querySelector('.conversion-bar span');
+  const show=(comic,step,fraction)=>{label.textContent=t('converting',{done:conversion.done+1,total:conversion.total,name:comic.metadata?.title||comic.name})+(step?' · '+step:'');bar.style.width=Math.round(((conversion.done+(fraction||0))/conversion.total)*100)+'%';};
+  const steps=t('convertStep');const stepText=(key,vars={})=>(typeof steps==='object'&&steps[key]?String(steps[key]).replace(/\{(\w+)\}/g,(_,k)=>vars[k]??''):key);
+  try{
+    while(conversion.queue.length){
+      const signal=conversion.controller.signal;signal.throwIfAborted();
+      const original=conversion.queue.shift();const comic=store.state.comics.find(c=>c.id===original.id);
+      if(!comic||!convertible(comic)){conversion.done++;continue;}
+      if(comic.size>250*1024*1024){toast(t('convertTooBig',{name:comic.metadata?.title||comic.name}));conversion.done++;continue;}
+      try{
+        show(comic,stepText('open'),0);
+        const source=mega.getSource(comic);
+        const result=await convertToCbz(source,{signal,onProgress:p=>{if(p.phase==='pages')show(comic,stepText('pages',{a:p.done,b:p.total}),.1+.6*p.done/p.total);else if(p.phase==='verify')show(comic,stepText('verify'),.72);}});
+        show(comic,stepText('upload'),.8);
+        const descriptor=await mega.replaceWithCbz(comic.id,result.bytes,{signal});
+        const path=String(comic.path||comic.name).replace(/[^/]+$/,descriptor.name);
+        store.replaceComic(comic.id,{...descriptor,path,format:'cbz'});
+        if(offline.has(comic.id))await offline.remove(comic.id).catch(()=>{});
+        conversion.converted++;mainDirty=true;queueMainRefresh();scheduleSync();
+      }catch(error){
+        if(signal.aborted)throw error;
+        toast(t('convertFailed',{name:comic.metadata?.title||comic.name,reason:(publicError(error,'')||error?.message||'').replace(/\.?$/,'.')}));
+      }
+      conversion.done++;
+    }
+    toast(t('convertDone',{count:conversion.converted}));
+  }catch{toast(t('convertCancelled'));}
+  finally{conversion=null;panel.remove();mainDirty=true;queueMainRefresh();}
 }
 function offlineLabel(id){
   const job=offline.downloading(id);
@@ -572,7 +624,7 @@ function openDetails(id) {
   const saveButton=comic.source==='demo'?null:action('',()=>toggleOffline(comic),'button secondary',{'data-offline-toggle':id});
   const refreshSave=()=>{if(!saveButton)return;const job=offline.downloading(id);saveButton.disabled=Boolean(job);saveButton.textContent=job?t('downloadingOffline',{p:Math.floor(job.loaded/Math.max(1,job.total)*100)}):offline.has(id)?'✓ '+t('removeOffline'):'⤓ '+t('downloadOffline');saveButton.classList.toggle('is-active',offline.has(id));};
   refreshSave();const stopWatching=offline.onChange(changedId=>{if(changedId!==id)return;if(!saveButton.isConnected){stopWatching();return;}refreshSave();});
-  body.append(element('div',{class:'shelf-actions'},favorite,later,saveButton));
+  body.append(element('div',{class:'shelf-actions'},favorite,later,saveButton,convertible(comic)?action('⇄ '+t('convertOne'),()=>{closeModal();askConvert([comic]);},'button secondary'):null));
   const form=element('form'),grid=element('div',{class:'form-grid'}),fields={};
   ['title','publisher','series','volume','issue','year','characters','tags'].forEach(key=>{
     const field=inputField(t(key),{value:Array.isArray(comic.metadata[key])?comic.metadata[key].join(', '):comic.metadata[key],full:['title','characters','tags'].includes(key),help:['characters','tags'].includes(key)?t('commaHint'):null,attrs:{maxlength:['title','series'].includes(key)?512:(!['characters','tags'].includes(key)?160:4096)}});
@@ -913,18 +965,37 @@ async function syncWithMega({pull=true,announce=false}={}){
       const remote=await mega.readSyncFile();
       sync.lastPull=Date.now();
       if(remote){const before=store.exportBackup();store.importBackup(remote);if(store.exportBackup()!==before){mainDirty=true;queueMainRefresh();}}
+      void pullSharedCovers();
     }
     const text=syncPayload();
     if(text!==sync.lastText){await mega.writeSyncFile(text);sync.lastText=text;}
+    if(covers.fresh.size&&(Date.now()-(sync.coversAt||0)>10*60000||document.visibilityState==='hidden'||announce))await pushSharedCovers();
     sync.lastAt=Date.now();sync.failed=false;if(announce)toast(t('syncDone'));return true;
   }catch{sync.failed=true;if(announce)toast(t('syncFailed'));return false;}
   finally{sync.busy=false;refreshSyncStatus();}
 }
+// Covers are shared through MEGA too, so each cover is made only once for all devices.
+let coversPulled=false;
+async function pullSharedCovers(){
+  if(coversPulled||!mega.canSync)return;coversPulled=true;
+  try{const text=await mega.readSyncFile({name:'cloudpanels-capas.json'});if(!text)return;const data=JSON.parse(text);if(data?.v!==1)return;
+    const added=await covers.importShared(data.covers);if(added){mainDirty=true;queueMainRefresh();}}catch{coversPulled=false;}
+}
+async function pushSharedCovers(){
+  if(!mega.canSync||!covers.fresh.size)return;
+  const fresh=await covers.takeFresh();const keys=Object.keys(fresh);if(!keys.length)return;
+  let shared={};try{const text=await mega.readSyncFile({name:'cloudpanels-capas.json'});const data=text&&JSON.parse(text);if(data?.v===1&&data.covers)shared=data.covers;}catch{}
+  for(const key of keys){delete shared[key];shared[key]=fresh[key];}
+  let entries=Object.entries(shared);let size=entries.reduce((n,[k,v])=>n+k.length+v.length,0);
+  while(entries.length&&(entries.length>1500||size>14*1024*1024)){const [k,v]=entries.shift();size-=k.length+v.length;}
+  await mega.writeSyncFile(JSON.stringify({v:1,covers:Object.fromEntries(entries)}),{name:'cloudpanels-capas.json'});
+  covers.clearFresh(keys);sync.coversAt=Date.now();
+}
 function scheduleSync(delay=20000){clearTimeout(sync.timer);sync.timer=setTimeout(()=>{if(mega.canSync&&syncPayload()!==sync.lastText)void syncWithMega({pull:false});},delay);}
-setInterval(()=>{if(document.visibilityState==='visible'&&mega.canSync&&!sync.busy&&syncPayload()!==sync.lastText)void syncWithMega({pull:false});},120000);
+setInterval(()=>{if(document.visibilityState==='visible'&&mega.canSync&&!sync.busy&&(syncPayload()!==sync.lastText||covers.fresh.size))void syncWithMega({pull:false});},120000);
 document.addEventListener('visibilitychange',()=>{
   if(!mega.canSync)return;
-  if(document.visibilityState==='hidden'){if(syncPayload()!==sync.lastText)void syncWithMega({pull:false});}
+  if(document.visibilityState==='hidden'){if(syncPayload()!==sync.lastText||covers.fresh.size)void syncWithMega({pull:false});}
   else if(Date.now()-sync.lastPull>10*60000)void syncWithMega({pull:true});
 });
 function syncStatusText(){
