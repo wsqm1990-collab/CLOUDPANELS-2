@@ -15,6 +15,8 @@ await build({entryPoints: { app: 'src/app.js', 'panel-worker': 'src/panel-worker
 for (const file of ['index.html', 'styles.css', 'brand-emblem.png', 'favicon-32.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'manifest.webmanifest', 'THIRD_PARTY_NOTICES.txt']) await cp(path.join('src', file), path.join(dist, file));
 await cp('src/samples', path.join(dist, 'samples'), {recursive: true});
 await cp('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs', path.join(dist, 'vendor/pdf.worker.mjs'));
+await mkdir(path.join(dist, 'vendor/libarchive'), {recursive: true});
+for (const file of ['worker-bundle.js', 'libarchive.wasm']) await cp(path.join('node_modules/libarchive.js/dist', file), path.join(dist, 'vendor/libarchive', file));
 for (const folder of ['cmaps', 'standard_fonts', 'wasm', 'iccs']) await cp(path.join('node_modules/pdfjs-dist', folder), path.join(dist, 'vendor', folder), {recursive: true});
 const meta = await readFile('src/index.html', 'utf8');
 const policy = meta.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1];

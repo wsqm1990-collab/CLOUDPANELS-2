@@ -13,7 +13,7 @@ const STRINGS = {
   en: {
     library: 'Library', now: 'NOW READING', close: 'Close reader', markRead: 'Mark as read', marked: 'Read',
     previous: 'Previous page or panel', next: 'Next page or panel', previousShort: 'Previous', nextShort: 'Next', swipeResistance: 'Swipe resistance', swipeLevels: ['Very light', 'Light', 'Balanced', 'Firm', 'Very firm'], navigation: 'Reading navigation', navigationButtons: 'Navigation buttons', navigationOff: 'Off', navigationDelay: n => `Hide after ${n} seconds`, page: 'Page', pageOf: (p, n) => `Page ${p} of ${n}`,
-    loading: 'Opening comic…', loadingPage: p => `Loading page ${p}…`, loadingPdf: 'Loading PDF into temporary memory (maximum 128 MB)…',
+    loading: 'Opening comic…', loadingPage: p => `Loading page ${p}…`, loadingPdf: 'Loading PDF into temporary memory (maximum 128 MB)…', downloading: p => `Downloading comic… ${p}%`, extracting: 'Unpacking pages…',
     readHint: 'Your place is saved on this device.', panelStatus: (p, n) => `Panel ${p} of ${n}`, retry: 'Try again',
     failed: 'This comic could not be opened.', pageFailed: 'This page could not be displayed. Your previous position is unchanged.',
     reachedEnd: 'You have reached the last page. Mark this comic as read when you are finished.', finished: 'Marked as read. Your place is saved.',
@@ -29,7 +29,7 @@ const STRINGS = {
   'pt-BR': {
     library: 'Biblioteca', now: 'LENDO AGORA', close: 'Fechar leitor', markRead: 'Marcar como lido', marked: 'Lido',
     previous: 'Página ou quadro anterior', next: 'Próxima página ou quadro', previousShort: 'Anterior', nextShort: 'Próxima', swipeResistance: 'Resistência do deslize', swipeLevels: ['Muito leve', 'Leve', 'Equilibrada', 'Firme', 'Muito firme'], navigation: 'Navegação da leitura', navigationButtons: 'Botões de navegação', navigationOff: 'Desativados', navigationDelay: n => `Ocultar após ${n} segundos`, page: 'Página', pageOf: (p, n) => `Página ${p} de ${n}`,
-    loading: 'Abrindo quadrinho…', loadingPage: p => `Carregando página ${p}…`, loadingPdf: 'Carregando PDF na memória temporária (máximo de 128 MB)…',
+    loading: 'Abrindo quadrinho…', loadingPage: p => `Carregando página ${p}…`, loadingPdf: 'Carregando PDF na memória temporária (máximo de 128 MB)…', downloading: p => `Baixando quadrinho… ${p}%`, extracting: 'Preparando as páginas…',
     readHint: 'Sua posição fica salva neste aparelho.', panelStatus: (p, n) => `Quadro ${p} de ${n}`, retry: 'Tentar novamente',
     failed: 'Não foi possível abrir este quadrinho.', pageFailed: 'Não foi possível exibir esta página. Sua posição anterior foi mantida.',
     reachedEnd: 'Você chegou à última página. Marque como lido quando terminar.', finished: 'Marcado como lido. Sua posição está salva.',
@@ -45,7 +45,7 @@ const STRINGS = {
   es: {
     library: 'Biblioteca', now: 'LEYENDO AHORA', close: 'Cerrar lector', markRead: 'Marcar como leído', marked: 'Leído',
     previous: 'Página o viñeta anterior', next: 'Página o viñeta siguiente', previousShort: 'Anterior', nextShort: 'Siguiente', swipeResistance: 'Resistencia del deslizamiento', swipeLevels: ['Muy ligera', 'Ligera', 'Equilibrada', 'Firme', 'Muy firme'], navigation: 'Navegación de lectura', navigationButtons: 'Botones de navegación', navigationOff: 'Desactivados', navigationDelay: n => `Ocultar tras ${n} segundos`, page: 'Página', pageOf: (p, n) => `Página ${p} de ${n}`,
-    loading: 'Abriendo cómic…', loadingPage: p => `Cargando página ${p}…`, loadingPdf: 'Cargando PDF en la memoria temporal (máximo 128 MB)…',
+    loading: 'Abriendo cómic…', loadingPage: p => `Cargando página ${p}…`, loadingPdf: 'Cargando PDF en la memoria temporal (máximo 128 MB)…', downloading: p => `Descargando cómic… ${p}%`, extracting: 'Preparando las páginas…',
     readHint: 'Tu posición se guarda en este dispositivo.', panelStatus: (p, n) => `Viñeta ${p} de ${n}`, retry: 'Reintentar',
     failed: 'No se pudo abrir este cómic.', pageFailed: 'No se pudo mostrar esta página. Se conserva tu posición anterior.',
     reachedEnd: 'Has llegado a la última página. Marca el cómic como leído cuando termines.', finished: 'Marcado como leído. Tu posición está guardada.',
@@ -1200,7 +1200,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       rangeBuffer = new ReadingRangeBuffer(source, budget, currentSession.signal);
       try {
         const opened = await openComic({ name: source.name || value.name, size: source.size,
-          read: rangeBuffer.read.bind(rangeBuffer) }, { signal: currentSession.signal });
+          read: rangeBuffer.read.bind(rangeBuffer) }, { signal: currentSession.signal,
+          onProgress: info => { if (mySerial !== serial || !loading) return;
+            if (info.phase === 'download' && info.total > 8 * MiB) statusMessage(text().downloading(Math.floor(info.loaded / info.total * 100)));
+            else if (info.phase === 'extract') statusMessage(text().extracting); } });
         if (mySerial !== serial || currentSession.signal.aborted) { opened.close(); return; }
         book = opened;
         // Supplement missing fields without overwriting the user's corrections.
