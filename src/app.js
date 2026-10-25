@@ -704,14 +704,14 @@ function renderAssistant() {
     const controller=new AbortController();aiBusy=controller;sendButton.textContent=L.stop;
     let frame=0,latest='';
     try{
-      const reply=await askAssistant({key:assistantStore.key,messages:aiChat.slice(-16),system:systemPrompt(context.text),signal:controller.signal,web:assistantStore.options.web,
+      const reply=await askAssistant({key:assistantStore.key,messages:aiChat.slice(-16),system:systemPrompt(context.text,store.state.settings.language),signal:controller.signal,web:assistantStore.options.web,
         onText:(value,info)=>{latest=value;if(info?.searching&&!value){answerBox.textContent=L.searching;return;}if(frame)return;frame=requestAnimationFrame(()=>{frame=0;answerBox.replaceChildren(richText(latest,context.byRef));answerBox.className='';node.scrollIntoView({block:'end'});});}});
       if(frame)cancelAnimationFrame(frame);
       answerBox.replaceChildren(richText(reply,context.byRef));answerBox.className='';
       aiChat.push({role:'assistant',text:reply});assistantStore.saveChat(aiChat);
       if(assistantStore.options.voice)speak(reply,store.state.settings.language==='en'?'en-US':'pt-BR');
     }catch(error){
-      aiChat.pop();const message=friendlyError(error);
+      aiChat.pop();const message=friendlyError(error,store.state.settings.language);
       if(message){answerBox.textContent=message;answerBox.className='form-error';}else node.remove();
       if(error?.status===401){assistantStore.key='';}
     }finally{if(aiBusy===controller)aiBusy=null;sendButton.textContent=L.send;node.scrollIntoView({block:'end'});}
