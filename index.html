@@ -7,11 +7,13 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="CloudPanels">
-    <meta name="description" content="Your personal comic library, always within reach. Read from MEGA and keep your place on Android phones and tablets.">
+    <meta name="description" content="Your personal comic library, always within reach. Read from MEGA and keep your place on iPad.">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: https://*.mega.nz https://*.mega.co.nz https://mega.nz https://mega.co.nz; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'self' blob:">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
-    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="format-detection" content="telephone=no">
     <link rel="stylesheet" href="styles.css">
     <title>CloudPanels — Your comic universe</title>
   </head>
@@ -31,12 +33,12 @@
         </nav>
         <div class="nav-label discover-label" data-i18n="discover">DISCOVER</div>
         <nav class="primary-nav">
-          <button class="nav-item" data-view="assistant"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3Z"/><path d="m20 3 .6 1.4L22 5l-1.4.6L20 7l-.6-1.4L18 5l1.4-.6L20 3Z"/></svg><span data-i18n="assistant">Reading companion</span></button>
+          <button class="nav-item" data-view="assistant" hidden><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3Z"/><path d="m20 3 .6 1.4L22 5l-1.4.6L20 7l-.6-1.4L18 5l1.4-.6L20 3Z"/></svg><span data-i18n="assistant">Reading companion</span></button>
         </nav>
         <div class="sidebar-bottom">
           <div class="cloud-note"><span class="cloud-note-dot" aria-hidden="true"></span><span data-i18n="cloudFirst">A big library. A little space.</span><small data-i18n="cloudFirstDetail">Keep your comics in the cloud.</small></div>
           <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 3-.6 2.6-2 .9-2.3-.7-2 3.4 1.8 1.9-.2 2.2L2 15l2 3.4 2.5-.7 1.9 1 .6 2.3h4l.7-2.5 2-.9 2.3.7 2-3.4-1.8-1.9.2-2.2L22 9l-2-3.4-2.5.7-1.9-1L15 3H9Z"/><circle cx="12" cy="12" r="3"/></svg><span data-i18n="settings">Settings</span></button>
-          <div class="sidebar-version">CLOUDPANELS <span>ANDROID · 0.7.2</span></div>
+          <div class="sidebar-version">CLOUDPANELS <span>IPAD · 0.8.0</span></div>
         </div>
       </aside>
 
@@ -63,7 +65,7 @@
       <button class="nav-item active" data-view="library" aria-current="page"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h6v16H4zM14 4h6v16h-6z"/></svg><span data-i18n="library">Library</span></button>
       <button class="nav-item" data-view="continue"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg><span data-i18n="continueShort">Reading</span></button>
       <button class="nav-item" data-view="collections"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8h16v12H4zM6 4h12M9 12h6"/></svg><span data-i18n="collections">Collections</span></button>
-      <button class="nav-item" data-view="assistant"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3Z"/></svg><span data-i18n="assistantShort">Companion</span></button>
+      <button class="nav-item" data-view="assistant" hidden><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3Z"/></svg><span data-i18n="assistantShort">Companion</span></button>
       <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m10 3-.8 3-2.5 1L4 6l-2 4 2 2-.2 2.5L2 17l3 3 2.5-1 2.5 1 1 2h4l1-3 2.5-1 2.5.5 1-4-2-1.5V11l2-2-2-3-3 .5L15 5l-1-2h-4Z"/></svg><span data-i18n="settings">Settings</span></button>
     </nav>
 
