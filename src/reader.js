@@ -285,6 +285,49 @@ export function containerKind(head) {
   return null;
 }
 
+// RARLab's official unrar (in a worker) decodes compressed RAR pages; it is
+// the reference implementation and handles archives other decoders get wrong.
+let unrarWorker = null, unrarSeq = 0;
+const unrarPending = new Map();
+function browserUnrar(bytes, signal) {
+  if (typeof Worker === 'undefined' || typeof document === 'undefined') return Promise.reject(new Error('unrar unavailable'));
+  if (!unrarWorker) {
+    unrarWorker = new Worker(new URL('vendor/unrar/worker.js', document.baseURI));
+    unrarWorker.onmessage = event => { const job = unrarPending.get(event.data?.id); if (!job) return; unrarPending.delete(event.data.id); event.data.ok ? job.resolve(new Uint8Array(event.data.data)) : job.reject(new Error(event.data.error || 'unrar failed')); };
+    unrarWorker.onerror = () => { for (const job of unrarPending.values()) job.reject(new Error('unrar worker failed')); unrarPending.clear(); try { unrarWorker.terminate(); } catch {} unrarWorker = null; };
+  }
+  return new Promise((resolve, reject) => {
+    const id = ++unrarSeq, copy = bytes.slice();
+    unrarPending.set(id, { resolve, reject });
+    signal?.addEventListener('abort', () => { if (unrarPending.delete(id)) reject(signal.reason || new DOMException('Cancelled', 'AbortError')); }, { once: true });
+    unrarWorker.postMessage({ id, bytes: copy.buffer }, [copy.buffer]);
+  });
+}
+
+/**
+ * Decode one compressed RAR entry from a small archive (archive header + that
+ * entry). Tries the official unrar first, then libarchive, and accepts a result
+ * only when it matches the entry's size and checksum.
+ */
+async function decodeRarEntry(synthetic, entry, { loadArchive = browserArchive, unrar = browserUnrar, signal } = {}) {
+  const good = bytes => bytes && (!entry.size || bytes.length === entry.size) && (!Number.isInteger(entry.crc) || crc32(bytes) === entry.crc);
+  const attempts = [];
+  if (unrar) attempts.push(() => unrar(synthetic, signal));
+  attempts.push(async () => {
+    const Archive = await loadArchive(); let archive;
+    try { archive = await Archive.open(new File([synthetic], 'page')); return new Uint8Array(await (await archive.extractSingleFile(entry.name)).arrayBuffer()); }
+    finally { try { archive?.close(); } catch {} }
+  });
+  let last = null;
+  for (const attempt of attempts) {
+    try { const bytes = await attempt(); if (good(bytes)) return bytes; last = bytes; }
+    catch (error) { if (signal?.aborted) throw error; }
+  }
+  const error = problem('This page could not be unpacked correctly (integrity check failed).');
+  error.details = { name: entry.name, stored: false, start: entry.start, end: entry.end, size: entry.size, received: last?.length ?? null, check: 'crc' };
+  throw error;
+}
+
 let archiveReady = false;
 // RAR (v4/v5), 7z and TAR are decoded by libarchive compiled to WebAssembly in
 // a worker. These formats cannot be read page by page from the cloud, so the
@@ -326,7 +369,7 @@ async function libarchiveExtract(blob, signal, loadArchive = browserArchive) {
   } finally { signal?.removeEventListener('abort', stop); stop(); }
 }
 
-const LISTING_CACHE = 'cloudpanels-archive-listings-v3';
+const LISTING_CACHE = 'cloudpanels-archive-listings-v4';
 export function clearArchiveListings() { try { for (const key of Object.keys(localStorage)) if (key.startsWith('cloudpanels-archive-listings')) localStorage.removeItem(key); } catch {} }
 function cachedListing(key) { try { return JSON.parse(localStorage.getItem(LISTING_CACHE) || '{}')[key] || null; } catch { return null; } }
 function rememberListing(key, value) {
@@ -344,14 +387,16 @@ function rememberListing(key, value) {
  * Stored pages are used as-is; compressed pages of non-solid RARs are decoded
  * from just their own bytes. Returns null when this is not possible.
  */
-async function streamedArchiveComic(source, read, signal, closed, { kind, loadArchive = browserArchive, onProgress } = {}) {
+async function streamedArchiveComic(source, read, signal, closed, { kind, loadArchive = browserArchive, unrar = browserUnrar, onProgress } = {}) {
   const key = `${source.name}:${source.size}`;
   let listing = cachedListing(key);
   if (!listing) {
     try { onProgress?.({ phase: 'index' }); } catch {}
     const result = await listArchive((start, end, s2) => read(start, end, s2 || signal), source.size, kind, { signal });
     if (result.encrypted || !result.entries.length) return null;
-    listing = { solid: result.solid, preamble: result.preamble, entries: result.entries.filter(e => !e.directory && isPageName(e.name)).map(({ name, start, end, dataStart, stored, encrypted, size, crc }) => ({ name, start, end, dataStart, stored, encrypted, size, crc: Number.isInteger(crc) ? crc : null })) };
+    const pick = ({ name, start, end, dataStart, stored, encrypted, size, crc }) => ({ name, start, end, dataStart, stored, encrypted, size, crc: Number.isInteger(crc) ? crc : null });
+    const info = result.entries.find(e => !e.directory && /(?:^|\/)ComicInfo\.xml$/i.test(e.name) && e.size <= LIMITS.xml);
+    listing = { solid: result.solid, preamble: result.preamble, info: info ? pick(info) : null, entries: result.entries.filter(e => !e.directory && isPageName(e.name)).map(pick) };
     if (listing.entries.length) rememberListing(key, listing);
   }
   const pages = listing.entries.filter(e => !e.encrypted).sort((a, b) => natural.compare(a.name, b.name));
@@ -360,7 +405,18 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
   if (pages.some(page => page.end - page.start > LIMITS.entry)) throw problem('This page exceeds the 48 MB reading limit.');
   const cache = new Map();
   aborted(signal);
-  return {
+  let comicInfoFile = null;
+  if (listing.info && !(listing.solid && !listing.info.stored)) {
+    try {
+      const entry = listing.info;
+      let bytes;
+      if (entry.stored) bytes = await read(entry.dataStart, entry.dataStart + (entry.size || entry.end - entry.dataStart), signal);
+      else { const head = await read(0, listing.preamble, signal), body = await read(entry.start, entry.end, signal); const synthetic = new Uint8Array(head.length + body.length); synthetic.set(head); synthetic.set(body, head.length); bytes = await decodeRarEntry(synthetic, entry, { loadArchive, unrar, signal }); }
+      comicInfoFile = new Blob([bytes], { type: 'application/xml' });
+    } catch (error) { if (signal?.aborted) throw error; }
+  }
+  const book = {
+    comicInfoFile,
     type: kind, pageCount: pages.length, metadata: { pageNames: pages.map(p => p.name) }, pageSizes: pages.map(p => p.size),
     get bufferedBytes() { return [...cache.values()].reduce((sum, blob) => sum + blob.size, 0); },
     clearCache() { cache.clear(); },
@@ -390,25 +446,8 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
         } else {
           const head = await read(0, listing.preamble, combined.signal), body = await read(entry.start, entry.end, combined.signal);
           const synthetic = new Uint8Array(head.length + body.length); synthetic.set(head); synthetic.set(body, head.length);
-          const Archive = await loadArchive();
-          const decode = async whole => {
-            let archive;
-            try {
-              archive = await Archive.open(new File([synthetic], 'page'));
-              if (!whole) return new Uint8Array(await (await archive.extractSingleFile(entry.name)).arrayBuffer());
-              const found = []; (function walk(node) { for (const value of Object.values(node || {})) value instanceof Blob ? found.push(value) : walk(value); })(await archive.extractFiles());
-              return found[0] ? new Uint8Array(await found[0].arrayBuffer()) : null;
-            } finally { try { archive?.close(); } catch {} }
-          };
-          try { bytes = await decode(false); } catch (error) { if (combined.signal.aborted) throw error; }
-          // Some decoders return a short result; try the other extraction path.
-          if (!bytes || (expected && bytes.length !== expected)) { try { const again = await decode(true); if (again && (!expected || again.length === expected)) bytes = again; } catch (error) { if (combined.signal.aborted) throw error; } }
-          if (!bytes) throw problem('This compressed page is damaged or unsupported.');
-          if (Number.isInteger(entry.crc) && crc32(bytes) !== entry.crc) {
-            const error = problem(`Page ${index + 1} could not be unpacked correctly (integrity check failed).`);
-            error.details = { index, name: entry.name, stored: false, start: entry.start, end: entry.end, size: expected, kind, solid: listing.solid, check: 'crc' };
-            throw error;
-          }
+          try { bytes = await decodeRarEntry(synthetic, entry, { loadArchive, unrar, signal: combined.signal }); }
+          catch (error) { if (error.details) error.details = { ...error.details, index, kind, solid: listing.solid }; error.message = `Page ${index + 1} could not be unpacked correctly (integrity check failed).`; throw error; }
         }
         aborted(combined.signal);
         if (expected && bytes.length !== expected) {
@@ -425,14 +464,18 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
     },
     close() { closed.abort(); cache.clear(); },
   };
+  if (comicInfoFile && typeof DOMParser !== 'undefined') { try { applyComicInfo(book, decoder.decode(new Uint8Array(await comicInfoFile.arrayBuffer()))); } catch {} }
+  return book;
 }
 
-async function archiveComic(source, read, signal, closed, { extract = libarchiveExtract, onProgress, kind = 'rar', loadArchive, streamAbove = LIMITS.archive } = {}) {
-  if (source.size > streamAbove) {
-    if (kind === 'rar' || kind === 'tar') {
-      const streamed = await streamedArchiveComic(source, read, signal, closed, { kind, onProgress, ...(loadArchive ? { loadArchive } : {}) });
-      if (streamed) return streamed;
-    }
+async function archiveComic(source, read, signal, closed, { extract = libarchiveExtract, onProgress, kind = 'rar', loadArchive, unrar, streamAbove = 0 } = {}) {
+  // RAR and TAR comics are read page by page, each page checked against the
+  // archive's own checksum. Solid archives fall back to a full read when small.
+  if ((kind === 'rar' || kind === 'tar') && source.size > streamAbove) {
+    const streamed = await streamedArchiveComic(source, read, signal, closed, { kind, onProgress, ...(loadArchive ? { loadArchive } : {}), ...(unrar !== undefined ? { unrar } : {}) });
+    if (streamed) return streamed;
+  }
+  if (source.size > LIMITS.archive) {
     throw problem('This comic is over 300 MB and packed in a way that can only be opened whole, which is too big for this device. Saving it as CBZ (or a normal, non-solid CBR) lets it open page by page.');
   }
   // A file already on the device is handed over directly, without a copy.
@@ -565,13 +608,13 @@ async function pdfComic(source, read, signal, closed, onProgress) {
  * Open a comic without storing edition/page bytes on disk. A source read uses
  * an end-exclusive interval. Call close() when leaving the reader.
  */
-export async function openComic(source, { signal, onProgress, extractArchive, loadArchive, streamAbove } = {}) {
+export async function openComic(source, { signal, onProgress, extractArchive, loadArchive, unrar, streamAbove } = {}) {
   aborted(signal);
   const closed = new AbortController();
   const session = joinedSignals(signal, closed.signal);
   const read = checkedSource(source, session.signal);
   const extension = (source.name || '').split('.').pop().toLowerCase();
-  const archive = kind => archiveComic(source, read, session.signal, closed, { extract: extractArchive, onProgress, kind, loadArchive, ...(streamAbove != null ? { streamAbove } : {}) });
+  const archive = kind => archiveComic(source, read, session.signal, closed, { extract: extractArchive, onProgress, kind, loadArchive, unrar, ...(streamAbove != null ? { streamAbove } : {}) });
   const image = () => {
     if (source.size > LIMITS.entry) throw problem('This image exceeds the 48 MB reading limit.');
     let picture;
@@ -753,6 +796,10 @@ export async function archiveCover(source, { signal, loadArchive = browserArchiv
     archiveBytes = await read(0, cover.end);
   }
   aborted(signal);
+  if (kind === 'rar' && !list.solid) {
+    try { const bytes = await decodeRarEntry(archiveBytes, cover, { loadArchive, signal }); return new Blob([bytes], { type: sniffImage(bytes) }); }
+    catch (error) { if (signal?.aborted) throw error; return null; }
+  }
   const Archive = await loadArchive();
   let archive;
   try {

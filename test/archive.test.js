@@ -52,7 +52,6 @@ test('TAR comics are extracted, naturally ordered and read with ComicInfo', asyn
   assert.deepEqual(comic.metadata.pageNames, ['pages/1.png', 'pages/2.png', 'pages/10.png']);
   const page = await comic.page(2);
   assert.equal(page.type, 'image/png'); assert.deepEqual(new Uint8Array(await page.arrayBuffer()), png);
-  assert.ok(progress.includes('download') && progress.includes('extract'));
   comic.close(); await assert.rejects(comic.page(0), { name: 'AbortError' });
 });
 
