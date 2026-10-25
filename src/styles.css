@@ -529,3 +529,7 @@ body.account-is-locked{overflow:hidden}.account-is-locked .app-shell{visibility:
 .account-settings-dialog .account-brand-header{margin-bottom:24px}
 @media(max-width:520px){.account-brand{font-size:23px;margin-bottom:0}.account-brand img{width:48px;height:48px}.account-brand-header{gap:12px;margin-bottom:23px}.account-language{position:static}.account-language select{max-width:102px}}
 @media(max-width:370px){.mobile-brand{gap:5px;font-size:16px}.mobile-brand>.brand-emblem{width:25px;height:25px}}
+
+/* Saved-on-device indicator */
+.comic-offline { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 650; color: var(--lime, #c5ef62); letter-spacing: .01em; }
+.comic-offline[hidden] { display: none; }

@@ -4,6 +4,7 @@ import {openAccountGate, showAccountSettings} from './account-gate.js';
 import {MegaConnection} from './mega.js';
 import {createReaderController} from './reader-ui.js';
 import {CoverService} from './covers.js';
+import {OfflineLibrary} from './offline.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder} from './app-helpers.js';
 
 const copy = {
@@ -26,6 +27,9 @@ Object.assign(copy.es,{folders:'Carpetas',allStories:'Todas las historias',folde
 Object.assign(copy.en,{favorites:'Favorites',readLater:'Read later',favoriteAction:'Favorite',favoriteActive:'Favorited',laterAction:'Save for later',laterActive:'Saved for later',removeFavorite:'Remove from favorites',removeLater:'Remove from Read later',favoriteAdded:'Added to Favorites.',favoriteRemoved:'Removed from Favorites.',laterAdded:'Saved to Read later.',laterRemoved:'Removed from Read later.',favoritesText:'Your standout stories, all in one place.',readLaterText:'A shelf for stories you want to get to next.',favoritesEmpty:'Keep your favorites close',favoritesEmptyText:'Open a comic’s Details and choose Favorite to add it here.',laterEmpty:'Your next adventure is waiting',laterEmptyText:'Open a comic’s Details and choose Save for later to build your reading list.',browseLibrary:'Browse your library',smartShelves:'Your reading shelves',customCollections:'Your collections'});
 Object.assign(copy['pt-BR'],{favorites:'Favoritos',readLater:'Ler depois',favoriteAction:'Favoritar',favoriteActive:'Favoritado',laterAction:'Salvar para depois',laterActive:'Salvo para depois',removeFavorite:'Remover dos favoritos',removeLater:'Remover de Ler depois',favoriteAdded:'Adicionado aos Favoritos.',favoriteRemoved:'Removido dos Favoritos.',laterAdded:'Salvo em Ler depois.',laterRemoved:'Removido de Ler depois.',favoritesText:'Suas histórias favoritas, reunidas em um só lugar.',readLaterText:'Uma estante para as histórias que você quer ler em seguida.',favoritesEmpty:'Seus favoritos sempre por perto',favoritesEmptyText:'Abra os Detalhes de um quadrinho e toque em Favoritar para adicioná-lo aqui.',laterEmpty:'Sua próxima aventura está esperando',laterEmptyText:'Abra os Detalhes de um quadrinho e toque em Salvar para depois para montar sua lista de leitura.',browseLibrary:'Explorar sua biblioteca',smartShelves:'Suas estantes de leitura',customCollections:'Suas coleções'});
 Object.assign(copy.es,{favorites:'Favoritos',readLater:'Leer después',favoriteAction:'Favorito',favoriteActive:'Favorito guardado',laterAction:'Guardar para después',laterActive:'Guardado para después',removeFavorite:'Quitar de Favoritos',removeLater:'Quitar de Leer después',favoriteAdded:'Añadido a Favoritos.',favoriteRemoved:'Quitado de Favoritos.',laterAdded:'Guardado en Leer después.',laterRemoved:'Quitado de Leer después.',favoritesText:'Tus historias favoritas, reunidas en un solo lugar.',readLaterText:'Un estante para las historias que quieres leer después.',favoritesEmpty:'Tus favoritos, siempre cerca',favoritesEmptyText:'Abre los Detalles de un cómic y elige Favorito para añadirlo aquí.',laterEmpty:'Tu próxima aventura te espera',laterEmptyText:'Abre los Detalles de un cómic y elige Guardar para después para crear tu lista de lectura.',browseLibrary:'Explorar tu biblioteca',smartShelves:'Tus estantes de lectura',customCollections:'Tus colecciones'});
+Object.assign(copy.en,{downloadOffline:'Save for offline reading',downloadingOffline:'Saving to this device… {p}%',removeOffline:'Remove from this device',offlineSaved:'Saved on this device. It opens even without internet.',offlineRemoved:'Removed from this device.',offlineFailed:'Could not save this comic on the device. Check the connection and free space.',onDevice:'On this device',downloadFolder:'Save folder offline',folderQueued:'Saving {count} comics to this device…',folderSaved:'This folder is saved on this device.',offlineStorage:'Saved on this device',offlineStorageDetail:'{count} comics · {size}. They open without internet, even with MEGA disconnected.',clearOffline:'Remove all saved comics',offlineCleared:'Saved comics removed from this device.'});
+Object.assign(copy['pt-BR'],{downloadOffline:'Baixar para ler offline',downloadingOffline:'Salvando no aparelho… {p}%',removeOffline:'Remover do aparelho',offlineSaved:'Salvo no aparelho. Abre mesmo sem internet.',offlineRemoved:'Removido do aparelho.',offlineFailed:'Não foi possível salvar este quadrinho no aparelho. Confira a conexão e o espaço livre.',onDevice:'No aparelho',downloadFolder:'Baixar pasta para ler offline',folderQueued:'Salvando {count} quadrinhos no aparelho…',folderSaved:'Esta pasta está salva no aparelho.',offlineStorage:'Salvos no aparelho',offlineStorageDetail:'{count} quadrinhos · {size}. Abrem sem internet, mesmo com o MEGA desconectado.',clearOffline:'Remover todos os quadrinhos salvos',offlineCleared:'Quadrinhos salvos removidos do aparelho.'});
+Object.assign(copy.es,{downloadOffline:'Guardar para leer sin conexión',downloadingOffline:'Guardando en el dispositivo… {p}%',removeOffline:'Quitar del dispositivo',offlineSaved:'Guardado en el dispositivo. Se abre incluso sin internet.',offlineRemoved:'Quitado del dispositivo.',offlineFailed:'No se pudo guardar este cómic. Revisa la conexión y el espacio libre.',onDevice:'En el dispositivo',downloadFolder:'Guardar carpeta sin conexión',folderQueued:'Guardando {count} cómics en el dispositivo…',folderSaved:'Esta carpeta está guardada en el dispositivo.',offlineStorage:'Guardados en el dispositivo',offlineStorageDetail:'{count} cómics · {size}. Se abren sin internet, incluso con MEGA desconectado.',clearOffline:'Quitar todos los cómics guardados',offlineCleared:'Cómics guardados quitados del dispositivo.'});
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
 let accountProfile = await openAccountGate({client:accounts});
@@ -62,6 +66,7 @@ try {
   throw new Error('Library startup could not complete.');
 }
 const mega = new MegaConnection();
+const offline = await new OfflineLibrary().init();
 const localFiles = new Map();
 const demoFiles = new Map();
 const readable = new Set(['cbz','zip','pdf','jpg','jpeg','png','webp','cbr','rar','cb7','7z','cbt','tar']);
@@ -354,7 +359,42 @@ function folderReadActions(comics,folder){
   const ids=comics.map(comic=>comic.id);
   return element('div',{class:'folder-read-actions row'},
     !folder.allRead?action(t('markFolderRead'),()=>markStories(ids,true),'text-button',{'data-folder-read':'read'}):null,
-    folder.readCount||folder.readingCount?action(t('markFolderUnread'),()=>markStories(ids,false),'text-button',{'data-folder-read':'unread'}):null);
+    folder.readCount||folder.readingCount?action(t('markFolderUnread'),()=>markStories(ids,false),'text-button',{'data-folder-read':'unread'}):null,
+    comics.some(c=>c.source!=='demo')?action(comics.every(c=>offline.has(c.id))?'✓ '+t('onDevice'):'⤓ '+t('downloadFolder'),()=>saveFolderOffline(comics),'text-button',{'data-folder-offline':'1'}):null);
+}
+function offlineLabel(id){
+  const job=offline.downloading(id);
+  if(job)return t('downloadingOffline',{p:Math.floor(job.loaded/Math.max(1,job.total)*100)});
+  return offline.has(id)?'✓ '+t('onDevice'):'';
+}
+offline.onChange(id=>{
+  for(const node of document.querySelectorAll('[data-offline-status]'))if(node.dataset.offlineStatus===id){const label=offlineLabel(id);node.textContent=label;node.hidden=!label;}
+});
+const offlineQueue=[];let offlineRunning=false;
+async function runOfflineQueue(){
+  if(offlineRunning)return;offlineRunning=true;
+  try{
+    while(offlineQueue.length){
+      const comic=offlineQueue.shift();if(offline.has(comic.id))continue;
+      try{
+        if(comic.source==='mega'&&!mega.connected)throw new Error(t('reconnect'));
+        const source=comic.source==='local'&&localFiles.has(comic.id)?await fileSource(localFiles.get(comic.id)):await resolveSource(comic);
+        await offline.download(comic.id,source,comic.name);
+        if(!offlineQueue.length)toast(t('offlineSaved'));
+      }catch(error){if(error?.name!=='AbortError'){toast(publicError(error,t('offlineFailed'))||t('offlineFailed'));offlineQueue.length=0;}}
+    }
+  }finally{offlineRunning=false;if(!document.querySelector('#reader').open){mainDirty=true;queueMainRefresh();}}
+}
+function toggleOffline(comic){
+  if(offline.has(comic.id)){offline.remove(comic.id).then(()=>{toast(t('offlineRemoved'));mainDirty=true;queueMainRefresh();}).catch(()=>toast(t('storageError')));return;}
+  if(comic.source==='mega'&&!mega.connected){toast(t('reconnect'));openConnection();return;}
+  offlineQueue.push(comic);void runOfflineQueue();
+}
+function saveFolderOffline(comics){
+  const pending=comics.filter(c=>c.source!=='demo'&&!offline.has(c.id)&&!offline.downloading(c.id)&&!offlineQueue.includes(c));
+  if(!pending.length){toast(t('folderSaved'));return;}
+  if(pending.some(c=>c.source==='mega')&&!mega.connected){toast(t('reconnect'));openConnection();return;}
+  offlineQueue.push(...pending);toast(t('folderQueued',{count:pending.length}));void runOfflineQueue();
 }
 function folderSummary(contents){return element('section',{class:'folder-summary'},folderReadingStatus(contents),folderReadActions(contents.descendants,contents));}
 function appendUpNext(comics){
@@ -397,6 +437,7 @@ function comicCard(comic) {
   if((store.state.readLater||[]).includes(comic.id))flags.append(element('span',{class:'comic-flag',title:t('readLater'),'aria-label':t('readLater')},shelfIcon('readLater')));
   if(flags.childElementCount)info.append(flags);
   info.append(element('span',{class:'comic-source'},sourceIcon(comic.source),element('span',{text:comic.source==='mega'?'MEGA':comic.source==='demo'?'CloudPanels':t('importFiles')})));
+  info.append(element('span',{class:'comic-offline','data-offline-status':comic.id,text:offlineLabel(comic.id),hidden:!offlineLabel(comic.id)}));
   if(progress&&status!=='unread'){const fraction=progress.status==='finished'?100:Math.min(100,Math.round((progress.page+1)/progress.pageCount*100));info.append(element('div',{class:'progress-track'},element('span',{style:'width:'+fraction+'%'})),element('div',{class:'progress-caption'},element('span',{text:t(status)}),element('span',{text:t('page')+' '+(progress.page+1)+' / '+progress.pageCount})));}
   if(!selectionMode)info.append(element('div',{class:'comic-actions'},
     action(t('details'),()=>openDetails(comic.id),'text-button'),
@@ -440,6 +481,7 @@ async function demoSource(format) {
   return fileSource(demoFiles.get(format));
 }
 async function resolveSource(comic){
+  if(offline.has(comic.id)){const saved=await offline.source(comic.id,comic.name);if(saved)return saved;}
   if(comic.source==='mega'){if(!mega.connected)throw new Error(t('reconnect'));return mega.getSource(comic);}
   if(comic.source==='local'){const file=localFiles.get(comic.id);if(!file)throw new Error(t('selectAgain'));return fileSource(file);}
   if(comic.id==='demo:reader-balloons:v1')throw new Error(store.state.settings.language==='pt-BR'?'Esta demonstração foi removida. Abra a demonstração atual em CBZ ou PDF.':store.state.settings.language==='es'?'Esta demostración fue retirada. Abre la demostración actual en CBZ o PDF.':'This demo has been retired. Open the current CBZ or PDF demo.');
@@ -451,8 +493,8 @@ async function openComic(comic) {
   opening=true;
   covers.setForegroundBusy(true);pauseCoverRequests();
   try{
-    if(comic.source==='mega'&&!mega.connected){toast(t('reconnect'));openConnection();return;}
-    if(comic.source==='local'&&!localFiles.has(comic.id)){pendingLocalId=comic.id;toast(t('selectAgain'));document.querySelector('#file-input').click();return;}
+    if(comic.source==='mega'&&!mega.connected&&!offline.has(comic.id)){toast(t('reconnect'));openConnection();return;}
+    if(comic.source==='local'&&!localFiles.has(comic.id)&&!offline.has(comic.id)){pendingLocalId=comic.id;toast(t('selectAgain'));document.querySelector('#file-input').click();return;}
     const source=await resolveSource(comic);
     if(modal.open)closeModal();
     await reader.open(store.state.comics.find(c=>c.id===comic.id)||comic,source);
@@ -469,6 +511,8 @@ async function importFiles(files) {
     const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',seed));
     const id='local:'+Array.from(hash,b=>b.toString(16).padStart(2,'0')).join('');
     localFiles.set(id,file);store.upsertComics([{id,name:file.name,size:file.size,format,source:'local',path:file.name}]);count++;
+    // Imported files stay on the iPad, so they never need to be selected again.
+    if(!offline.has(id))offline.put(id,file,file.name).catch(()=>{});
     if(id===pendingLocalId)matching=id;
   }
   pendingLocalId=null;view='library';visibleCount=60;changed();if(count)toast(t('imported',{count}));
@@ -512,7 +556,10 @@ function openDetails(id) {
     }catch(error){toast(publicError(error,t('storageError')));}
   }
   updateShelfActions();
-  body.append(element('div',{class:'shelf-actions'},favorite,later));
+  const saveButton=comic.source==='demo'?null:action('',()=>toggleOffline(comic),'button secondary',{'data-offline-toggle':id});
+  const refreshSave=()=>{if(!saveButton)return;const job=offline.downloading(id);saveButton.disabled=Boolean(job);saveButton.textContent=job?t('downloadingOffline',{p:Math.floor(job.loaded/Math.max(1,job.total)*100)}):offline.has(id)?'✓ '+t('removeOffline'):'⤓ '+t('downloadOffline');saveButton.classList.toggle('is-active',offline.has(id));};
+  refreshSave();const stopWatching=offline.onChange(changedId=>{if(changedId!==id)return;if(!saveButton.isConnected){stopWatching();return;}refreshSave();});
+  body.append(element('div',{class:'shelf-actions'},favorite,later,saveButton));
   const form=element('form'),grid=element('div',{class:'form-grid'}),fields={};
   ['title','publisher','series','volume','issue','year','characters','tags'].forEach(key=>{
     const field=inputField(t(key),{value:Array.isArray(comic.metadata[key])?comic.metadata[key].join(', '):comic.metadata[key],full:['title','characters','tags'].includes(key),help:['characters','tags'].includes(key)?t('commaHint'):null,attrs:{maxlength:['title','series'].includes(key)?512:(!['characters','tags'].includes(key)?160:4096)}});
@@ -530,7 +577,7 @@ function openDetails(id) {
   body.append(form);
   const related=store.related(id,6);
   body.append(element('div',{class:'separator'}),element('h3',{text:t('related')}),related.length?element('div',{class:'stack small-gap'},related.map(item=>action(item.metadata.title,()=>openDetails(item.id),'folder-row'))):text(t('noRelated')));
-  body.append(action(t('remove'),()=>{store.removeComic(id);localFiles.delete(id);closeModal();changed();toast(t('removed'));},'button danger'));
+  body.append(action(t('remove'),()=>{store.removeComic(id);localFiles.delete(id);offline.remove(id).catch(()=>{});closeModal();changed();toast(t('removed'));},'button danger'));
 }
 function renderCollections() {
   const collection=store.state.collections.find(c=>c.id===selectedCollection);
@@ -613,7 +660,8 @@ function renderSettings() {
     settingRow(t('swipeResistance'),t('swipeResistanceDetail'),swipeResistanceControl()),
     settingRow(t('buffer'),t('bufferDetail'),selectControl(t('buffer'),[16,32,64,128,256].map(n=>[String(n),n+' MB']),String(store.state.settings.cacheMiB),value=>{store.setSettings({cacheMiB:Number(value)});changed();},'input')),
     settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();toast(t('bufferCleared'));render();},'button secondary compact')),
-    settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();toast(t('coversCleared'));render();},'button secondary compact')));
+    settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();toast(t('coversCleared'));render();},'button secondary compact')),
+    offline.available?settingRow(t('offlineStorage'),t('offlineStorageDetail',{count:offline.ids.size,size:formatBytes(offline.totalBytes)}),action(t('clearOffline'),async()=>{for(const id of [...offline.ids.keys()])await offline.remove(id).catch(()=>{});toast(t('offlineCleared'));render();},'button secondary compact',{disabled:!offline.ids.size})):null);
   main.append(settings,element('section',{class:'card section'},element('h3',{text:t('backup')}),text(t('backupDetail')),element('div',{class:'row',style:'margin-top:17px'},action(t('exportBackup'),exportBackup),action(t('importBackup'),importBackup))),
     element('section',{class:'card section'},element('h3',{text:t('cloudConnection')}),text(t('cloudConnectionDetail')),element('div',{class:'row',style:'margin-top:17px'},action(mega.connected?t('manageMega'):t('connectMega'),openConnection,'button primary'),mega.connected?action(t('disconnect'),disconnect,'button secondary'):null)),
     element('div',{class:'grid section'},element('section',{class:'card'},element('h3',{text:t('homeScreen')}),text(t('homeScreenDetail'))),element('section',{class:'card'},element('h3',{text:t('formats')}),text(t('formatsDetail')),action(t('tryReader'),openDemo,'button secondary compact',{style:'margin-top:14px'}))));
