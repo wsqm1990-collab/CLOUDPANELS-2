@@ -5,7 +5,7 @@ import {MegaConnection} from './mega.js';
 import {createReaderController} from './reader-ui.js';
 import {CoverService} from './covers.js';
 import {OfflineLibrary} from './offline.js';
-import {convertToCbz} from './convert.js';
+import {streamToCbz,verifyCbz} from './convert.js';
 import {assistantStore,libraryContext,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder} from './app-helpers.js';
 
@@ -35,8 +35,8 @@ Object.assign(copy.es,{downloadOffline:'Guardar para leer sin conexión',downloa
 Object.assign(copy.en,{syncTitle:'Sync between devices',syncDetail:'Your library, reading progress and preferences are saved in your MEGA, in a CloudPanels folder. Sign in to the same MEGA on another device to continue where you stopped.',syncNow:'Sync now',syncNever:'Not synced yet.',syncAt:'Last synced at {time}.',syncBusy:'Syncing…',syncFailed:'Could not sync with MEGA. It will try again later.',syncNeedsAccount:'Sign in with your MEGA account (not a link) to sync between devices.',syncDone:'Synced with MEGA.'});
 Object.assign(copy['pt-BR'],{syncTitle:'Sincronizar entre aparelhos',syncDetail:'Sua biblioteca, onde você parou e suas preferências ficam salvos no seu MEGA, numa pasta CloudPanels. Entre no mesmo MEGA em outro aparelho para continuar de onde parou.',syncNow:'Sincronizar agora',syncNever:'Ainda não sincronizado.',syncAt:'Última sincronização às {time}.',syncBusy:'Sincronizando…',syncFailed:'Não foi possível sincronizar com o MEGA. Vou tentar de novo mais tarde.',syncNeedsAccount:'Entre com a sua conta do MEGA (não com link) para sincronizar entre aparelhos.',syncDone:'Sincronizado com o MEGA.'});
 Object.assign(copy.es,{syncTitle:'Sincronizar entre dispositivos',syncDetail:'Tu biblioteca, tu progreso y tus preferencias se guardan en tu MEGA, en una carpeta CloudPanels. Entra al mismo MEGA en otro dispositivo para seguir donde lo dejaste.',syncNow:'Sincronizar ahora',syncNever:'Aún no sincronizado.',syncAt:'Última sincronización a las {time}.',syncBusy:'Sincronizando…',syncFailed:'No se pudo sincronizar con MEGA. Se intentará más tarde.',syncNeedsAccount:'Entra con tu cuenta de MEGA (no con un enlace) para sincronizar.',syncDone:'Sincronizado con MEGA.'});
-Object.assign(copy.en,{convertOne:'Convert to CBZ',convertFolder:'Convert {count} to CBZ',convertTitle:'Convert to CBZ',convertText:'CBZ opens instantly and shows covers quickly. Each comic is downloaded, repackaged without changing its images, checked, and uploaded to the same folder with the same name. Only then does the original go to your MEGA Rubbish Bin, where you can still recover it. Your reading progress, panels, favorites and edits move to the new file.',convertStart:'Convert',convertCount:'{count} comics will be converted.',converting:'Converting {done}/{total}: {name}',convertStep:{open:'opening',pages:'pages {a}/{b}',verify:'checking',upload:'uploading'},convertDone:'{count} comics converted to CBZ.',convertFailed:'Could not convert {name}: {reason} The original was kept.',convertTooBig:'{name} is too large to convert on this device (over 250 MB); it was kept as it is.',convertCancel:'Cancel',convertCancelled:'Conversion stopped. Comics already converted stay converted; the rest were not touched.',convertNeedsAccount:'Converting needs your MEGA account login (not a link).'});
-Object.assign(copy['pt-BR'],{convertOne:'Converter para CBZ',convertFolder:'Converter {count} para CBZ',convertTitle:'Converter para CBZ',convertText:'O CBZ abre na hora e mostra as capas rápido. Cada quadrinho é baixado, reempacotado sem mexer nas imagens, conferido e enviado para a mesma pasta, com o mesmo nome. Só depois disso o original vai para a lixeira do MEGA, de onde ainda dá para recuperar. Seu progresso, quadros, favoritos e edições passam para o arquivo novo.',convertStart:'Converter',convertCount:'{count} quadrinhos serão convertidos.',converting:'Convertendo {done}/{total}: {name}',convertStep:{open:'abrindo',pages:'páginas {a}/{b}',verify:'conferindo',upload:'enviando'},convertDone:'{count} quadrinhos convertidos para CBZ.',convertFailed:'Não foi possível converter {name}: {reason} O original foi mantido.',convertTooBig:'{name} é grande demais para converter neste aparelho (mais de 250 MB) e foi mantido como está.',convertCancel:'Cancelar',convertCancelled:'Conversão interrompida. Os já convertidos continuam convertidos; os outros não foram mexidos.',convertNeedsAccount:'Para converter, entre com a sua conta do MEGA (não com link).'});
+Object.assign(copy.en,{convertOne:'Convert to CBZ',convertFolder:'Convert {count} to CBZ',convertTitle:'Convert to CBZ',convertText:'CBZ opens instantly and shows covers quickly. Each comic is downloaded, repackaged without changing its images, checked, and uploaded to the same folder with the same name. Only then does the original go to your MEGA Rubbish Bin, where you can still recover it. Your reading progress, panels, favorites and edits move to the new file. Large comics take a few minutes each: keep CloudPanels open while it works (the screen stays on).',convertStart:'Convert',convertCount:'{count} comics will be converted.',converting:'Converting {done}/{total}: {name}',convertStep:{open:'opening',pages:'pages {a}/{b}',verify:'checking',upload:'uploading'},convertDone:'{count} comics converted to CBZ.',convertFailed:'Could not convert {name}: {reason} The original was kept.',convertTooBig:'{name} is too large to convert on this device (over 250 MB); it was kept as it is.',convertCancel:'Cancel',convertCancelled:'Conversion stopped. Comics already converted stay converted; the rest were not touched.',convertNeedsAccount:'Converting needs your MEGA account login (not a link).'});
+Object.assign(copy['pt-BR'],{convertOne:'Converter para CBZ',convertFolder:'Converter {count} para CBZ',convertTitle:'Converter para CBZ',convertText:'O CBZ abre na hora e mostra as capas rápido. Cada quadrinho é baixado, reempacotado sem mexer nas imagens, conferido e enviado para a mesma pasta, com o mesmo nome. Só depois disso o original vai para a lixeira do MEGA, de onde ainda dá para recuperar. Seu progresso, quadros, favoritos e edições passam para o arquivo novo. Quadrinhos grandes levam alguns minutos cada: deixe o CloudPanels aberto enquanto converte (a tela fica ligada).',convertStart:'Converter',convertCount:'{count} quadrinhos serão convertidos.',converting:'Convertendo {done}/{total}: {name}',convertStep:{open:'abrindo',pages:'páginas {a}/{b}',verify:'conferindo',upload:'enviando'},convertDone:'{count} quadrinhos convertidos para CBZ.',convertFailed:'Não foi possível converter {name}: {reason} O original foi mantido.',convertTooBig:'{name} é grande demais para converter neste aparelho (mais de 250 MB) e foi mantido como está.',convertCancel:'Cancelar',convertCancelled:'Conversão interrompida. Os já convertidos continuam convertidos; os outros não foram mexidos.',convertNeedsAccount:'Para converter, entre com a sua conta do MEGA (não com link).'});
 copy.es.convertOne=copy.en.convertOne;
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
@@ -398,6 +398,7 @@ function conversionPanel(){
 async function startConversion(list){
   if(conversion){const ids=new Set(conversion.queue.map(c=>c.id));conversion.queue.push(...list.filter(c=>!ids.has(c.id)));conversion.total=conversion.queue.length+conversion.done;return;}
   conversion={queue:list.slice(),done:0,total:list.length,converted:0,controller:new AbortController()};
+  let wakeLock=null;try{wakeLock=await navigator.wakeLock?.request('screen');}catch{}
   const panel=conversionPanel(),label=panel.querySelector('.conversion-text'),bar=panel.querySelector('.conversion-bar span');
   const show=(comic,step,fraction)=>{label.textContent=t('converting',{done:conversion.done+1,total:conversion.total,name:comic.metadata?.title||comic.name})+(step?' · '+step:'');bar.style.width=Math.round(((conversion.done+(fraction||0))/conversion.total)*100)+'%';};
   const steps=t('convertStep');const stepText=(key,vars={})=>(typeof steps==='object'&&steps[key]?String(steps[key]).replace(/\{(\w+)\}/g,(_,k)=>vars[k]??''):key);
@@ -406,13 +407,16 @@ async function startConversion(list){
       const signal=conversion.controller.signal;signal.throwIfAborted();
       const original=conversion.queue.shift();const comic=store.state.comics.find(c=>c.id===original.id);
       if(!comic||!convertible(comic)){conversion.done++;continue;}
-      if(comic.size>250*1024*1024){toast(t('convertTooBig',{name:comic.metadata?.title||comic.name}));conversion.done++;continue;}
       try{
         show(comic,stepText('open'),0);
         const source=mega.getSource(comic);
-        const result=await convertToCbz(source,{signal,onProgress:p=>{if(p.phase==='pages')show(comic,stepText('pages',{a:p.done,b:p.total}),.1+.6*p.done/p.total);else if(p.phase==='verify')show(comic,stepText('verify'),.72);}});
-        show(comic,stepText('upload'),.8);
-        const descriptor=await mega.replaceWithCbz(comic.id,result.bytes,{signal});
+        const result=await streamToCbz(source,{signal,createUpload:size=>mega.startCbzUpload(comic.id,size,{signal}),
+          onProgress:p=>{if(p.phase==='pages')show(comic,stepText('pages',{a:p.done,b:p.total}),.05+.85*p.done/p.total);else if(p.phase==='upload')show(comic,stepText('upload'),.92);}});
+        const descriptor=result.result;
+        show(comic,stepText('verify'),.96);
+        try{await verifyCbz(mega.getSource(descriptor),{pageCount:result.pageCount,checks:result.checks,signal});}
+        catch(error){await mega.moveToRubbishBin(descriptor.id).catch(()=>{});throw error;}
+        await mega.moveToRubbishBin(comic.id);
         const path=String(comic.path||comic.name).replace(/[^/]+$/,descriptor.name);
         store.replaceComic(comic.id,{...descriptor,path,format:'cbz'});
         if(offline.has(comic.id))await offline.remove(comic.id).catch(()=>{});
@@ -425,7 +429,7 @@ async function startConversion(list){
     }
     toast(t('convertDone',{count:conversion.converted}));
   }catch{toast(t('convertCancelled'));}
-  finally{conversion=null;panel.remove();mainDirty=true;queueMainRefresh();}
+  finally{conversion=null;panel.remove();try{await wakeLock?.release();}catch{}mainDirty=true;queueMainRefresh();}
 }
 function offlineLabel(id){
   const job=offline.downloading(id);

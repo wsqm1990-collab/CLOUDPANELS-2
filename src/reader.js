@@ -230,7 +230,7 @@ async function zipComic(source, read, signal, closed) {
   const cache = new Map();
   const book = {
     type: 'cbz', pageCount: pages.length,
-    metadata: { pageNames: pages.map(page => page.name) },
+    metadata: { pageNames: pages.map(page => page.name) }, pageSizes: pages.map(page => page.expanded),
     get bufferedBytes() { return [...cache.values()].reduce((sum, blob) => sum + blob.size, 0); },
     clearCache() { cache.clear(); },
     async page(index, { signal: requestSignal } = {}) {
@@ -326,7 +326,7 @@ async function libarchiveExtract(blob, signal, loadArchive = browserArchive) {
   } finally { signal?.removeEventListener('abort', stop); stop(); }
 }
 
-const LISTING_CACHE = 'cloudpanels-archive-listings-v1';
+const LISTING_CACHE = 'cloudpanels-archive-listings-v2';
 function cachedListing(key) { try { return JSON.parse(localStorage.getItem(LISTING_CACHE) || '{}')[key] || null; } catch { return null; } }
 function rememberListing(key, value) {
   try {
@@ -350,7 +350,7 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
     try { onProgress?.({ phase: 'index' }); } catch {}
     const result = await listArchive((start, end, s2) => read(start, end, s2 || signal), source.size, kind, { signal });
     if (result.encrypted || !result.entries.length) return null;
-    listing = { solid: result.solid, preamble: result.preamble, entries: result.entries.filter(e => !e.directory && isPageName(e.name)).map(({ name, start, end, dataStart, stored, encrypted }) => ({ name, start, end, dataStart, stored, encrypted })) };
+    listing = { solid: result.solid, preamble: result.preamble, entries: result.entries.filter(e => !e.directory && isPageName(e.name)).map(({ name, start, end, dataStart, stored, encrypted, size }) => ({ name, start, end, dataStart, stored, encrypted, size })) };
     if (listing.entries.length) rememberListing(key, listing);
   }
   const pages = listing.entries.filter(e => !e.encrypted).sort((a, b) => natural.compare(a.name, b.name));
@@ -360,7 +360,7 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
   const cache = new Map();
   aborted(signal);
   return {
-    type: kind, pageCount: pages.length, metadata: { pageNames: pages.map(p => p.name) },
+    type: kind, pageCount: pages.length, metadata: { pageNames: pages.map(p => p.name) }, pageSizes: pages.map(p => p.size),
     get bufferedBytes() { return [...cache.values()].reduce((sum, blob) => sum + blob.size, 0); },
     clearCache() { cache.clear(); },
     async page(index, { signal: requestSignal } = {}) {
@@ -418,7 +418,7 @@ async function archiveComic(source, read, signal, closed, { extract = libarchive
   const cache = new Map();
   const book = {
     type: kind, pageCount: files.length,
-    metadata: { pageNames: files.map(page => page.name) },
+    metadata: { pageNames: files.map(page => page.name) }, pageSizes: files.map(page => page.file.size),
     get bufferedBytes() { return closed.signal.aborted ? 0 : files.reduce((sum, page) => sum + page.file.size, 0); },
     clearCache() { cache.clear(); },
     async page(index, { signal: requestSignal } = {}) {
@@ -592,7 +592,7 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
     const size = parseInt(field(124, 12).trim() || '0', 8) || 0, flag = bytes[pos + 156];
     const prefix = field(257, 6).startsWith('ustar') ? field(345, 155) : '';
     const next = abs + 512 + Math.ceil(size / 512) * 512;
-    return { next, entry: flag === 48 || flag === 0 ? { name: (prefix ? prefix + '/' : '') + field(0, 100), start: abs, end: abs + 512 + size, dataStart: abs + 512, stored: true, padded: next, directory: false } : null };
+    return { next, entry: flag === 48 || flag === 0 ? { name: (prefix ? prefix + '/' : '') + field(0, 100), start: abs, end: abs + 512 + size, dataStart: abs + 512, size, stored: true, padded: next, directory: false } : null };
   }
   if (rar4) {
     if (pos + 7 > n) return null;
@@ -602,13 +602,13 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
     if (type === 0x7b) return { stop: true };
     if (type === 0x74) {
       if (pos + 32 > n) return null;
-      let data = view.getUint32(pos + 7, true);
+      let data = view.getUint32(pos + 7, true), unpacked = view.getUint32(pos + 11, true);
       const nameSize = view.getUint16(pos + 26, true), high = flags & 0x100, nameAt = pos + (high ? 40 : 32);
-      if (high) { if (pos + 40 > n) return null; data += view.getUint32(pos + 32, true) * 2 ** 32; }
+      if (high) { if (pos + 40 > n) return null; data += view.getUint32(pos + 32, true) * 2 ** 32; unpacked += view.getUint32(pos + 36, true) * 2 ** 32; }
       if (nameAt + nameSize > n) return null;
       let raw = bytes.subarray(nameAt, nameAt + nameSize); const z = raw.indexOf(0); if (z >= 0) raw = raw.subarray(0, z);
       const name = (flags & 0x200 ? new TextDecoder('latin1') : decoder).decode(raw).replaceAll('\\', '/');
-      return { next: abs + size + data, entry: { name, start: abs, end: abs + size + data, dataStart: abs + size, stored: bytes[pos + 25] === 0x30, encrypted: Boolean(flags & 0x04), directory: (flags & 0xe0) === 0xe0, solidFile: Boolean(flags & 0x10) } };
+      return { next: abs + size + data, entry: { name, start: abs, end: abs + size + data, dataStart: abs + size, size: unpacked, stored: bytes[pos + 25] === 0x30, encrypted: Boolean(flags & 0x04), directory: (flags & 0xe0) === 0xe0, solidFile: Boolean(flags & 0x10) } };
     }
     if (flags & 0x8000) { if (pos + 11 > n) return null; return { next: abs + size + view.getUint32(pos + 7, true) }; }
     return { next: abs + size };
@@ -626,13 +626,13 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
     if (type === 5) return { stop: true };
     if (type === 1) { const archiveFlags = vint(); return { next, solid: Boolean(archiveFlags & 4) }; }
     if (type === 2) {
-      const fileFlags = vint(); vint(); vint();
+      const fileFlags = vint(), unpacked = vint(); vint();
       if (fileFlags & 2) p += 4;
       if (fileFlags & 4) p += 4;
       const compression = vint(); vint();
       const nameLength = vint();
       if (p + nameLength > n) return null;
-      return { next, entry: { name: decoder.decode(bytes.subarray(p, p + nameLength)), start: abs, end: next, dataStart: base + headerStart + headerSize, stored: ((compression >> 7) & 7) === 0, directory: Boolean(fileFlags & 1), solidFile: Boolean(compression & 0x40) } };
+      return { next, entry: { name: decoder.decode(bytes.subarray(p, p + nameLength)), start: abs, end: next, dataStart: base + headerStart + headerSize, size: unpacked, stored: ((compression >> 7) & 7) === 0, directory: Boolean(fileFlags & 1), solidFile: Boolean(compression & 0x40) } };
     }
     return { next };
   } catch (error) { if (error instanceof RangeError) return null; return { stop: true }; }
