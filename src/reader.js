@@ -4,7 +4,7 @@ import { Inflate } from 'fflate';
 // requested for CBZ. PDFs are a bounded, temporary in-memory edition.
 const MiB = 1024 * 1024;
 const LIMITS = Object.freeze({ entry: 48 * MiB, directory: 16 * MiB,
-  entries: 10000, xml: MiB, pdf: 128 * MiB, request: 4 * MiB,
+  entries: 10000, xml: MiB, pdf: 128 * MiB, archive: 400 * MiB, request: 4 * MiB,
   imagePixels: 24_000_000, imageDimension: 16384 });
 const IMAGE = /\.(?:jpe?g|png|webp)$/i;
 const decoder = new TextDecoder('utf-8');
@@ -253,43 +253,144 @@ async function zipComic(source, read, signal, closed) {
   // A missing or malformed optional metadata file never blocks otherwise valid
   // pages. External entities and DTDs are explicitly rejected before parsing.
   if (comicInfo && typeof DOMParser !== 'undefined') {
-    try {
-      const xml = decoder.decode(await extract(comicInfo, signal));
-      if (!/<!\s*(?:DOCTYPE|ENTITY)/i.test(xml)) {
-        const document = new DOMParser().parseFromString(xml, 'application/xml');
-        if (!document.querySelector('parsererror')) {
-          const fields = { title: 'Title', series: 'Series', publisher: 'Publisher', issue: 'Number', volume: 'Volume', writer: 'Writer', characters: 'Characters', summary: 'Summary' };
-          for (const [field, tag] of Object.entries(fields)) {
-            const text = document.getElementsByTagName(tag)[0]?.textContent?.trim();
-            if (text) book.metadata[field] = text.slice(0, field === 'summary' ? 4000 : 1000);
-          }
-        }
-      }
-    } catch (error) { if (error?.name === 'AbortError') throw error; }
+    try { applyComicInfo(book, decoder.decode(await extract(comicInfo, signal))); }
+    catch (error) { if (error?.name === 'AbortError') throw error; }
   }
   aborted(signal);
   return book;
 }
 
-async function readEdition(source, read, signal) {
+async function readEdition(source, read, signal, onProgress) {
   const bytes = new Uint8Array(source.size);
   for (let start = 0; start < source.size; start += LIMITS.request) {
     aborted(signal);
     bytes.set(await read(start, Math.min(source.size, start + LIMITS.request), signal), start);
+    try { onProgress?.({ phase: 'download', loaded: Math.min(source.size, start + LIMITS.request), total: source.size }); } catch {}
   }
   return bytes;
 }
 
-async function pdfComic(source, read, signal, closed) {
-  if (source.size > LIMITS.pdf) throw problem('PDFs larger than 128 MB are not supported in this browser version. CBZ comics can be read page by page from the cloud.');
+// Identify the real container from its first bytes. Many ".cbr" files are
+// really ZIP archives and some ".cbz" files are really RAR archives.
+export function containerKind(head) {
+  if (!(head instanceof Uint8Array) || head.length < 4) return null;
+  if (head[0] === 0x50 && head[1] === 0x4b && [3, 5, 7].includes(head[2]) && [4, 6, 8].includes(head[3])) return 'zip';
+  if (head.length >= 7 && head[0] === 0x52 && head[1] === 0x61 && head[2] === 0x72 && head[3] === 0x21 && head[4] === 0x1a && head[5] === 0x07) return 'rar';
+  if (head.length >= 6 && head[0] === 0x37 && head[1] === 0x7a && head[2] === 0xbc && head[3] === 0xaf && head[4] === 0x27 && head[5] === 0x1c) return '7z';
+  if (decoder.decode(head.subarray(0, Math.min(head.length, 1024))).indexOf('%PDF-') >= 0) return 'pdf';
+  if (head.length >= 262 && decoder.decode(head.subarray(257, 262)) === 'ustar') return 'tar';
+  if (head[0] === 255 && head[1] === 216 && head[2] === 255) return 'image';
+  if (head[0] === 137 && head[1] === 80 && head[2] === 78 && head[3] === 71) return 'image';
+  if (head.length >= 12 && decoder.decode(head.subarray(0, 4)) === 'RIFF' && decoder.decode(head.subarray(8, 12)) === 'WEBP') return 'image';
+  return null;
+}
+
+let archiveReady = false;
+// RAR (v4/v5), 7z and TAR are decoded by libarchive compiled to WebAssembly in
+// a worker. These formats cannot be read page by page from the cloud, so the
+// edition is downloaded to temporary memory first and extracted once.
+async function browserArchive() {
+  const { Archive } = await import('libarchive.js/dist/libarchive.js');
+  if (!archiveReady) {
+    const base = typeof document !== 'undefined' ? document.baseURI : self.location.href;
+    Archive.init({ workerUrl: new URL('vendor/libarchive/worker-bundle.js', base).href });
+    archiveReady = true;
+  }
+  return Archive;
+}
+export const archiveExtractor = (loadArchive = browserArchive) => (blob, signal) => libarchiveExtract(blob, signal, loadArchive);
+async function libarchiveExtract(blob, signal, loadArchive = browserArchive) {
+  const Archive = await loadArchive();
+  aborted(signal);
+  const archive = await Archive.open(new File([blob], 'comic'));
+  const stop = () => { try { archive.close(); } catch {} };
+  signal?.addEventListener('abort', stop, { once: true });
+  try {
+    if (await archive.hasEncryptedData?.() === true) throw problem('Password-protected comics are not supported.');
+    aborted(signal);
+    const tree = await archive.extractFiles();
+    aborted(signal);
+    const entries = [];
+    (function walk(node, prefix) {
+      for (const [name, value] of Object.entries(node || {})) {
+        if (entries.length > LIMITS.entries) throw problem('This archive exceeds the 10,000-file limit.');
+        if (value instanceof Blob) entries.push({ path: prefix + name, file: value });
+        else if (value && typeof value === 'object') walk(value, prefix + name + '/');
+      }
+    })(tree, '');
+    return entries;
+  } catch (error) {
+    if (signal?.aborted) aborted(signal);
+    if (/password/i.test(error?.message || '')) throw error;
+    throw problem(error?.message?.startsWith('This archive') ? error.message : 'This comic archive could not be opened. It may be damaged or use an unsupported format.');
+  } finally { signal?.removeEventListener('abort', stop); stop(); }
+}
+
+async function archiveComic(source, read, signal, closed, { extract = libarchiveExtract, onProgress, kind = 'rar' } = {}) {
+  if (source.size > LIMITS.archive) throw problem('Comics in this format larger than 400 MB cannot be opened on this device.');
+  const bytes = await readEdition(source, read, signal, onProgress);
+  aborted(signal);
+  try { onProgress?.({ phase: 'extract' }); } catch {}
+  let entries = await extract(new Blob([bytes]), signal);
+  aborted(signal);
+  const files = [];
+  let comicInfo;
+  for (const { path, file } of entries) {
+    const name = String(path).replaceAll('\\', '/');
+    if (name.split('/').some(part => part === '__MACOSX' || part === '..' || part.startsWith('.'))) continue;
+    if (IMAGE.test(name)) { if (file.size > LIMITS.entry) throw problem('This page exceeds the 48 MB reading limit.'); files.push({ name, file }); }
+    else if (/(?:^|\/)ComicInfo\.xml$/i.test(name) && !comicInfo && file.size <= LIMITS.xml) comicInfo = file;
+  }
+  entries = null;
+  if (!files.length) throw problem('No JPEG, PNG or WebP comic pages were found in this archive.');
+  files.sort((a, b) => natural.compare(a.name, b.name));
+  const cache = new Map();
+  const book = {
+    type: kind, pageCount: files.length,
+    metadata: { pageNames: files.map(page => page.name) },
+    get bufferedBytes() { return closed.signal.aborted ? 0 : files.reduce((sum, page) => sum + page.file.size, 0); },
+    clearCache() { cache.clear(); },
+    async page(index, { signal: requestSignal } = {}) {
+      if (closed.signal.aborted) aborted(closed.signal);
+      if (!Number.isInteger(index) || index < 0 || index >= files.length) throw problem('This page does not exist.');
+      aborted(requestSignal);
+      if (cache.has(index)) return cache.get(index);
+      const data = new Uint8Array(await files[index].file.arrayBuffer());
+      aborted(requestSignal);
+      const blob = new Blob([data], { type: sniffImage(data) });
+      cache.set(index, blob); while (cache.size > 3) cache.delete(cache.keys().next().value);
+      return blob;
+    },
+    close() { closed.abort(); cache.clear(); files.length = 0; },
+  };
+  if (comicInfo && typeof DOMParser !== 'undefined') {
+    try { applyComicInfo(book, decoder.decode(new Uint8Array(await comicInfo.arrayBuffer()))); } catch {}
+  }
+  return book;
+}
+
+function applyComicInfo(book, xml) {
+  if (/<!\s*(?:DOCTYPE|ENTITY)/i.test(xml)) return;
+  const document = new DOMParser().parseFromString(xml, 'application/xml');
+  if (document.querySelector('parsererror')) return;
+  const fields = { title: 'Title', series: 'Series', publisher: 'Publisher', issue: 'Number', volume: 'Volume', writer: 'Writer', characters: 'Characters', summary: 'Summary', year: 'Year' };
+  for (const [field, tag] of Object.entries(fields)) {
+    const text = document.getElementsByTagName(tag)[0]?.textContent?.trim();
+    if (text) book.metadata[field] = text.slice(0, field === 'summary' ? 4000 : 1000);
+  }
+}
+
+async function pdfComic(source, read, signal, closed, onProgress) {
+  if (source.size > LIMITS.pdf) throw problem('PDFs larger than 128 MB are not supported on this device. CBZ comics can be read page by page from the cloud.');
   if (typeof document === 'undefined') throw problem('PDF rendering requires a browser.');
-  const bytes = await readEdition(source, read, signal);
+  const bytes = await readEdition(source, read, signal, onProgress);
   if (decoder.decode(bytes.subarray(0, 1024)).indexOf('%PDF-') < 0) throw problem('This file is not a valid PDF.');
   aborted(signal);
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.mjs';
+  const vendor = path => new URL('vendor/' + path, document.baseURI).href;
+  pdfjs.GlobalWorkerOptions.workerSrc = vendor('pdf.worker.mjs');
   const task = pdfjs.getDocument({ data: bytes, isEvalSupported: false, stopAtErrors: true,
-    cMapUrl: '/vendor/cmaps/', cMapPacked: true, standardFontDataUrl: '/vendor/standard_fonts/', wasmUrl: '/vendor/wasm/' });
+    cMapUrl: vendor('cmaps/'), cMapPacked: true, standardFontDataUrl: vendor('standard_fonts/'), wasmUrl: vendor('wasm/') });
   const onAbort = () => { task.destroy().catch(() => {}); };
   signal?.addEventListener('abort', onAbort, { once: true });
   closed.signal.addEventListener('abort', onAbort, { once: true });
@@ -355,30 +456,51 @@ async function pdfComic(source, read, signal, closed) {
  * Open a comic without storing edition/page bytes on disk. A source read uses
  * an end-exclusive interval. Call close() when leaving the reader.
  */
-export async function openComic(source, { signal } = {}) {
+export async function openComic(source, { signal, onProgress, extractArchive } = {}) {
   aborted(signal);
   const closed = new AbortController();
   const session = joinedSignals(signal, closed.signal);
   const read = checkedSource(source, session.signal);
   const extension = (source.name || '').split('.').pop().toLowerCase();
-  try {
-    let book;
-    if (extension === 'cbz' || extension === 'zip') book = await zipComic(source, read, session.signal, closed);
-    else if (extension === 'pdf') book = await pdfComic(source, read, session.signal, closed);
-    else if (['jpg', 'jpeg', 'png', 'webp'].includes(extension)) {
-      if (source.size > LIMITS.entry) throw problem('This image exceeds the 48 MB reading limit.');
-      let image;
-      book = { type: 'image', pageCount: 1, metadata: {},
-        get bufferedBytes() { return image?.size || 0; }, clearCache() { image = undefined; },
-        async page(index, { signal: requestSignal } = {}) {
+  const archive = kind => archiveComic(source, read, session.signal, closed, { extract: extractArchive, onProgress, kind });
+  const image = () => {
+    if (source.size > LIMITS.entry) throw problem('This image exceeds the 48 MB reading limit.');
+    let picture;
+    return { type: 'image', pageCount: 1, metadata: {},
+      get bufferedBytes() { return picture?.size || 0; }, clearCache() { picture = undefined; },
+      async page(index, { signal: requestSignal } = {}) {
         aborted(session.signal); aborted(requestSignal);
         if (index !== 0) throw problem('This page does not exist.');
-        if (!image) { const bytes = await read(0, source.size, requestSignal); image = new Blob([bytes], { type: sniffImage(bytes) }); }
-        return image;
-      }, close() { closed.abort(); image = undefined; } };
-    } else throw problem(/^(?:cbr|rar|cb7|7z|cbt|tar)$/.test(extension)
-      ? 'This web version reads CBZ, PDF and images. CBR, 7z and TAR reading is available in the native app.'
-      : 'Choose a CBZ, ZIP, PDF, JPEG, PNG or WebP comic.');
+        if (!picture) { const bytes = await read(0, source.size, requestSignal); picture = new Blob([bytes], { type: sniffImage(bytes) }); }
+        return picture;
+      }, close() { closed.abort(); picture = undefined; } };
+  };
+  // ZIP comics are read page by page. Unusual ZIP variants (ZIP64, other
+  // compression methods) fall back to the full-archive decoder.
+  const zipOrFallback = async () => {
+    try { return await zipComic(source, read, session.signal, closed); }
+    catch (error) {
+      if (error?.name === 'AbortError' || session.signal.aborted) throw error;
+      if (!/ZIP64|compression method|directory could not be found/.test(error?.message || '')) throw error;
+      const head = await read(0, Math.min(source.size, 1024));
+      const kind = containerKind(head);
+      if (kind === 'zip' || kind === 'rar' || kind === '7z' || kind === 'tar') return archive(kind);
+      throw error;
+    }
+  };
+  try {
+    let book;
+    if (extension === 'cbz' || extension === 'zip') book = await zipOrFallback();
+    else if (extension === 'pdf') book = await pdfComic(source, read, session.signal, closed, onProgress);
+    else if (['jpg', 'jpeg', 'png', 'webp'].includes(extension)) book = image();
+    else if (/^(?:cbr|rar|cb7|7z|cbt|tar)$/.test(extension)) {
+      if (!source.size) throw problem('This comic file is empty.');
+      const kind = containerKind(await read(0, Math.min(source.size, 1024)));
+      if (kind === 'zip') book = await zipOrFallback();
+      else if (kind === 'pdf') book = await pdfComic(source, read, session.signal, closed, onProgress);
+      else if (kind === 'rar' || kind === '7z' || kind === 'tar') book = await archive(kind);
+      else throw problem('This file is not a recognizable comic archive.');
+    } else throw problem('Choose a CBZ, CBR, CB7, CBT, PDF, JPEG, PNG or WebP comic.');
     const close = book.close.bind(book);
     book.close = () => { close(); session.dispose(); };
     return book;

@@ -73,7 +73,8 @@ test('encrypted, split and ZIP64 containers fail with an actionable reason', asy
   bytes = fixture(); set16(bytes, bytes.length - 22 + 4, 1);
   await assert.rejects(openComic(sourceFor(bytes)), /Split ZIP/);
   bytes = fixture(); set32(bytes, bytes.length - 22 + 16, 0xffffffff);
-  await assert.rejects(openComic(sourceFor(bytes)), /ZIP64/);
+  // ZIP64 variants are handed to the full-archive decoder instead of failing.
+  await assert.rejects(openComic(sourceFor(bytes), { extractArchive: async () => { throw new Error('full archive decoder used'); } }), /full archive decoder used/);
 });
 
 test('oversized entries and central directories are rejected before allocation', async () => {
@@ -85,7 +86,7 @@ test('oversized entries and central directories are rejected before allocation',
 
 test('unsupported image compression and changed local headers are rejected', async () => {
   let bytes = fixture(); set16(bytes, firstCentral(bytes) + 10, 12);
-  await assert.rejects(openComic(sourceFor(bytes)), /compression method/);
+  await assert.rejects(openComic(sourceFor(bytes), { extractArchive: async () => { throw new Error('full archive decoder used'); } }), /full archive decoder used/);
   bytes = fixture(); const cd = firstCentral(bytes); const local = u32(bytes, cd + 42);
   set16(bytes, local + 8, 8);
   const comic = await openComic(sourceFor(bytes));
@@ -128,7 +129,8 @@ test('pre-cancelled and per-page cancellation do not perform requests', async ()
 });
 
 test('unsupported formats and oversized PDFs have explicit web-reader explanations', async () => {
-  await assert.rejects(openComic(sourceFor(png, 'issue.cbr')), /native app/);
+  await assert.rejects(openComic(sourceFor(new TextEncoder().encode('not an archive at all'), 'issue.cbr')), /not a recognizable comic archive/);
+  await assert.rejects(openComic(sourceFor(png, 'issue.doc')), /Choose a CBZ, CBR/);
   await assert.rejects(openComic({ name: 'large.pdf', size: readerLimits.pdf + 1, read() { throw new Error('must not read'); } }), /128 MB/);
 });
 
