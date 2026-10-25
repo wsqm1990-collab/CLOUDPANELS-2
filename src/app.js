@@ -30,6 +30,9 @@ Object.assign(copy.es,{favorites:'Favoritos',readLater:'Leer después',favoriteA
 Object.assign(copy.en,{downloadOffline:'Save for offline reading',downloadingOffline:'Saving to this device… {p}%',removeOffline:'Remove from this device',offlineSaved:'Saved on this device. It opens even without internet.',offlineRemoved:'Removed from this device.',offlineFailed:'Could not save this comic on the device. Check the connection and free space.',onDevice:'On this device',downloadFolder:'Save folder offline',folderQueued:'Saving {count} comics to this device…',folderSaved:'This folder is saved on this device.',offlineStorage:'Saved on this device',offlineStorageDetail:'{count} comics · {size}. They open without internet, even with MEGA disconnected.',clearOffline:'Remove all saved comics',offlineCleared:'Saved comics removed from this device.'});
 Object.assign(copy['pt-BR'],{downloadOffline:'Baixar para ler offline',downloadingOffline:'Salvando no aparelho… {p}%',removeOffline:'Remover do aparelho',offlineSaved:'Salvo no aparelho. Abre mesmo sem internet.',offlineRemoved:'Removido do aparelho.',offlineFailed:'Não foi possível salvar este quadrinho no aparelho. Confira a conexão e o espaço livre.',onDevice:'No aparelho',downloadFolder:'Baixar pasta para ler offline',folderQueued:'Salvando {count} quadrinhos no aparelho…',folderSaved:'Esta pasta está salva no aparelho.',offlineStorage:'Salvos no aparelho',offlineStorageDetail:'{count} quadrinhos · {size}. Abrem sem internet, mesmo com o MEGA desconectado.',clearOffline:'Remover todos os quadrinhos salvos',offlineCleared:'Quadrinhos salvos removidos do aparelho.'});
 Object.assign(copy.es,{downloadOffline:'Guardar para leer sin conexión',downloadingOffline:'Guardando en el dispositivo… {p}%',removeOffline:'Quitar del dispositivo',offlineSaved:'Guardado en el dispositivo. Se abre incluso sin internet.',offlineRemoved:'Quitado del dispositivo.',offlineFailed:'No se pudo guardar este cómic. Revisa la conexión y el espacio libre.',onDevice:'En el dispositivo',downloadFolder:'Guardar carpeta sin conexión',folderQueued:'Guardando {count} cómics en el dispositivo…',folderSaved:'Esta carpeta está guardada en el dispositivo.',offlineStorage:'Guardados en el dispositivo',offlineStorageDetail:'{count} cómics · {size}. Se abren sin internet, incluso con MEGA desconectado.',clearOffline:'Quitar todos los cómics guardados',offlineCleared:'Cómics guardados quitados del dispositivo.'});
+Object.assign(copy.en,{syncTitle:'Sync between devices',syncDetail:'Your library, reading progress and preferences are saved in your MEGA, in a CloudPanels folder. Sign in to the same MEGA on another device to continue where you stopped.',syncNow:'Sync now',syncNever:'Not synced yet.',syncAt:'Last synced at {time}.',syncBusy:'Syncing…',syncFailed:'Could not sync with MEGA. It will try again later.',syncNeedsAccount:'Sign in with your MEGA account (not a link) to sync between devices.',syncDone:'Synced with MEGA.'});
+Object.assign(copy['pt-BR'],{syncTitle:'Sincronizar entre aparelhos',syncDetail:'Sua biblioteca, onde você parou e suas preferências ficam salvos no seu MEGA, numa pasta CloudPanels. Entre no mesmo MEGA em outro aparelho para continuar de onde parou.',syncNow:'Sincronizar agora',syncNever:'Ainda não sincronizado.',syncAt:'Última sincronização às {time}.',syncBusy:'Sincronizando…',syncFailed:'Não foi possível sincronizar com o MEGA. Vou tentar de novo mais tarde.',syncNeedsAccount:'Entre com a sua conta do MEGA (não com link) para sincronizar entre aparelhos.',syncDone:'Sincronizado com o MEGA.'});
+Object.assign(copy.es,{syncTitle:'Sincronizar entre dispositivos',syncDetail:'Tu biblioteca, tu progreso y tus preferencias se guardan en tu MEGA, en una carpeta CloudPanels. Entra al mismo MEGA en otro dispositivo para seguir donde lo dejaste.',syncNow:'Sincronizar ahora',syncNever:'Aún no sincronizado.',syncAt:'Última sincronización a las {time}.',syncBusy:'Sincronizando…',syncFailed:'No se pudo sincronizar con MEGA. Se intentará más tarde.',syncNeedsAccount:'Entra con tu cuenta de MEGA (no con un enlace) para sincronizar.',syncDone:'Sincronizado con MEGA.'});
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
 let accountProfile = await openAccountGate({client:accounts});
@@ -75,6 +78,7 @@ const sessionVault = accounts || {
   async clearSession(){try{localStorage.removeItem(SESSION_KEY);}catch{}},
 };
 const offline = await new OfflineLibrary().init();
+const sync={busy:false,lastText:null,lastAt:0,lastPull:0,failed:false,timer:null};
 const localFiles = new Map();
 const demoFiles = new Map();
 const readable = new Set(['cbz','zip','pdf','jpg','jpeg','png','webp','cbr','rar','cb7','7z','cbt','tar']);
@@ -100,7 +104,7 @@ const reader = createReaderController({
     const source=await resolveSource(comic);
     return {comic,source};
   },
-  onChange:()=>{mainDirty=true;queueMainRefresh();},
+  onChange:()=>{mainDirty=true;queueMainRefresh();scheduleSync();},
   onActivity:({busy,open})=>{
     covers.setForegroundBusy(Boolean(busy||open));
     if(open){mainDirty=true;pauseCoverRequests();}
@@ -161,7 +165,7 @@ function toast(message) {
   clearTimeout(toastTimer); target.textContent = message; target.hidden = false;
   toastTimer = setTimeout(()=>{target.hidden=true;},5000);
 }
-function changed() { render(); if (store.lastError) toast(t('storageError')); }
+function changed() { render(); if (store.lastError) toast(t('storageError')); scheduleSync(); }
 function queueMainRefresh(){
   if(refreshQueued)return;refreshQueued=true;
   queueMicrotask(()=>{refreshQueued=false;if(!document.querySelector('#reader').open&&mainDirty){mainDirty=false;render();}});
@@ -669,6 +673,7 @@ function renderSettings() {
     settingRow(t('buffer'),t('bufferDetail'),selectControl(t('buffer'),[16,32,64,128,256].map(n=>[String(n),n+' MB']),String(store.state.settings.cacheMiB),value=>{store.setSettings({cacheMiB:Number(value)});changed();},'input')),
     settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();toast(t('bufferCleared'));render();},'button secondary compact')),
     settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();toast(t('coversCleared'));render();},'button secondary compact')),
+    element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
     offline.available?settingRow(t('offlineStorage'),t('offlineStorageDetail',{count:offline.ids.size,size:formatBytes(offline.totalBytes)}),action(t('clearOffline'),async()=>{for(const id of [...offline.ids.keys()])await offline.remove(id).catch(()=>{});toast(t('offlineCleared'));render();},'button secondary compact',{disabled:!offline.ids.size})):null);
   main.append(settings,element('section',{class:'card section'},element('h3',{text:t('backup')}),text(t('backupDetail')),element('div',{class:'row',style:'margin-top:17px'},action(t('exportBackup'),exportBackup),action(t('importBackup'),importBackup))),
     element('section',{class:'card section'},element('h3',{text:t('cloudConnection')}),text(t('cloudConnectionDetail')),element('div',{class:'row',style:'margin-top:17px'},action(mega.connected?t('manageMega'):t('connectMega'),openConnection,'button primary'),mega.connected?action(t('disconnect'),disconnect,'button secondary'):null)),
@@ -700,6 +705,7 @@ async function restoreRememberedConnection() {
       if(saved.folder?.id){try{await mega.children(saved.folder.id);}catch{rememberedConnection.folder=null;}}
       if(Array.isArray(saved.browsePath)&&saved.browsePath.length<=64&&saved.browsePath.every(part=>typeof part==='string'&&part.length<=512))folderPath=saved.browsePath.slice();
       libraryMode='folders';refreshHeader();mainDirty=true;queueMainRefresh();
+      void syncWithMega({pull:true});
     }catch(error){
       if(['LOGIN','ACCESS','SESSION_INPUT'].includes(error?.code)){try{await sessionVault.clearSession();}catch{}rememberedConnection=null;}
       toast(t('reconnect'));
@@ -743,6 +749,7 @@ function openConnection() {
       try{
         if(selectedTab==='account')await mega.login(credentials,{signal:controller.signal});else await mega.connectLink(url,{signal:controller.signal});
         rememberedConnection=null;await saveRememberedConnection();
+        void syncWithMega({pull:true});
         if(current()&&!controller.signal.aborted){modalAbort=null;refreshHeader();showFolders();}
       }catch(error){if(current()&&!controller.signal.aborted){status.className='form-error';status.textContent=publicError(error,t('connectionError'));submit.disabled=false;tabs.querySelectorAll('button').forEach(button=>button.disabled=false);}}
       finally{if(credentials){credentials.email='';credentials.password='';credentials.secondFactorCode='';}}
@@ -817,5 +824,45 @@ if('serviceWorker' in navigator && location.protocol==='https:'){ // Lets the in
 appReady=true;
 render();
 startupNotice?.remove();document.body.classList.remove('account-starting');
+// ---- Sync through the user's MEGA --------------------------------------------
+function syncPayload(){
+  const state=JSON.parse(store.exportBackup());
+  const keep=new Set(state.comics.filter(c=>c.source==='mega').map(c=>c.id));
+  state.comics=state.comics.filter(c=>keep.has(c.id));
+  for(const key of ['progress','panels'])for(const id of Object.keys(state[key]||{}))if(!keep.has(id))delete state[key][id];
+  state.favorites=(state.favorites||[]).filter(id=>keep.has(id));state.readLater=(state.readLater||[]).filter(id=>keep.has(id));
+  state.bookmarks=(state.bookmarks||[]).filter(b=>keep.has(b.comicId));
+  return JSON.stringify(state);
+}
+async function syncWithMega({pull=true,announce=false}={}){
+  if(sync.busy||!mega.canSync)return false;
+  sync.busy=true;refreshSyncStatus();
+  try{
+    if(pull){
+      if(Date.now()-sync.lastPull>60000&&sync.lastPull)await mega.refreshTree();
+      const remote=await mega.readSyncFile();
+      sync.lastPull=Date.now();
+      if(remote){const before=store.exportBackup();store.importBackup(remote);if(store.exportBackup()!==before){mainDirty=true;queueMainRefresh();}}
+    }
+    const text=syncPayload();
+    if(text!==sync.lastText){await mega.writeSyncFile(text);sync.lastText=text;}
+    sync.lastAt=Date.now();sync.failed=false;if(announce)toast(t('syncDone'));return true;
+  }catch{sync.failed=true;if(announce)toast(t('syncFailed'));return false;}
+  finally{sync.busy=false;refreshSyncStatus();}
+}
+function scheduleSync(delay=20000){clearTimeout(sync.timer);sync.timer=setTimeout(()=>{if(mega.canSync&&syncPayload()!==sync.lastText)void syncWithMega({pull:false});},delay);}
+setInterval(()=>{if(document.visibilityState==='visible'&&mega.canSync&&!sync.busy&&syncPayload()!==sync.lastText)void syncWithMega({pull:false});},45000);
+document.addEventListener('visibilitychange',()=>{
+  if(!mega.canSync)return;
+  if(document.visibilityState==='hidden'){if(syncPayload()!==sync.lastText)void syncWithMega({pull:false});}
+  else if(Date.now()-sync.lastPull>10*60000)void syncWithMega({pull:true});
+});
+function syncStatusText(){
+  if(!mega.connected||!mega.canSync)return t('syncNeedsAccount');
+  if(sync.busy)return t('syncBusy');
+  if(sync.failed)return t('syncFailed');
+  return sync.lastAt?t('syncAt',{time:new Date(sync.lastAt).toLocaleTimeString(store.state.settings.language==='en'?'en-US':store.state.settings.language,{hour:'2-digit',minute:'2-digit'})}):t('syncNever');
+}
+function refreshSyncStatus(){for(const node of document.querySelectorAll('[data-sync-status]'))node.textContent=syncStatusText();}
 if(navigator.onLine===false)window.addEventListener('online',()=>{if(!mega.connected)void restoreRememberedConnection();},{once:true});else void restoreRememberedConnection();
 if(store.lastError||persistenceErrorPending)toast(t('storageLoadedError'));

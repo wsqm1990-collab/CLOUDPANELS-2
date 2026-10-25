@@ -87,6 +87,8 @@ function waitAbortable(promise, signal, onCancel) {
 }
 
 /** Read-only facade. Catalog descriptors never expose keys, sessions or SDK objects. */
+const SYNC_FOLDER = 'CloudPanels', SYNC_FILE = 'cloudpanels-biblioteca.json', SYNC_LIMIT = 16 * 1024 * 1024;
+
 export class MegaConnection {
   constructor({ sdk = { Storage, File: MEGAFile, API }, maxConcurrentReads = 2, logoutTimeoutMs = 3000 } = {}) {
     this._sdk = sdk;
@@ -212,6 +214,49 @@ export class MegaConnection {
   }
 
   /** Lock/switch profile without revoking the session held in the native vault. */
+  // ---- Reading history sync -------------------------------------------------
+  // A small CloudPanels file in the user's own MEGA Cloud Drive carries the
+  // library, progress and preferences between devices. Account logins only.
+  get canSync() { return this.mode === 'account' && Boolean(this._storage?.root?.directory); }
+  _syncFolder() { return (this._storage?.root?.children || []).find(node => node?.directory && node.name === SYNC_FOLDER) || null; }
+  _syncFiles(folder = this._syncFolder()) {
+    return (folder?.children || []).filter(node => node && !node.directory && node.name === SYNC_FILE)
+      .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+  }
+  async refreshTree({ signal } = {}) {
+    if (!this.canSync || typeof this._storage.reload !== 'function') return;
+    await waitAbortable(this._storage.reload(true), signal);
+  }
+  async readSyncFile({ signal } = {}) {
+    if (!this.canSync) return null;
+    for (const file of this._syncFiles()) {
+      checkSignal(signal);
+      if (!(file.size >= 0) || file.size > SYNC_LIMIT) continue;
+      try {
+        const data = await waitAbortable(file.downloadBuffer({}), signal);
+        return new TextDecoder().decode(data instanceof Uint8Array ? data : new Uint8Array(data));
+      } catch (error) { if (signal?.aborted) throw error; }
+    }
+    return null;
+  }
+  async writeSyncFile(text, { signal } = {}) {
+    if (!this.canSync) return false;
+    const data = new TextEncoder().encode(String(text));
+    if (data.length > SYNC_LIMIT) throw new MegaConnectionError('Your reading history is too large to sync.', 'SYNC_SIZE');
+    let folder = this._syncFolder();
+    if (!folder) folder = await waitAbortable(this._storage.root.mkdir(SYNC_FOLDER), signal);
+    const previous = this._syncFiles(folder);
+    const upload = folder.upload({ name: SYNC_FILE, size: data.length }, data);
+    upload.on?.('error', () => {});
+    const created = await waitAbortable(upload.complete, signal);
+    for (const old of previous) {
+      if (old === created) continue;
+      try { await new Promise(resolve => old.delete(true, () => resolve())); } catch {}
+      if (Array.isArray(folder.children)) { const index = folder.children.indexOf(old); if (index >= 0) folder.children.splice(index, 1); }
+    }
+    return true;
+  }
+
   async suspend() { return this.disconnect({ revoke: false }); }
 
   roots() { return this._rootNodes.map(node => this._describe(node, null)); }
