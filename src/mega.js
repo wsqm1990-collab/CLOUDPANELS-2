@@ -393,8 +393,24 @@ export class MegaConnection {
     return comics.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
   }
 
+  // If a saved comic's MEGA id is no longer found (the file was re-uploaded,
+  // converted or moved), look for the same file by name and size instead.
+  _findByNameAndSize(comic) {
+    const files = this._storage?.files;
+    if (!files || typeof comic?.name !== 'string' || !Number.isSafeInteger(comic?.size)) return null;
+    const trash = this._storage.trash;
+    const inTrash = node => { for (let p = node?.parent, i = 0; p && i < 64; p = p.parent, i++) if (p === trash) return true; return false; };
+    let match = null;
+    for (const node of Object.values(files)) {
+      if (!node || node.directory || node.name !== comic.name || node.size !== comic.size || inTrash(node)) continue;
+      if (match) return null; // ambiguous: never guess between two files
+      match = node;
+    }
+    if (match) this._register(match, null);
+    return match;
+  }
   getSource(comic) {
-    const node = this._findNode(comic?.id);
+    const node = this._findNode(comic?.id) || this._findByNameAndSize(comic);
     if (!node || node.directory || !Number.isSafeInteger(node.size) || node.size <= 0) throw new MegaConnectionError('Reconnect MEGA and select this comic again.', 'NOT_FOUND');
     const generation = this._generation;
     return {
