@@ -103,10 +103,11 @@ export function libraryContext(state, { folderOf } = {}) {
   return { text: lines.join('\n').slice(0, MAX_CONTEXT_CHARS + 4000), byRef };
 }
 
-export function systemPrompt(context) {
+export function systemPrompt(context, language = 'en') {
+  const reply = language === 'pt-BR' ? 'português do Brasil' : language === 'es' ? 'espanhol' : 'inglês (English)';
   return `Você é o assistente pessoal de quadrinhos do usuário, dentro do app CloudPanels (um leitor de HQs que lê a coleção dele no MEGA). Pense num mordomo de IA de filme: prestativo, entusiasmado com quadrinhos, direto e com um toque de bom humor — mas sem exagerar no personagem.
 
-Responda sempre em português do Brasil, de forma curta e fácil de ler no iPad (parágrafos curtos, listas quando ajudar). O usuário não é técnico.
+Responda sempre em ${reply}, mesmo que a biblioteca abaixo esteja descrita em português, de forma curta e fácil de ler no iPad (parágrafos curtos, listas quando ajudar). O usuário não é técnico.
 
 O que você faz:
 - Recomenda o que ler a seguir com base no que ele leu, está lendo e favoritou. Explique em uma frase por que cada indicação combina com ele.
@@ -158,15 +159,15 @@ export async function askAssistant({ key, messages, system, onText, signal, web 
   return full;
 }
 
-export function friendlyError(error) {
-  const status = error?.status;
-  if (status === 401) return 'A chave da IA não foi aceita. Confira se copiou a chave inteira.';
-  if (status === 402 || /credit|billing|balance/i.test(error?.message || '')) return 'Sua conta da IA está sem créditos. Adicione créditos no site da Anthropic e tente de novo.';
-  if (status === 429) return 'Muitas perguntas seguidas. Espere alguns segundos e tente de novo.';
-  if (status === 529 || status >= 500) return 'O serviço de IA está ocupado agora. Tente de novo daqui a pouco.';
+export function friendlyError(error, language = 'en') {
+  const pt = language === 'pt-BR', status = error?.status;
   if (error?.name === 'AbortError') return '';
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return 'Sem internet. O assistente precisa de conexão.';
-  return 'Não consegui falar com a IA agora. Tente de novo.';
+  if (status === 401) return pt ? 'A chave da IA não foi aceita. Confira se copiou a chave inteira.' : 'The AI key was not accepted. Check that you copied the whole key.';
+  if (status === 402 || /credit|billing|balance/i.test(error?.message || '')) return pt ? 'Sua conta da IA está sem créditos. Adicione créditos no site da Anthropic e tente de novo.' : 'Your AI account is out of credit. Add credit on the Anthropic website and try again.';
+  if (status === 429) return pt ? 'Muitas perguntas seguidas. Espere alguns segundos e tente de novo.' : 'Too many questions in a row. Wait a few seconds and try again.';
+  if (status === 529 || status >= 500) return pt ? 'O serviço de IA está ocupado agora. Tente de novo daqui a pouco.' : 'The AI service is busy right now. Try again shortly.';
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return pt ? 'Sem internet. O assistente precisa de conexão.' : 'No internet. The assistant needs a connection.';
+  return pt ? 'Não consegui falar com a IA agora. Tente de novo.' : 'Could not reach the AI right now. Please try again.';
 }
 
 // ---- Voice --------------------------------------------------------------------
