@@ -474,3 +474,18 @@ test('a CBZ is uploaded in pieces next to the original; the original moves to th
   await assert.rejects(short.end(), /original was kept/);
   assert.ok(!events.some(e => e[0] === 'delete'));
 });
+
+test('a trashed original with a .cbz copy can be put back and the copy trashed', async () => {
+  const { MegaConnection } = await import('../src/mega.js');
+  const trash = { nodeId: 'trash001', name: 'Rubbish Bin', directory: true, children: [] };
+  const folder = { nodeId: 'folder01', name: 'RADIANT BLACK', directory: true, children: [] };
+  const moves = [];
+  const cbr = { nodeId: 'cbr00001', name: 'Radiant Black v01.cbr', size: 10, parent: trash, moveTo(target, cb) { moves.push(['move', this.name, target.name]); this.parent = target; cb(); } };
+  const cbz = { nodeId: 'cbz00001', name: 'Radiant Black v01.cbz', size: 12, parent: folder, delete(permanent, cb) { moves.push(['trash', this.name, permanent]); cb(); } };
+  const connection = new MegaConnection(); connection.mode = 'account';
+  connection._storage = { trash, root: folder, files: { trash001: trash, folder01: folder, cbr00001: cbr, cbz00001: cbz } };
+  const items = connection.trashedConversions();
+  assert.equal(items.length, 1); assert.equal(items[0].folder, 'RADIANT BLACK');
+  await connection.restoreConversion(items[0]);
+  assert.deepEqual(moves, [['move', 'Radiant Black v01.cbr', 'RADIANT BLACK'], ['trash', 'Radiant Black v01.cbz', false]]);
+});
