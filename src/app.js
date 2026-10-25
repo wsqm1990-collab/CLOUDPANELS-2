@@ -52,8 +52,6 @@ function diag(where,error,extra){
 window.addEventListener('error',event=>diag('window',event.error||event.message));
 window.addEventListener('unhandledrejection',event=>diag('promise',event.reason));
 function diagnosticsReport(){try{const list=JSON.parse(localStorage.getItem(DIAG_KEY)||'[]');return list.length?JSON.stringify({app:'CloudPanels',ua:navigator.userAgent,entries:list},null,1):'';}catch{return '';}}
-Object.assign(copy.en,{restoreTitle:'Undo CBZ conversions',restoreDetail:'Puts original comics moved to the MEGA Rubbish Bin by the converter back in their folder, and moves the converted .cbz to the Rubbish Bin instead.',restoreOpen:'Review',restoreNone:'There is nothing to undo.',restoreItem:'Put back in “{folder}”',restoreDone:'{name} is back in {folder}.',restoreFailed:'Could not put {name} back: {reason}'});
-Object.assign(copy['pt-BR'],{restoreTitle:'Desfazer conversões para CBZ',restoreDetail:'Devolve para a pasta original os quadrinhos que o conversor mandou para a lixeira do MEGA, e manda o .cbz convertido para a lixeira no lugar.',restoreOpen:'Ver',restoreNone:'Não há nada para desfazer.',restoreItem:'Devolver para “{folder}”',restoreDone:'{name} voltou para {folder}.',restoreFailed:'Não foi possível devolver {name}: {reason}'});
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
 let accountProfile = await openAccountGate({client:accounts});
@@ -398,25 +396,6 @@ function folderReadActions(comics,folder){
     folder.readCount||folder.readingCount?action(t('markFolderUnread'),()=>markStories(ids,false),'text-button',{'data-folder-read':'unread'}):null,
     comics.some(c=>c.source!=='demo')?action(comics.every(c=>offline.has(c.id))?'✓ '+t('onDevice'):'⤓ '+t('downloadFolder'),()=>saveFolderOffline(comics),'text-button',{'data-folder-offline':'1'}):null,
     comics.some(convertible)?action('⇄ '+t('convertFolder',{count:comics.filter(convertible).length}),()=>askConvert(comics.filter(convertible)),'text-button'):null);
-}
-
-function openRestore(){
-  if(!mega.connected){toast(t('reconnect'));openConnection();return;}
-  const {body}=openModal(t('restoreTitle'),t('restoreDetail'));
-  const items=mega.trashedConversions();
-  if(!items.length){body.append(text(t('restoreNone')));return;}
-  for(const item of items){
-    const button=action(t('restoreItem',{folder:item.folder}),async()=>{
-      button.disabled=true;
-      try{
-        await mega.restoreConversion(item);
-        if(store.state.comics.some(c=>c.id===item.cbzId))store.removeComic(item.cbzId);
-        changed();toast(t('restoreDone',{name:item.name,folder:item.folder}));row.remove();
-      }catch(error){diag('restore',error);button.disabled=false;toast(t('restoreFailed',{name:item.name,reason:publicError(error,'')}));}
-    },'button primary compact');
-    const row=element('div',{class:'settings-row'},element('div',{},element('h3',{text:item.name}),text(item.cbzName+' → 🗑')),button);
-    body.append(row);
-  }
 }
 function convertible(comic){return MEGA_WRITES_ENABLED&&comic?.source==='mega'&&['cbr','rar','cb7','7z','cbt','tar'].includes(String(comic.format).toLowerCase());}
 let conversion=null;
@@ -839,7 +818,6 @@ function renderSettings() {
     settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();toast(t('bufferCleared'));render();},'button secondary compact')),
     settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();toast(t('coversCleared'));render();},'button secondary compact')),
     element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
-    settingRow(t('restoreTitle'),t('restoreDetail'),action(t('restoreOpen'),()=>openRestore(),'button secondary compact')),
     settingRow(t('diagTitle'),diagnosticsReport()?t('diagDetail'):t('diagEmpty'),action(t('diagCopy'),async()=>{const report=diagnosticsReport()||t('diagEmpty');try{await navigator.clipboard.writeText(report);toast(t('diagCopied'));}catch{const {body}=openModal(t('diagTitle'));const area=element('textarea',{class:'input',rows:12,readonly:true});area.value=report;body.append(area);area.select();}},'button secondary compact')),
     offline.available?settingRow(t('offlineStorage'),t('offlineStorageDetail',{count:offline.ids.size,size:formatBytes(offline.totalBytes)}),action(t('clearOffline'),async()=>{for(const id of [...offline.ids.keys()])await offline.remove(id).catch(()=>{});toast(t('offlineCleared'));render();},'button secondary compact',{disabled:!offline.ids.size})):null);
   main.append(settings,element('section',{class:'card section'},element('h3',{text:t('backup')}),text(t('backupDetail')),element('div',{class:'row',style:'margin-top:17px'},action(t('exportBackup'),exportBackup),action(t('importBackup'),importBackup))),
