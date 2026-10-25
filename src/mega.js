@@ -449,7 +449,26 @@ export class MegaConnection {
     });
   }
   _release() { this._activeReads = Math.max(0, this._activeReads - 1); this._waiters.shift()?.resolve(); }
+  // Each range read normally asks MEGA for the file's download address first.
+  // Reusing that address for a few minutes halves the round trips, which makes
+  // covers, page turns and large-archive indexing noticeably faster.
+  _cacheDownloadAddress(api) {
+    if (!api || typeof api.request !== 'function' || api.__cloudpanelsAddressCache) return;
+    const original = api.request.bind(api), cache = new Map(), TTL = 5 * 60 * 1000;
+    api.__cloudpanelsAddressCache = cache;
+    api.request = (request, callback, ...rest) => {
+      if (!request || request.a !== 'g' || typeof callback !== 'function') return original(request, callback, ...rest);
+      const key = JSON.stringify([request.n, request.p, request._querystring, request.ssl]);
+      const hit = cache.get(key);
+      if (hit && Date.now() - hit.at < TTL) { queueMicrotask(() => callback(null, hit.response)); return; }
+      return original(request, (error, response, ...more) => {
+        if (!error && response && typeof response.g === 'string') { cache.set(key, { at: Date.now(), response }); if (cache.size > 500) cache.delete(cache.keys().next().value); }
+        callback(error, response, ...more);
+      }, ...rest);
+    };
+  }
   _download(node, start, end, signal) {
+    try { this._cacheDownloadAddress(node?.api); } catch {}
     const wanted = end - start;
     const receivedLimit = start === 0 && end === 1 ? Math.min(node.size, 2) : wanted;
     return new Promise((resolve, reject) => {
@@ -459,6 +478,7 @@ export class MegaConnection {
         signal?.removeEventListener('abort', abort);
         if (stream) { this._streams.delete(stream); stream.removeListener?.('data', data); stream.removeListener?.('end', ended); stream.removeListener?.('error', failed); stream.on('error', () => {}); }
         chunks.length = 0;
+        if (error) { try { node?.api?.__cloudpanelsAddressCache?.clear(); } catch {} }
         error ? reject(error) : resolve(result);
       };
       const abort = () => { finish(cancelled()); try { stream?.destroy(); } catch {} };

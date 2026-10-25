@@ -326,8 +326,78 @@ async function libarchiveExtract(blob, signal, loadArchive = browserArchive) {
   } finally { signal?.removeEventListener('abort', stop); stop(); }
 }
 
-async function archiveComic(source, read, signal, closed, { extract = libarchiveExtract, onProgress, kind = 'rar' } = {}) {
-  if (source.size > LIMITS.archive) throw problem('Comics in this format larger than 300 MB cannot be opened on this device.');
+const LISTING_CACHE = 'cloudpanels-archive-listings-v1';
+function cachedListing(key) { try { return JSON.parse(localStorage.getItem(LISTING_CACHE) || '{}')[key] || null; } catch { return null; } }
+function rememberListing(key, value) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LISTING_CACHE) || '{}'); all[key] = { ...value, savedAt: Date.now() };
+    const keys = Object.keys(all).sort((a, b) => (all[b].savedAt || 0) - (all[a].savedAt || 0));
+    for (const old of keys.slice(25)) delete all[old];
+    localStorage.setItem(LISTING_CACHE, JSON.stringify(all));
+  } catch {}
+}
+
+/**
+ * Large RAR/TAR comics are read page by page, like CBZ: only the entry
+ * headers are listed (and remembered), then each page is fetched on its own.
+ * Stored pages are used as-is; compressed pages of non-solid RARs are decoded
+ * from just their own bytes. Returns null when this is not possible.
+ */
+async function streamedArchiveComic(source, read, signal, closed, { kind, loadArchive = browserArchive, onProgress } = {}) {
+  const key = `${source.name}:${source.size}`;
+  let listing = cachedListing(key);
+  if (!listing) {
+    try { onProgress?.({ phase: 'index' }); } catch {}
+    const result = await listArchive((start, end, s2) => read(start, end, s2 || signal), source.size, kind, { signal });
+    if (result.encrypted || !result.entries.length) return null;
+    listing = { solid: result.solid, preamble: result.preamble, entries: result.entries.filter(e => !e.directory && isPageName(e.name)).map(({ name, start, end, dataStart, stored, encrypted }) => ({ name, start, end, dataStart, stored, encrypted })) };
+    if (listing.entries.length) rememberListing(key, listing);
+  }
+  const pages = listing.entries.filter(e => !e.encrypted).sort((a, b) => natural.compare(a.name, b.name));
+  if (!pages.length) return null;
+  if (listing.solid && pages.some(page => !page.stored)) return null;
+  if (pages.some(page => page.end - page.start > LIMITS.entry)) throw problem('This page exceeds the 48 MB reading limit.');
+  const cache = new Map();
+  aborted(signal);
+  return {
+    type: kind, pageCount: pages.length, metadata: { pageNames: pages.map(p => p.name) },
+    get bufferedBytes() { return [...cache.values()].reduce((sum, blob) => sum + blob.size, 0); },
+    clearCache() { cache.clear(); },
+    async page(index, { signal: requestSignal } = {}) {
+      if (closed.signal.aborted) aborted(closed.signal);
+      if (!Number.isInteger(index) || index < 0 || index >= pages.length) throw problem('This page does not exist.');
+      if (cache.has(index)) return cache.get(index);
+      const combined = joinedSignals(signal, closed.signal, requestSignal);
+      try {
+        const entry = pages[index];
+        let bytes;
+        if (entry.stored) bytes = await read(entry.dataStart, entry.end, combined.signal);
+        else {
+          const head = await read(0, listing.preamble, combined.signal), body = await read(entry.start, entry.end, combined.signal);
+          const synthetic = new Uint8Array(head.length + body.length); synthetic.set(head); synthetic.set(body, head.length);
+          const Archive = await loadArchive(); let archive;
+          try { archive = await Archive.open(new File([synthetic], 'page')); const file = await archive.extractSingleFile(entry.name); bytes = new Uint8Array(await file.arrayBuffer()); }
+          catch (error) { if (combined.signal.aborted) throw error; throw problem('This compressed page is damaged or unsupported.'); }
+          finally { try { archive?.close(); } catch {} }
+        }
+        aborted(combined.signal);
+        const blob = new Blob([bytes], { type: sniffImage(bytes) });
+        cache.set(index, blob); while (cache.size > 3) cache.delete(cache.keys().next().value);
+        return blob;
+      } finally { combined.dispose(); }
+    },
+    close() { closed.abort(); cache.clear(); },
+  };
+}
+
+async function archiveComic(source, read, signal, closed, { extract = libarchiveExtract, onProgress, kind = 'rar', loadArchive, streamAbove = LIMITS.archive } = {}) {
+  if (source.size > streamAbove) {
+    if (kind === 'rar' || kind === 'tar') {
+      const streamed = await streamedArchiveComic(source, read, signal, closed, { kind, onProgress, ...(loadArchive ? { loadArchive } : {}) });
+      if (streamed) return streamed;
+    }
+    throw problem('This comic is over 300 MB and packed in a way that can only be opened whole, which is too big for this device. Saving it as CBZ (or a normal, non-solid CBR) lets it open page by page.');
+  }
   // A file already on the device is handed over directly, without a copy.
   const blob = source.blob instanceof Blob && source.blob.size === source.size ? source.blob : new Blob([await readEdition(source, read, signal, onProgress)]);
   aborted(signal);
@@ -457,13 +527,13 @@ async function pdfComic(source, read, signal, closed, onProgress) {
  * Open a comic without storing edition/page bytes on disk. A source read uses
  * an end-exclusive interval. Call close() when leaving the reader.
  */
-export async function openComic(source, { signal, onProgress, extractArchive } = {}) {
+export async function openComic(source, { signal, onProgress, extractArchive, loadArchive, streamAbove } = {}) {
   aborted(signal);
   const closed = new AbortController();
   const session = joinedSignals(signal, closed.signal);
   const read = checkedSource(source, session.signal);
   const extension = (source.name || '').split('.').pop().toLowerCase();
-  const archive = kind => archiveComic(source, read, session.signal, closed, { extract: extractArchive, onProgress, kind });
+  const archive = kind => archiveComic(source, read, session.signal, closed, { extract: extractArchive, onProgress, kind, loadArchive, ...(streamAbove != null ? { streamAbove } : {}) });
   const image = () => {
     if (source.size > LIMITS.entry) throw problem('This image exceeds the 48 MB reading limit.');
     let picture;
@@ -521,7 +591,7 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
     const size = parseInt(field(124, 12).trim() || '0', 8) || 0, flag = bytes[pos + 156];
     const prefix = field(257, 6).startsWith('ustar') ? field(345, 155) : '';
     const next = abs + 512 + Math.ceil(size / 512) * 512;
-    return { next, entry: flag === 48 || flag === 0 ? { name: (prefix ? prefix + '/' : '') + field(0, 100), start: abs, end: abs + 512 + size, padded: next, directory: false } : null };
+    return { next, entry: flag === 48 || flag === 0 ? { name: (prefix ? prefix + '/' : '') + field(0, 100), start: abs, end: abs + 512 + size, dataStart: abs + 512, stored: true, padded: next, directory: false } : null };
   }
   if (rar4) {
     if (pos + 7 > n) return null;
@@ -537,7 +607,7 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
       if (nameAt + nameSize > n) return null;
       let raw = bytes.subarray(nameAt, nameAt + nameSize); const z = raw.indexOf(0); if (z >= 0) raw = raw.subarray(0, z);
       const name = (flags & 0x200 ? new TextDecoder('latin1') : decoder).decode(raw).replaceAll('\\', '/');
-      return { next: abs + size + data, entry: { name, start: abs, end: abs + size + data, directory: (flags & 0xe0) === 0xe0, solidFile: Boolean(flags & 0x10) } };
+      return { next: abs + size + data, entry: { name, start: abs, end: abs + size + data, dataStart: abs + size, stored: bytes[pos + 25] === 0x30, encrypted: Boolean(flags & 0x04), directory: (flags & 0xe0) === 0xe0, solidFile: Boolean(flags & 0x10) } };
     }
     if (flags & 0x8000) { if (pos + 11 > n) return null; return { next: abs + size + view.getUint32(pos + 7, true) }; }
     return { next: abs + size };
@@ -561,7 +631,7 @@ function archiveHeaderAt(bytes, pos, base, kind, rar4) {
       const compression = vint(); vint();
       const nameLength = vint();
       if (p + nameLength > n) return null;
-      return { next, entry: { name: decoder.decode(bytes.subarray(p, p + nameLength)), start: abs, end: next, directory: Boolean(fileFlags & 1), solidFile: Boolean(compression & 0x40) } };
+      return { next, entry: { name: decoder.decode(bytes.subarray(p, p + nameLength)), start: abs, end: next, dataStart: base + headerStart + headerSize, stored: ((compression >> 7) & 7) === 0, directory: Boolean(fileFlags & 1), solidFile: Boolean(compression & 0x40) } };
     }
     return { next };
   } catch (error) { if (error instanceof RangeError) return null; return { stop: true }; }
