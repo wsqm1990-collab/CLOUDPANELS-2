@@ -222,6 +222,9 @@ export class MegaConnection {
   _syncFolders() {
     const root = this._storage?.root, found = new Set();
     for (const node of root?.children || []) if (node?.directory && node.name === SYNC_FOLDER) found.add(node);
+    let hint = null; try { hint = globalThis.localStorage?.getItem('cloudpanels-sync-folder'); } catch {}
+    const hinted = hint && this._storage?.files?.[hint];
+    if (hinted?.directory && !hinted.deleted) found.add(hinted);
     const remembered = (this._syncFolderNode?.directory && this._syncFolderNode) || (this._syncFolderId && this._storage?.files?.[this._syncFolderId]);
     if (remembered?.directory && !remembered.deleted) found.add(remembered);
     for (const node of root?.children || []) if (node?.directory && (node.children || []).some(child => !child.directory && child.name === SYNC_FILE)) found.add(node);
@@ -259,15 +262,29 @@ export class MegaConnection {
     if (data.length > SYNC_LIMIT) throw new MegaConnectionError('Your reading history is too large to sync.', 'SYNC_SIZE');
     let folder = this._syncFolder();
     if (!folder) {
+      // Make sure the folder really does not exist (another device may have
+      // created it) before creating a new one.
+      try { await this.refreshTree({ signal }); } catch {}
+      folder = this._syncFolder();
+    }
+    if (!folder) {
       folder = await waitAbortable(this._storage.root.mkdir(SYNC_FOLDER), signal);
       if (folder && !folder.name) folder.name = SYNC_FOLDER;
     }
     this._syncFolderId = folder?.nodeId || this._syncFolderId; this._syncFolderNode = folder;
+    try { if (folder?.nodeId) globalThis.localStorage?.setItem('cloudpanels-sync-folder', folder.nodeId); } catch {}
     const previous = this._syncFiles(this._syncFolders());
     const upload = folder.upload({ name: SYNC_FILE, size: data.length }, data);
     upload.on?.('error', () => {});
     const created = await waitAbortable(upload.complete, signal);
-    const remove = node => new Promise(resolve => { try { node.deleted = true; node.delete(true, () => resolve()); } catch { resolve(); } });
+    const remove = node => new Promise(resolve => {
+      try {
+        node.delete(true, error => {
+          if (!error) { node.deleted = true; return resolve(); }
+          try { node.delete(false, () => { node.deleted = true; resolve(); }); } catch { resolve(); }
+        });
+      } catch { resolve(); }
+    });
     const detach = node => { const parent = node.parent || this._syncFolders().find(f => f.children?.includes(node)); if (Array.isArray(parent?.children)) { const i = parent.children.indexOf(node); if (i >= 0) parent.children.splice(i, 1); } };
     for (const old of previous) { if (old === created) continue; await remove(old); detach(old); }
     // Tidy up extra CloudPanels folders left by earlier versions: they only
