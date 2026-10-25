@@ -77,3 +77,10 @@ test('invalid directions and stale or malformed positions cannot initiate naviga
     assert.equal(stepReadingPosition({ ...valid, ...invalid }).kind, 'none');
   }
 });
+
+test('the whole-page view after the last panel can be turned off', () => {
+  assert.deepEqual(stepReadingPosition({ page: 0, pageCount: 3, panel: 2, panelCount: 3, guided: true, delta: 1, showOverview: false }), { kind: 'page', page: 1, panel: 0, overview: false });
+  assert.deepEqual(stepReadingPosition({ page: 2, pageCount: 3, panel: 2, panelCount: 3, guided: true, delta: 1, showOverview: false }).kind, 'end');
+  assert.deepEqual(stepReadingPosition({ page: 1, pageCount: 3, panel: 0, panelCount: 3, guided: true, delta: -1, showOverview: false }), { kind: 'page', page: 0, panel: -1, overview: false });
+  assert.equal(stepReadingPosition({ page: 0, pageCount: 3, panel: 2, panelCount: 3, guided: true, delta: 1 }).kind, 'overview');
+});

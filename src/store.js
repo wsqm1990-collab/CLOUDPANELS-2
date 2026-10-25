@@ -96,6 +96,7 @@ function settings(value, previous = defaultState().settings) {
     readerBackground: ['black', 'paper', 'sepia'].includes(value.readerBackground) ? value.readerBackground : (previous.readerBackground || 'black'),
     readerBrightness: decimal(value.readerBrightness, previous.readerBrightness ?? 1, .4, 1.2),
     readerContrast: decimal(value.readerContrast, previous.readerContrast ?? 1, .6, 1.6),
+    readerOverview: typeof value.readerOverview === 'boolean' ? value.readerOverview : previous.readerOverview !== false,
     readerSpread: typeof value.readerSpread === 'boolean' ? value.readerSpread : previous.readerSpread !== false,
     spoilers: typeof value.spoilers === 'boolean' ? value.spoilers : previous.spoilers};
 }

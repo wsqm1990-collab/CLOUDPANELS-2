@@ -825,7 +825,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     durationSelect.value = String(pageDuration()); durationSelect.disabled = pageAnimation() === 'none'; durationField.append(durationSelect);
     animationSelect.addEventListener('change', () => { saveAppearance({ readerPageAnimation: animationSelect.value }); durationSelect.disabled = animationSelect.value === 'none'; });
     durationSelect.addEventListener('change', () => saveAppearance({ readerPageDuration: Number(durationSelect.value) }));
-    menu.append(backgrounds, resistanceField, navigationField, animationField, durationField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
+    const overviewField = document.createElement('label'); overviewField.className = 'reader-navigation-setting';
+    overviewField.textContent = language() === 'pt-BR' ? 'Panel view: mostrar a página inteira depois do último quadro' : language() === 'es' ? 'Por viñeta: mostrar la página completa tras la última viñeta' : 'Panel view: show the whole page after the last panel';
+    const overviewSelect = document.createElement('select'); overviewSelect.id = 'reader-overview';
+    for (const [value, label] of [['on', language() === 'pt-BR' ? 'Sim' : language() === 'es' ? 'Sí' : 'On'], ['off', language() === 'pt-BR' ? 'Não' : 'Off']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; overviewSelect.append(option); }
+    overviewSelect.value = store.state.settings.readerOverview === false ? 'off' : 'on'; overviewField.append(overviewSelect);
+    overviewSelect.addEventListener('change', () => saveAppearance({ readerOverview: overviewSelect.value === 'on' }));
+    menu.append(backgrounds, resistanceField, navigationField, animationField, durationField, overviewField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
   }
   function savePanelLayout(rects) {
     try { store.setPanels(comic.id, currentPage, rects); checkSaved(); observePersistence(); notify(); if (storageWarning) statusMessage('', true); return !storageWarning; }
@@ -1119,7 +1125,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (delta < 0 && currentPage <= 0) return;
       return showPage(target, 0, { animate: true, direction: delta });
     }
-    const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta });
+    const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta, showOverview: store.state.settings.readerOverview !== false });
     if (step.kind === 'panel' || step.kind === 'overview') {
       panel = step.panel; overview = step.overview; layoutPage({ smooth: true }); persist(); updateControls(); normalStatus();
       if (overview) showHint(turnLabels().overview, 2600);
