@@ -147,7 +147,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetch, prefetchTimer, gesture, settleTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
   let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0;
-  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false;
+  let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [];
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
   const pageAnimation = () => store.state.settings.readerPageAnimation || 'slide';
   const pageDuration = () => store.state.settings.readerPageDuration || 420;
@@ -355,6 +355,33 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     return wholePageFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width < available.width * .92;
   }
   function guidedFitMode() { return guidedWholeFills() ? 'width' : 'whole'; }
+  // Two-page spread: in landscape, with Whole page fit and outside Panel view,
+  // facing pages are shown side by side like an open comic. The cover is alone.
+  const spreadEnabled = () => store.state.settings.readerSpread !== false;
+  function spreadActive() {
+    if (!spreadEnabled() || guided || editing || !book || book.pageCount < 3 || fitMode() !== 'whole') return false;
+    const width = stage.clientWidth || window.innerWidth, height = stage.clientHeight || window.innerHeight;
+    return width > height * 1.1;
+  }
+  const spreadStart = index => index <= 0 ? 0 : index % 2 ? index : index - 1;
+  async function composeSpread(first, second, signal) {
+    const left = rtl() ? second : first, right = rtl() ? first : second;
+    const height = Math.min(Math.max(left.height, right.height), 3000);
+    const lw = Math.round(left.width * height / left.height), rw = Math.round(right.width * height / right.height);
+    const scale = Math.min(1, Math.sqrt(14_000_000 / ((lw + rw) * height)));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round((lw + rw) * scale)); canvas.height = Math.max(1, Math.round(height * scale));
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error(text().pageFailed);
+    context.fillStyle = '#ffffff'; context.fillRect(0, 0, canvas.width, canvas.height);
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(left.decodedImage, 0, 0, Math.round(lw * scale), canvas.height);
+    context.drawImage(right.decodedImage, Math.round(lw * scale), 0, canvas.width - Math.round(lw * scale), canvas.height);
+    signal.throwIfAborted();
+    const blob = await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error(text().pageFailed)), 'image/jpeg', .92));
+    canvas.width = 0; canvas.height = 0;
+    return blob;
+  }
   function baselineWidth() {
     const available = availableSize(), rect = guided && guidedMode === 'panels' && !editing && !overview ? panels()[panel] : undefined;
     if (rect) return guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect })?.width || fitWidth();
@@ -451,6 +478,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (Math.abs(height - viewportHeight) < 1 && Math.abs(width - viewportWidth) < 1) return;
       viewportHeight = height; viewportWidth = width;
       dialog.style.setProperty('--reader-viewport-height', `${height}px`);
+      if (dialog.open && !loading && book && currentPage >= 0 && !editing && spreadActive() !== (spreadPages.length > 1) && (spreadActive() ? currentPage > 0 : true)) { void showPage(currentPage, panel); return; }
       if (dialog.open && !loading) { pageTransition.cancel(); layoutPage({ preserveWidthPosition: true }); if (editing) editToolbar(); }
     });
   }
@@ -546,6 +574,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       button.setAttribute('aria-pressed', String(fitMode() === mode));
     }
     popupButton(controls, labels.cancel, hidePopup); controls.querySelector('button')?.focus({ preventScroll: true });
+    const spreadLabel = language() === 'pt-BR' ? 'Página dupla na horizontal' : language() === 'es' ? 'Página doble en horizontal' : 'Two pages in landscape';
+    const spreadNote = document.createElement('p'); spreadNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    spreadNote.textContent = language() === 'pt-BR' ? 'Com o iPad deitado e "Página inteira", mostra duas páginas lado a lado, como uma revista aberta.' : language() === 'es' ? 'Con el iPad en horizontal y "Página completa", muestra dos páginas lado a lado.' : 'With the iPad in landscape and Whole page fit, shows facing pages side by side.';
+    const spreadRow = document.createElement('div'); spreadRow.className = 'row'; menu.append(spreadNote, spreadRow);
+    const toggle = popupButton(spreadRow, `${spreadLabel}: ${spreadEnabled() ? (language() === 'en' ? 'On' : 'Ligada'.replace('Ligada', language() === 'es' ? 'Activada' : 'Ligada')) : (language() === 'en' ? 'Off' : language() === 'es' ? 'Desactivada' : 'Desligada')}`, () => {
+      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, panel);
+    }, spreadEnabled());
+    toggle.setAttribute('aria-pressed', String(spreadEnabled()));
   }
   function hidePopup() {
     const previous = popup; popup = undefined; previous?.remove();
@@ -800,6 +836,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     popupButton(controls, labels.detect, () => enableGuided({ force: true }));
     popupButton(controls, labels.whole, () => { hidePopup(); disableGuided(); });
     popupButton(controls, labels.cancel, hidePopup); controls.querySelector('button')?.focus({ preventScroll: true });
+    const spreadLabel = language() === 'pt-BR' ? 'Página dupla na horizontal' : language() === 'es' ? 'Página doble en horizontal' : 'Two pages in landscape';
+    const spreadNote = document.createElement('p'); spreadNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    spreadNote.textContent = language() === 'pt-BR' ? 'Com o iPad deitado e "Página inteira", mostra duas páginas lado a lado, como uma revista aberta.' : language() === 'es' ? 'Con el iPad en horizontal y "Página completa", muestra dos páginas lado a lado.' : 'With the iPad in landscape and Whole page fit, shows facing pages side by side.';
+    const spreadRow = document.createElement('div'); spreadRow.className = 'row'; menu.append(spreadNote, spreadRow);
+    const toggle = popupButton(spreadRow, `${spreadLabel}: ${spreadEnabled() ? (language() === 'en' ? 'On' : 'Ligada'.replace('Ligada', language() === 'es' ? 'Activada' : 'Ligada')) : (language() === 'en' ? 'Off' : language() === 'es' ? 'Desactivada' : 'Desligada')}`, () => {
+      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, panel);
+    }, spreadEnabled());
+    toggle.setAttribute('aria-pressed', String(spreadEnabled()));
   }
   function editToolbar() {
     const t = text(), menu = makePopup(t.edit);
@@ -914,6 +958,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   async function showPage(index, targetPanel = 0, { prompt = true, targetOverview = false, animate = false, direction = 1 } = {}) {
     if (!book || !comic || editing) return;
     index = clamp(Math.floor(index), 0, book.pageCount - 1);
+    const spreading = spreadActive();
+    if (spreading) index = spreadStart(index);
     pageTransition.cancel(); turning = false; cancelAnalysis(); cancelCamera(); panMode = false; positionCommitted = false;
     clearTimeout(prefetchTimer); prefetchTimer = undefined;
     // The foreground takes ownership of the already running next-page promise.
@@ -933,11 +979,27 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (warm) { candidate = await warm.promise; blob = candidate?.blob; }
       request.signal.throwIfAborted();
       if (!candidate) { blob = await activeBook.page(index, { signal: request.signal }); request.signal.throwIfAborted(); candidate = await decodedURL(blob, request.signal); }
+      let pairedPages = [index];
+      if (spreading && index > 0 && index + 1 < activeBook.pageCount && candidate.height > candidate.width) {
+        let partner;
+        try {
+          const partnerBlob = await activeBook.page(index + 1, { signal: request.signal }); request.signal.throwIfAborted();
+          partner = await decodedURL(partnerBlob, request.signal);
+          if (partner.height > partner.width) {
+            const combined = await composeSpread(candidate, partner, request.signal);
+            const merged = await decodedURL(combined, request.signal);
+            URL.revokeObjectURL(candidate.url); pendingURLs.delete(candidate.url);
+            candidate = merged; pairedPages = [index, index + 1];
+          }
+        } catch (error) { if (request.signal.aborted) throw error; }
+        finally { if (partner) { URL.revokeObjectURL(partner.url); pendingURLs.delete(partner.url); } }
+      }
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) { URL.revokeObjectURL(candidate.url); pendingURLs.delete(candidate.url); return; }
+      spreadPages = pairedPages;
       previousURL = currentURL;
       if (animate && currentPage >= 0 && currentURL) { resetGesture(false); snapshot = pageTransition.capture(); }
       currentURL = candidate.url; pendingURLs.delete(candidate.url);
-      image.src = currentURL; showImage(true); image.alt = text().pageOf(index + 1, activeBook.pageCount);
+      image.src = currentURL; showImage(true); image.alt = spreadPages.length > 1 ? `${text().pageOf(index + 1, activeBook.pageCount)} + ${index + 2}` : text().pageOf(index + 1, activeBook.pageCount);
       imageWidth = candidate.width; imageHeight = candidate.height;
       currentPage = index; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
       layoutPage();
@@ -987,6 +1049,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (delta > 0 && stage.scrollTop < maxTop - 4) { scrollToPosition(stage.scrollLeft, Math.min(maxTop, stage.scrollTop + step), true); return; }
       if (delta < 0 && stage.scrollTop > 4) { scrollToPosition(stage.scrollLeft, Math.max(0, stage.scrollTop - step), true); return; }
       if (delta < 0) guidedFillFromBottom = true;
+    }
+    if (spreadActive() && !guided && !isZoomed()) {
+      const last = spreadPages.length ? spreadPages[spreadPages.length - 1] : currentPage;
+      const target = delta > 0 ? last + 1 : spreadStart(currentPage - 1);
+      if (delta > 0 && target >= book.pageCount) return endOfBook();
+      if (delta < 0 && currentPage <= 0) return;
+      return showPage(target, 0, { animate: true, direction: delta });
     }
     const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta });
     if (step.kind === 'panel' || step.kind === 'overview') {
