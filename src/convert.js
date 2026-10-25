@@ -42,38 +42,89 @@ export function storedZip(files) {
   return out;
 }
 
+const u16 = (view, at, value) => view.setUint16(at, value, true), u32 = (view, at, value) => view.setUint32(at, value, true);
+
 /**
- * Convert an opened comic source to CBZ bytes and verify the result opens with
- * the same pages. Throws (and changes nothing) if anything does not match.
+ * Convert a comic to CBZ page by page, streaming the result into `createUpload`
+ * so even very large comics never sit in memory at once. Pages keep their exact
+ * bytes, names and order. Returns { result, pageCount, checks } where checks
+ * holds the CRC of the first and last pages for verification after upload.
+ *
+ * createUpload(totalBytes) must return { write(Uint8Array) → Promise, end() → Promise<result>, abort() }.
  */
-export async function convertToCbz(source, { signal, onProgress, openOptions = {} } = {}) {
+export async function streamToCbz(source, { signal, onProgress, openOptions = {}, createUpload } = {}) {
   const book = await openComic(source, { signal, ...openOptions, onProgress: info => onProgress?.({ phase: 'open', ...info }) });
+  let upload;
   try {
-    const names = book.metadata?.pageNames || [];
-    if (!book.pageCount || names.length !== book.pageCount) throw new Error('The pages of this comic could not be listed.');
-    const files = [], used = new Set();
-    for (let index = 0; index < book.pageCount; index++) {
-      signal?.throwIfAborted();
-      const blob = await book.page(index, { signal });
-      let name = String(names[index]).replace(/^\/+/, '') || `page-${String(index + 1).padStart(4, '0')}.jpg`;
+    const names = book.metadata?.pageNames || [], sizes = book.pageSizes || [];
+    if (!book.pageCount || names.length !== book.pageCount || sizes.length !== book.pageCount || sizes.some(size => !Number.isSafeInteger(size) || size <= 0))
+      throw new Error('The pages of this comic could not be listed.');
+    const used = new Set(), plan = names.map((raw, index) => {
+      let name = String(raw).replace(/^\/+/, '') || `page-${String(index + 1).padStart(4, '0')}.jpg`;
       while (used.has(name)) name = name.replace(/(\.[^.]+)?$/, '_$1');
-      used.add(name);
-      files.push({ name, bytes: new Uint8Array(await blob.arrayBuffer()) });
-      onProgress?.({ phase: 'pages', done: index + 1, total: book.pageCount });
+      used.add(name); return { name, nameBytes: encoder.encode(name), size: sizes[index] };
+    });
+    const info = book.comicInfoFile instanceof Blob && book.comicInfoFile.size ? book.comicInfoFile : null;
+    if (info && !used.has('ComicInfo.xml')) plan.push({ name: 'ComicInfo.xml', nameBytes: encoder.encode('ComicInfo.xml'), size: info.size, info });
+    let total = 22;
+    for (const entry of plan) total += 30 + entry.nameBytes.length + entry.size + 16 + 46 + entry.nameBytes.length;
+    if (total > MAX_ZIP) throw new Error('This comic is too large to convert (over 4 GB).');
+    upload = await createUpload(total);
+    const { time, day } = dosTime(), centrals = [];
+    let offset = 0;
+    const checks = {};
+    for (let index = 0; index < plan.length; index++) {
+      signal?.throwIfAborted();
+      const entry = plan[index];
+      const bytes = new Uint8Array(await (entry.info || await book.page(index, { signal })).arrayBuffer());
+      if (bytes.length !== entry.size) throw new Error('A page has an unexpected size.');
+      const crc = crc32(bytes);
+      if (!entry.info && (index === 0 || index === book.pageCount - 1)) checks[index] = crc;
+      const local = new Uint8Array(30 + entry.nameBytes.length), lv = new DataView(local.buffer);
+      u32(lv, 0, 0x04034b50); u16(lv, 4, 20); u16(lv, 6, 0x0808); u16(lv, 8, 0); u16(lv, 10, time); u16(lv, 12, day);
+      u32(lv, 14, 0); u32(lv, 18, entry.size); u32(lv, 22, entry.size); u16(lv, 26, entry.nameBytes.length); u16(lv, 28, 0); local.set(entry.nameBytes, 30);
+      const descriptor = new Uint8Array(16), dv = new DataView(descriptor.buffer);
+      u32(dv, 0, 0x08074b50); u32(dv, 4, crc); u32(dv, 8, entry.size); u32(dv, 12, entry.size);
+      await upload.write(local); await upload.write(bytes); await upload.write(descriptor);
+      const central = new Uint8Array(46 + entry.nameBytes.length), cv = new DataView(central.buffer);
+      u32(cv, 0, 0x02014b50); u16(cv, 4, 20); u16(cv, 6, 20); u16(cv, 8, 0x0808); u16(cv, 10, 0); u16(cv, 12, time); u16(cv, 14, day);
+      u32(cv, 16, crc); u32(cv, 20, entry.size); u32(cv, 24, entry.size); u16(cv, 28, entry.nameBytes.length); u32(cv, 42, offset); central.set(entry.nameBytes, 46);
+      centrals.push(central);
+      offset += local.length + bytes.length + descriptor.length;
+      onProgress?.({ phase: 'pages', done: Math.min(index + 1, book.pageCount), total: book.pageCount });
     }
-    if (book.comicInfoFile) files.push({ name: 'ComicInfo.xml', bytes: new Uint8Array(await book.comicInfoFile.arrayBuffer()) });
-    const zip = storedZip(files);
-    onProgress?.({ phase: 'verify' });
-    // Verification: the new CBZ must open with the same page count and the
-    // same bytes for the first and last pages.
-    const check = await openComic({ name: 'check.cbz', size: zip.length, blob: new Blob([zip]), read: async (start, end) => zip.slice(start, end) }, { signal });
-    try {
-      if (check.pageCount !== book.pageCount) throw new Error('The converted comic has a different number of pages.');
-      for (const index of [0, book.pageCount - 1]) {
-        const a = new Uint8Array(await (await check.page(index, { signal })).arrayBuffer()), b = files.find(f => f.name === check.metadata.pageNames[index])?.bytes;
-        if (!b || a.length !== b.length || a.some((value, i) => value !== b[i])) throw new Error('The converted pages do not match the original.');
-      }
-    } finally { check.close(); }
-    return { bytes: zip, pageCount: book.pageCount };
+    const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+    for (const central of centrals) await upload.write(central);
+    const end = new Uint8Array(22), ev = new DataView(end.buffer);
+    u32(ev, 0, 0x06054b50); u16(ev, 8, plan.length); u16(ev, 10, plan.length); u32(ev, 12, centralSize); u32(ev, 16, offset);
+    await upload.write(end);
+    if (offset + centralSize + 22 !== total) throw new Error('The converted size does not match.');
+    onProgress?.({ phase: 'upload' });
+    const result = await upload.end();
+    return { result, pageCount: book.pageCount, checks, total };
+  } catch (error) { try { upload?.abort(); } catch {} throw error; }
+  finally { book.close(); }
+}
+
+/** Open a converted CBZ (for example the uploaded copy) and confirm it matches. */
+export async function verifyCbz(source, { pageCount, checks, signal } = {}) {
+  const book = await openComic(source, { signal });
+  try {
+    if (book.type !== 'cbz' || book.pageCount !== pageCount) throw new Error('The converted comic has a different number of pages.');
+    for (const [index, crc] of Object.entries(checks || {})) {
+      const bytes = new Uint8Array(await (await book.page(Number(index), { signal })).arrayBuffer());
+      if (crc32(bytes) !== crc) throw new Error('The converted pages do not match the original.');
+    }
+    return true;
   } finally { book.close(); }
+}
+
+/** Convenience for small comics and tests: returns the CBZ bytes in memory. */
+export async function convertToCbz(source, { signal, onProgress, openOptions = {} } = {}) {
+  const parts = [];
+  const { pageCount, checks, total } = await streamToCbz(source, { signal, onProgress, openOptions, createUpload: async () => ({ async write(chunk) { parts.push(chunk.slice()); }, async end() { return null; }, abort() { parts.length = 0; } }) });
+  const bytes = new Uint8Array(total); let at = 0; for (const part of parts) { bytes.set(part, at); at += part.length; }
+  onProgress?.({ phase: 'verify' });
+  await verifyCbz({ name: 'check.cbz', size: bytes.length, read: async (a, b) => bytes.slice(a, b) }, { pageCount, checks, signal });
+  return { bytes, pageCount };
 }

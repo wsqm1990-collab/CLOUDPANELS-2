@@ -302,26 +302,50 @@ export class MegaConnection {
   }
 
   /**
-   * Upload a CBZ next to a comic and move the original to MEGA's Rubbish Bin
-   * (recoverable). The original is only touched after the upload is complete
-   * and has the expected size. Account logins only.
+   * Start uploading a CBZ of `size` bytes next to a comic. Data is written in
+   * pieces (nothing large is held in memory). Nothing is changed in the
+   * original. Account logins only.
    */
-  async replaceWithCbz(comicId, data, { signal } = {}) {
+  async startCbzUpload(comicId, size, { signal } = {}) {
     if (this.mode !== 'account') throw new MegaConnectionError('Converting needs your MEGA account login (not a link).', 'READ_ONLY');
-    const node = this._findNode(comicId);
-    const parent = node?.parent;
+    const node = this._findNode(comicId), parent = node?.parent;
     if (!node || node.directory || !parent?.directory || typeof parent.upload !== 'function') throw new MegaConnectionError('This comic is unavailable. Reconnect MEGA and try again.', 'NOT_FOUND');
     const base = safeName(node.name).replace(/\.[^.]+$/, '');
     const taken = new Set((parent.children || []).map(child => child.name));
     let name = `${base}.cbz`;
     for (let n = 2; taken.has(name) && n < 100; n++) name = `${base} (${n}).cbz`;
-    const upload = parent.upload({ name, size: data.length }, data);
-    upload.on?.('error', () => {});
-    const created = await waitAbortable(upload.complete, signal);
-    if (!created || created.size !== data.length) throw new MegaConnectionError('The converted file did not upload completely. The original was kept.', 'UPLOAD');
-    await new Promise(resolve => { try { node.delete(false, () => resolve()); } catch { resolve(); } });
+    const stream = parent.upload({ name, size });
+    let failure = null, aborted = false;
+    stream.on?.('error', error => { failure = error; });
+    const complete = Promise.resolve(stream.complete).catch(error => { failure = failure || error; throw error; });
+    complete.catch(() => {});
     const parentId = this._parents.get(comicId) ?? null;
-    return this._describe(created, parentId);
+    return {
+      name,
+      write: chunk => new Promise((resolve, reject) => {
+        if (failure) return reject(failure);
+        if (aborted || signal?.aborted) return reject(cancelled());
+        const ok = stream.write(chunk);
+        if (ok) return resolve();
+        const done = () => { stream.removeListener?.('drain', done); stream.removeListener?.('error', fail); resolve(); };
+        const fail = error => { stream.removeListener?.('drain', done); reject(error); };
+        stream.once ? (stream.once('drain', done), stream.once('error', fail)) : resolve();
+      }),
+      end: async () => {
+        stream.end();
+        const created = await waitAbortable(complete, signal);
+        if (!created || created.size !== size) throw new MegaConnectionError('The converted file did not upload completely. The original was kept.', 'UPLOAD');
+        return this._describe(created, parentId);
+      },
+      abort: () => { aborted = true; try { stream.destroy?.(); } catch {} },
+    };
+  }
+  /** Move a comic's file to MEGA's Rubbish Bin (it can be restored from there). */
+  async moveToRubbishBin(comicId) {
+    const node = this._findNode(comicId);
+    if (!node || node.directory) return false;
+    await new Promise((resolve, reject) => { try { node.delete(false, error => error ? reject(error) : resolve()); } catch (error) { reject(error); } });
+    return true;
   }
 
   async suspend() { return this.disconnect({ revoke: false }); }
