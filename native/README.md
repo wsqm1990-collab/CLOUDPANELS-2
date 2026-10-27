@@ -9,6 +9,11 @@ the `ci-results` branch.
 
 ## Sending builds to TestFlight
 
+Set up on 27 October 2026: the App Store Connect app is **CloudPanelsReader**
+(bundle ID `com.wsqm1990.cloudpanels`; the name under the icon stays
+CloudPanels), and the four secrets below are saved in the repository. Every
+push to `main` that changes the app now also uploads a TestFlight build.
+
 Add these repository secrets (Settings → Secrets and variables → Actions):
 
 | Secret | Where it comes from |
