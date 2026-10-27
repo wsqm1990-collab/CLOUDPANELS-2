@@ -337,3 +337,33 @@ test('reconciling a MEGA folder adds, moves, keeps replaced files and removes va
   assert.ok(byId['mega:z'], 'other indexed folders are untouched');
   assert.deepEqual(store.reconcileFolder('HQs', store.state.comics.filter(c => c.path.startsWith('HQs/'))), { added: 0, moved: 0, removed: 0 });
 });
+
+test('reconciling all indexed folders together keeps history across folders and when comics come back', () => {
+  const store = new LibraryStore({ storage: memory() }); store.load();
+  const mk = (id, path, size = 100) => ({ id, name: path.split('/').pop(), size, path, source: 'mega', format: 'cbr' });
+  store.upsertComics([mk('mega:x1', 'Marvel/X-Men/X-Men 1.cbr'), mk('mega:x2', 'Marvel/X-Men/X-Men 2.cbr'), mk('mega:b1', 'DC/Batman/Batman 1.cbr')]);
+  store.setProgress('mega:x1', { page: 7, pageCount: 20, status: 'reading' });
+  // X-Men moves from the Marvel folder into the DC folder (both indexed).
+  let result = store.reconcileLibrary([
+    { prefix: 'Marvel', comics: [] },
+    { prefix: 'DC', comics: [mk('mega:b1', 'DC/Batman/Batman 1.cbr'), mk('mega:x1', 'DC/X-Men/X-Men 1.cbr'), mk('mega:x2', 'DC/X-Men/X-Men 2.cbr')] },
+  ]);
+  assert.deepEqual(result, { added: 0, moved: 2, removed: 0 });
+  assert.equal(store.state.progress['mega:x1'].page, 7);
+  // Overlapping indexed folders do not bounce comics between them.
+  store.upsertComics([mk('mega:s1', 'Spider/Spider 1.cbr')]);
+  result = store.reconcileLibrary([{ prefix: 'DC', comics: [mk('mega:b1', 'DC/Batman/Batman 1.cbr'), mk('mega:x1', 'DC/X-Men/X-Men 1.cbr'), mk('mega:x2', 'DC/X-Men/X-Men 2.cbr'), mk('mega:s1', 'DC/Spider/Spider 1.cbr')] }, { prefix: 'Spider', comics: [mk('mega:s1', 'Spider/Spider 1.cbr')] }]);
+  assert.deepEqual(result, { added: 0, moved: 0, removed: 0 });
+  // Moved out of every indexed folder: it leaves, but its place is remembered.
+  const spider = { prefix: 'Spider', comics: [mk('mega:s1', 'Spider/Spider 1.cbr')] };
+  result = store.reconcileLibrary([{ prefix: 'DC', comics: [mk('mega:b1', 'DC/Batman/Batman 1.cbr'), mk('mega:x2', 'DC/X-Men/X-Men 2.cbr'), mk('mega:s1', 'DC/Spider/Spider 1.cbr')] }, spider]);
+  assert.deepEqual(result, { added: 0, moved: 0, removed: 1 });
+  assert.ok(!store.state.comics.some(c => c.id === 'mega:x1'));
+  const reopened = new LibraryStore({ storage: store.storage }); reopened.load();
+  assert.equal(reopened.state.retired['mega:x1'].progress.page, 7, 'the place survives a restart');
+  // It comes back: the place returns.
+  result = reopened.reconcileLibrary([{ prefix: 'DC', comics: [mk('mega:b1', 'DC/Batman/Batman 1.cbr'), mk('mega:x1', 'DC/Old/X-Men 1.cbr'), mk('mega:x2', 'DC/X-Men/X-Men 2.cbr'), mk('mega:s1', 'DC/Spider/Spider 1.cbr')] }, spider]);
+  assert.deepEqual(result, { added: 1, moved: 0, removed: 0 });
+  assert.equal(reopened.state.progress['mega:x1'].page, 7);
+  assert.ok(!reopened.state.retired['mega:x1']);
+});

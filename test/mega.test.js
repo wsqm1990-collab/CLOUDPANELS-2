@@ -525,3 +525,23 @@ test('refreshing MEGA shows folders that were moved, added or deleted elsewhere'
   assert.equal(f.connection.findLibraryFolder({ name: 'Quadrinhos', samples: [] }), 'mega:hqs00001');
   assert.equal(f.connection.findLibraryFolder({ name: 'Nowhere', samples: [] }), null);
 });
+
+import { LibraryStore } from '../src/store.js';
+test('end to end: folders moved in the MEGA app show up in the library after an update', async () => {
+  const f = movingFixture();
+  await f.connection.login({ email: 'reader@example.com', password: 'secret' });
+  const memory = new Map(), store = new LibraryStore({ storage: { getItem: k => memory.get(k) ?? null, setItem: (k, v) => memory.set(k, v) } }); store.load();
+  store.upsertComics(await f.connection.listComics('mega:hqs00001'));
+  store.setProgress('mega:bat00001', { page: 4, pageCount: 20, status: 'reading' });
+  f.setServer(server => { const next = { ...server, batf0001: { t: 1, p: 'hqs00001', name: 'Batman' }, new00001: { t: 0, p: 'batf0001', name: 'Batman 3.cbz', size: 100 } }; next.bat00001 = { ...server.bat00001, p: 'batf0001' }; return next; });
+  // What the app does when it updates the library (see refreshLibrary in app.js).
+  await f.connection.refreshTree();
+  const roots = new Map();
+  for (const comic of store.state.comics) { const parts = comic.path.split('/'); if (!roots.has(parts[0])) roots.set(parts[0], []); roots.get(parts[0]).push({ id: comic.id, depth: parts.length - 1 }); }
+  const listings = [];
+  for (const [name, samples] of roots) { const id = f.connection.findLibraryFolder({ name, samples }); if (id) listings.push({ prefix: name, comics: await f.connection.listComics(id) }); }
+  const result = store.reconcileLibrary(listings);
+  assert.deepEqual(result, { added: 1, moved: 1, removed: 0 });
+  assert.deepEqual(store.state.comics.map(c => c.path).sort(), ['HQs/Batman/Batman 1.cbz', 'HQs/Batman/Batman 3.cbz', 'HQs/DC/Batman 2.cbz']);
+  assert.equal(store.state.progress['mega:bat00001'].page, 4);
+});
