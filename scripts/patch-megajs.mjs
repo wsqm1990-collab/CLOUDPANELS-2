@@ -45,6 +45,22 @@ replaceOnce(
   '      if (!end) {\n        last = last ? import_buffer.Buffer.concat([last, chunk]) : chunk;',
   '      if (!end) {\n        last = chunk;'
 );
+// MEGA does not promise to list a folder before what is inside it (its own SDK
+// links "dangling" nodes after reading the whole tree). Upstream drops such a
+// node: a folder moved into a newer folder vanished from the tree. Remember
+// nodes whose folder has not arrived yet and attach them once all are read.
+replaceOnce(
+  '      if (f.p) {\n        const parent = this.files[f.p];\n        if (parent) {\n          parent.children.push(file);\n          file.parent = parent;\n        }\n      }',
+  '      if (f.p) {\n        const parent = this.files[f.p];\n        if (parent) {\n          parent.children.push(file);\n          file.parent = parent;\n        } else {\n          (this._waitingForParent ||= []).push([file, f.p]);\n        }\n      }'
+);
+replaceOnce(
+  '    this.api.request({ a: "f", c: 1 }, (err, response) => {\n      if (err) return cb(err);',
+  '    this.api.request({ a: "f", c: 1 }, (err, response) => {\n      if (err) return cb(err);\n      this._waitingForParent = [];'
+);
+replaceOnce(
+  '      cb(null, this.mounts);',
+  '      for (const [node, parentId] of this._waitingForParent || []) {\n        const parent = this.files[parentId];\n        if (parent && !node.parent && Array.isArray(parent.children)) {\n          parent.children.push(node);\n          node.parent = parent;\n        }\n      }\n      this._waitingForParent = [];\n      cb(null, this.mounts);'
+);
 const banner = '// CloudPanels: reviewed lifecycle-only patch of MEGAJS 1.3.10 (MIT).\n';
 await writeFile(outputPath, banner + patched);
 console.log(JSON.stringify({ sdk: 'megajs', version: metadata.version, lifecyclePatch: true,
