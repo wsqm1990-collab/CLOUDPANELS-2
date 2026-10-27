@@ -1,5 +1,6 @@
 // Metadata only. MEGA sessions, passwords, keys and file bytes never enter this store.
 export const STORAGE_KEY = 'cloudpanels.library.v1';
+const MAX_RETIRED = 3000;
 export const MAX_COMICS = 50000;
 export const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 export const MAX_BOOKMARKS = 5000;
@@ -20,7 +21,7 @@ const decimal = (value, fallback, min, max) => Number.isFinite(Number(value)) &&
 const newId = prefix => prefix + ':' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : now();
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -150,6 +151,14 @@ function sanitizeState(raw) {
     collectionIds.add(id);
     result.collections.push({id, name, comicIds: Array.isArray(value.comicIds) ? [...new Set(value.comicIds.filter(v => idValue(v) && seen.has(v)))].slice(0, MAX_COMICS) : [], createdAt: stamp(value.createdAt)});
   }
+  // Reading places of comics that left the library (moved out of the indexed
+  // folders or deleted). If the same file comes back, its place returns too.
+  if (raw.retired && typeof raw.retired === 'object' && !Array.isArray(raw.retired)) {
+    const entries = Object.entries(raw.retired).filter(([id, value]) => idValue(id) && !seen.has(id) && value && typeof value === 'object')
+      .map(([id, value]) => [id, { name: string(value.name, 260), size: integer(value.size, 0, 0, Number.MAX_SAFE_INTEGER), progress: progress(value.progress || {}), removedAt: stamp(value.removedAt) }])
+      .filter(([, value]) => value.progress).sort((a, b) => String(b[1].removedAt).localeCompare(String(a[1].removedAt))).slice(0, MAX_RETIRED);
+    for (const [id, value] of entries) result.retired[id] = value;
+  }
   result.settings = settings(raw.settings);
   return result;
 }
@@ -196,7 +205,12 @@ export class LibraryStore {
   upsertComics(values) {
     if (!Array.isArray(values)) throw new Error('Comics must be a list.');
     const map = new Map(this.state.comics.map(c => [c.id, c]));
-    for (const value of values) { const valid = comic(value, map.get(value?.id)); if (!valid) throw new Error('Invalid comic.'); map.set(valid.id, valid); }
+    this.state.retired ||= {};
+    for (const value of values) {
+      const valid = comic(value, map.get(value?.id)); if (!valid) throw new Error('Invalid comic.');
+      if (!map.has(valid.id) && this.state.retired[valid.id]) { if (!this.state.progress[valid.id]) this.state.progress[valid.id] = this.state.retired[valid.id].progress; delete this.state.retired[valid.id]; }
+      map.set(valid.id, valid);
+    }
     if (map.size > MAX_COMICS) throw new Error(`The library limit is ${MAX_COMICS} comics.`);
     this.state.comics = [...map.values()]; this.save(); return this.state.comics;
   }
@@ -206,26 +220,54 @@ export class LibraryStore {
    * path, and comics no longer in that folder leave the library. A file that
    * was replaced (same name and size, new MEGA id) keeps its reading history.
    */
-  reconcileFolder(prefix, fresh) {
-    if (typeof prefix !== 'string' || !prefix || !Array.isArray(fresh)) throw new Error('Comics must be a list.');
-    const inScope = c => c.source === 'mega' && (c.path === prefix || String(c.path).startsWith(prefix + '/'));
+  reconcileFolder(prefix, fresh) { return this.reconcileLibrary([{ prefix, comics: fresh }]); }
+  /**
+   * Bring the indexed MEGA folders up to date with what is there now, all at
+   * once: new comics are added, moved or renamed ones (also between indexed
+   * folders) keep their history under the new path, and comics no longer in
+   * any of these folders leave the library. A replaced file (same name and
+   * size, new MEGA id) keeps its history, and so does a comic that comes back.
+   */
+  reconcileLibrary(listings) {
+    if (!Array.isArray(listings)) throw new Error('Comics must be a list.');
+    const prefixes = listings.map(listing => listing?.prefix).filter(prefix => typeof prefix === 'string' && prefix);
+    if (!prefixes.length) return { added: 0, moved: 0, removed: 0 };
+    const first = path => String(path || '').split('/')[0];
+    const inScope = c => c.source === 'mega' && prefixes.some(prefix => c.path === prefix || String(c.path).startsWith(prefix + '/'));
     const current = new Map(this.state.comics.map(c => [c.id, c]));
-    const freshIds = new Set(fresh.map(c => c?.id));
+    // One entry per MEGA file. When indexed folders overlap, a comic stays
+    // under the folder it is shown in now (no back-and-forth between them).
+    const choices = new Map();
+    for (const listing of listings) for (const value of listing?.comics || []) {
+      if (!value?.id) continue;
+      const existing = current.get(value.id), prior = choices.get(value.id);
+      if (!prior || (existing && first(value.path) === first(existing.path) && first(prior.path) !== first(existing.path))) choices.set(value.id, value);
+    }
+    const fresh = [...choices.values()];
+    const freshIds = new Set(fresh.map(c => c.id));
     const missing = this.state.comics.filter(c => inScope(c) && !freshIds.has(c.id));
-    const newcomers = fresh.filter(c => c && !current.has(c.id));
+    const newcomers = fresh.filter(c => !current.has(c.id));
     const remap = new Map(); // new id -> old id
     for (const old of missing) {
       const twins = newcomers.filter(n => n.name === old.name && n.size === old.size && !remap.has(n.id));
       if (twins.length === 1) remap.set(twins[0].id, old.id);
     }
     let added = 0, moved = 0, removed = 0;
+    this.state.retired ||= {};
     for (const value of fresh) {
-      const previousId = remap.get(value?.id), previous = current.get(value?.id) || (previousId ? current.get(previousId) : undefined);
+      const previousId = remap.get(value.id), previous = current.get(value.id) || (previousId ? current.get(previousId) : undefined);
       const valid = comic(value, previous);
       if (!valid) continue;
       const existing = current.get(valid.id);
-      if (!existing) previousId ? moved++ : added++;
-      else if (existing.path !== valid.path || existing.name !== valid.name || existing.size !== valid.size) moved++;
+      if (!existing) {
+        if (previousId) moved++;
+        else {
+          added++;
+          // A comic that was in the library before gets its place back.
+          const retiredId = this.state.retired[valid.id] ? valid.id : Object.keys(this.state.retired).find(id => this.state.retired[id].name === valid.name && this.state.retired[id].size === valid.size);
+          if (retiredId) { if (!this.state.progress[valid.id]) this.state.progress[valid.id] = this.state.retired[retiredId].progress; delete this.state.retired[retiredId]; }
+        }
+      } else if (existing.path !== valid.path || existing.name !== valid.name || existing.size !== valid.size) moved++;
       current.set(valid.id, valid);
     }
     for (const [newId, oldId] of remap) {
@@ -237,8 +279,13 @@ export class LibraryStore {
       this.state.bookmarks = this.state.bookmarks.map(b => b.comicId === oldId ? { ...b, comicId: newId } : b);
       this.state.collections = this.state.collections.map(c => ({ ...c, comicIds: [...new Set(c.comicIds.map(swap))] }));
     }
-    const transferred = new Set(remap.values());
-    for (const old of missing) { current.delete(old.id); if (!transferred.has(old.id)) removed++; }
+    const transferred = new Set(remap.values()), now = new Date().toISOString();
+    for (const old of missing) {
+      current.delete(old.id);
+      if (transferred.has(old.id)) continue;
+      removed++;
+      if (this.state.progress[old.id]) this.state.retired[old.id] = { name: old.name, size: old.size, progress: this.state.progress[old.id], removedAt: now };
+    }
     if (current.size > MAX_COMICS) throw new Error(`The library limit is ${MAX_COMICS} comics.`);
     if (!added && !moved && !removed) return { added, moved, removed };
     this.state.comics = [...current.values()]; this.save();
