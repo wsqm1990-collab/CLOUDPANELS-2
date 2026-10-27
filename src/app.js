@@ -39,8 +39,8 @@ Object.assign(copy.es,{syncTitle:'Sincronizar entre dispositivos',syncDetail:'Tu
 Object.assign(copy.en,{convertOne:'Convert to CBZ',convertFolder:'Convert {count} to CBZ',convertTitle:'Convert to CBZ',convertText:'CBZ opens instantly and shows covers quickly. Each comic is downloaded, repackaged without changing its images, checked, and uploaded to the same folder with the same name. Only then does the original go to your MEGA Rubbish Bin, where you can still recover it. Your reading progress, panels, favorites and edits move to the new file. Large comics take a few minutes each: keep CloudPanels open while it works (the screen stays on).',convertStart:'Convert',convertCount:'{count} comics will be converted.',converting:'Converting {done}/{total}: {name}',convertStep:{open:'opening',pages:'pages {a}/{b}',verify:'checking',upload:'uploading'},convertDone:'{count} comics converted to CBZ.',convertFailed:'Could not convert {name}: {reason} The original was kept.',convertTooBig:'{name} is too large to convert on this device (over 250 MB); it was kept as it is.',convertCancel:'Cancel',convertCancelled:'Conversion stopped. Comics already converted stay converted; the rest were not touched.',convertNeedsAccount:'Converting needs your MEGA account login (not a link).'});
 Object.assign(copy['pt-BR'],{convertOne:'Converter para CBZ',convertFolder:'Converter {count} para CBZ',convertTitle:'Converter para CBZ',convertText:'O CBZ abre na hora e mostra as capas rápido. Cada quadrinho é baixado, reempacotado sem mexer nas imagens, conferido e enviado para a mesma pasta, com o mesmo nome. Só depois disso o original vai para a lixeira do MEGA, de onde ainda dá para recuperar. Seu progresso, quadros, favoritos e edições passam para o arquivo novo. Quadrinhos grandes levam alguns minutos cada: deixe o CloudPanels aberto enquanto converte (a tela fica ligada).',convertStart:'Converter',convertCount:'{count} quadrinhos serão convertidos.',converting:'Convertendo {done}/{total}: {name}',convertStep:{open:'abrindo',pages:'páginas {a}/{b}',verify:'conferindo',upload:'enviando'},convertDone:'{count} quadrinhos convertidos para CBZ.',convertFailed:'Não foi possível converter {name}: {reason} O original foi mantido.',convertTooBig:'{name} é grande demais para converter neste aparelho (mais de 250 MB) e foi mantido como está.',convertCancel:'Cancelar',convertCancelled:'Conversão interrompida. Os já convertidos continuam convertidos; os outros não foram mexidos.',convertNeedsAccount:'Para converter, entre com a sua conta do MEGA (não com link).'});
 copy.es.convertOne=copy.en.convertOne;
-Object.assign(copy.en,{appVersion:'App version',libraryNotChecked:'Not checked yet in this session.',libraryCheckedAt:'Last checked at {time}: {found} of {total} library folders found in MEGA · {added} new, {moved} moved, {removed} removed.',libraryCheckFailed:'Last check at {time} failed: {reason}',refreshLibrary:'Update from MEGA',refreshingLibrary:'Checking your MEGA folders…',libraryUpdated:'Library updated from MEGA: {added} new, {moved} moved or renamed, {removed} removed.',libraryUpToDate:'Your library already matches your MEGA folders.',refreshLibraryDetail:'Folders and comics you add, move or rename in MEGA appear here automatically when the app opens or comes back to the front. You can also update now.'});
-Object.assign(copy['pt-BR'],{appVersion:'Versão do app',libraryNotChecked:'Ainda não conferido nesta sessão.',libraryCheckedAt:'Última conferência às {time}: {found} de {total} pastas da biblioteca encontradas no MEGA · {added} novos, {moved} movidos, {removed} removidos.',libraryCheckFailed:'A conferência das {time} falhou: {reason}',refreshLibrary:'Atualizar do MEGA',refreshingLibrary:'Conferindo suas pastas do MEGA…',libraryUpdated:'Biblioteca atualizada do MEGA: {added} novos, {moved} movidos ou renomeados, {removed} removidos.',libraryUpToDate:'Sua biblioteca já está igual às pastas do MEGA.',refreshLibraryDetail:'Pastas e quadrinhos que você adiciona, move ou renomeia no MEGA aparecem aqui sozinhos quando o app abre ou volta para a tela. Você também pode atualizar agora.'});
+Object.assign(copy.en,{updatingApp:'Updating CloudPanels to the newest version…',appVersion:'App version',libraryNotChecked:'Not checked yet in this session.',libraryCheckedAt:'Last checked at {time}: {found} of {total} library folders found in MEGA · {added} new, {moved} moved, {removed} removed.',libraryCheckFailed:'Last check at {time} failed: {reason}',refreshLibrary:'Update from MEGA',refreshingLibrary:'Checking your MEGA folders…',libraryUpdated:'Library updated from MEGA: {added} new, {moved} moved or renamed, {removed} removed.',libraryUpToDate:'Your library already matches your MEGA folders.',refreshLibraryDetail:'Folders and comics you add, move or rename in MEGA appear here automatically when the app opens or comes back to the front. You can also update now.'});
+Object.assign(copy['pt-BR'],{updatingApp:'Atualizando o CloudPanels para a versão mais nova…',appVersion:'Versão do app',libraryNotChecked:'Ainda não conferido nesta sessão.',libraryCheckedAt:'Última conferência às {time}: {found} de {total} pastas da biblioteca encontradas no MEGA · {added} novos, {moved} movidos, {removed} removidos.',libraryCheckFailed:'A conferência das {time} falhou: {reason}',refreshLibrary:'Atualizar do MEGA',refreshingLibrary:'Conferindo suas pastas do MEGA…',libraryUpdated:'Biblioteca atualizada do MEGA: {added} novos, {moved} movidos ou renomeados, {removed} removidos.',libraryUpToDate:'Sua biblioteca já está igual às pastas do MEGA.',refreshLibraryDetail:'Pastas e quadrinhos que você adiciona, move ou renomeia no MEGA aparecem aqui sozinhos quando o app abre ou volta para a tela. Você também pode atualizar agora.'});
 copy.es.refreshLibrary=copy.en.refreshLibrary;
 Object.assign(copy.en,{syncPaused:'Sync between devices is paused while it is being fixed. Nothing is written to your MEGA. To move your reading to another device, use Export backup here and Import backup on the other device.',diagTitle:'Diagnostics',diagDetail:'If something fails, copy this report and send it to whoever is fixing the app. It contains error messages only — no passwords, keys or comic files.',diagCopy:'Copy report',diagCopied:'Report copied.',diagEmpty:'No problems recorded.'});
 Object.assign(copy['pt-BR'],{syncPaused:'A sincronização entre aparelhos está pausada enquanto é corrigida. Nada é gravado no seu MEGA. Para levar sua leitura para outro aparelho, use Exportar backup aqui e Importar backup no outro.',diagTitle:'Diagnóstico',diagDetail:'Se algo falhar, copie este relatório e envie para quem está corrigindo o app. Ele contém só mensagens de erro — nenhuma senha, chave ou arquivo de quadrinho.',diagCopy:'Copiar relatório',diagCopied:'Relatório copiado.',diagEmpty:'Nenhum problema registrado.'});
@@ -135,7 +135,7 @@ const reader = createReaderController({
   onActivity:({busy,open})=>{
     covers.setForegroundBusy(Boolean(busy||open));
     if(open){mainDirty=true;pauseCoverRequests();}
-    else queueMainRefresh();
+    else{queueMainRefresh();if(reloadForUpdate)reloadWithUpdate();}
   },
   onCoverFirstPage:(comic,pageBlob)=>{
     void covers.seed(comic,pageBlob).then(blob=>{
@@ -953,7 +953,9 @@ function showFolders() {
       changed();toast(t('indexed',{count:comics.length}));
     }catch(error){if(current()&&!controller.signal.aborted){status.className='form-error';status.textContent=publicError(error,t('connectionError'));buttons.forEach(button=>button.disabled=false);actions.replaceChildren(action(t('cancel'),closeModal,'button ghost'),action(t('tryAgain'),()=>index(folder),'button primary'));}}
   }
-  draw();
+  // Show MEGA exactly as it is now (folders moved in the MEGA app included).
+  list.replaceChildren(text(t('loading')));
+  void Promise.resolve(mega.refreshTree()).catch(error=>diag('mega-tree',error)).finally(()=>{if(current())draw();});
 }
 function openDemo() {
   const {body,current}=openModal(t('demoTitle'),t('demoText'));
@@ -1041,6 +1043,24 @@ document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='hidden'){if(syncPayload()!==sync.lastText||covers.fresh.size)void syncWithMega({pull:false});}
   else if(Date.now()-sync.lastPull>10*60000)void syncWithMega({pull:true});
 });
+// ---- Use the newest version: an app left open in the background reloads
+// itself when a new version is published (never in the middle of reading).
+const RUNNING_VERSION=(document.querySelector('.sidebar-version span')?.textContent||'').match(/\d+\.\d+\.\d+/)?.[0]||'';
+let versionCheckedAt=0,reloadForUpdate=false;
+async function checkForNewVersion(){
+  if(location.protocol!=='https:'||window.Capacitor?.isNativePlatform?.()||!RUNNING_VERSION||Date.now()-versionCheckedAt<60000)return;
+  versionCheckedAt=Date.now();
+  try{
+    const response=await fetch('index.html?version-check='+Date.now(),{cache:'no-store',credentials:'same-origin'});
+    if(!response.ok)return;
+    const latest=(await response.text()).match(/IPAD · (\d+\.\d+\.\d+)/)?.[1];
+    if(!latest||latest===RUNNING_VERSION)return;
+    reloadForUpdate=true;
+    if(!document.querySelector('#reader').open)reloadWithUpdate();
+  }catch{}
+}
+function reloadWithUpdate(){toast(t('updatingApp'));setTimeout(()=>location.reload(),900);}
+setTimeout(()=>void checkForNewVersion(),4000);
 // ---- Keep the library in step with MEGA (read only: nothing is written) ----
 let libraryRefresh=null,lastLibraryRefresh=0,libraryCheck=null;
 function libraryCheckText(){
@@ -1096,7 +1116,8 @@ function refreshLibrary({announce=false,reloadTree=true}={}){
 let hiddenSince=0;
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='hidden'){hiddenSince=Date.now();return;}
-  if(mega.connected&&!restoringConnection&&hiddenSince&&Date.now()-hiddenSince>15000&&Date.now()-lastLibraryRefresh>60000)void refreshLibrary();
+  if(mega.connected&&!restoringConnection&&hiddenSince&&Date.now()-hiddenSince>5000&&Date.now()-lastLibraryRefresh>30000)void refreshLibrary();
+  void checkForNewVersion();
 });
 function syncStatusText(){
   if(!MEGA_WRITES_ENABLED)return t('syncPaused');
