@@ -69,6 +69,11 @@ jobs:
         run: |
           mkdir -p results && cd results
           echo "status=${{ job.status }} commit=${GITHUB_SHA} run=${GITHUB_RUN_NUMBER} testflight=$([ -n "$ASC_KEY_ID" ] && echo configured || echo not-configured)" > STATUS.txt
+          # This branch is public: never publish the Apple account identifiers.
+          for value in "$ASC_KEY_ID" "$ASC_ISSUER_ID" "$APPLE_TEAM_ID"; do
+            [ -n "$value" ] || continue
+            grep -rlF -- "$value" . | while read -r file; do sed -i '' "s|$value|[hidden]|g" "$file"; done
+          done
           git init -q && git checkout -q -b ci-results
           git add -A
           git -c user.name="CloudPanels build" -c user.email="build@users.noreply.github.com" commit -qm "iPad build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA})"
