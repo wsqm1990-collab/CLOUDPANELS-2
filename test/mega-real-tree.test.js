@@ -70,3 +70,30 @@ test('with the real MEGAJS code, folders moved in MEGA appear in their new place
     await connection.disconnect();
   } finally { globalThis.fetch = original; }
 });
+
+test('a folder listed by MEGA before the folder it now sits in is not lost', async () => {
+  const server = megaServer();
+  server.folder('comics01', 'root0001', 'COMICS');
+  server.folder('reading1', 'comics01', 'READING');
+  server.folder('ultxmen1', 'reading1', 'ULTIMATE X-MEN');
+  server.file('xmen0001', 'ultxmen1', 'Ultimate X-Men 001.cbr');
+  // READ is created after ULTIMATE X-MEN, so MEGA may list it later.
+  server.folder('read0001', 'comics01', 'READ');
+  const original = globalThis.fetch; globalThis.fetch = server.fetch;
+  try {
+    const connection = new MegaConnection({ sdk: SDK });
+    await connection.restoreRememberedSession({ version: 1, mode: 'account', key: e64(server.masterKey), sid: Buffer.alloc(43, 9).toString('base64url'), user: 'user0001', name: 'Reader' });
+    const names = async id => (await connection.children(id)).map(item => item.name);
+    server.move('ultxmen1', 'read0001');
+    assert.ok([...server.nodes.keys()].indexOf('ultxmen1') < [...server.nodes.keys()].indexOf('read0001'), 'the moved folder comes first in the list');
+    await connection.refreshTree();
+    assert.deepEqual(await names('mega:reading1'), []);
+    assert.deepEqual(await names('mega:read0001'), ['ULTIMATE X-MEN']);
+    assert.deepEqual((await connection.listComics('mega:comics01')).map(c => c.path), ['COMICS/READ/ULTIMATE X-MEN/Ultimate X-Men 001.cbr']);
+    // Opening the app again (a fresh session) finds it there too.
+    const again = new MegaConnection({ sdk: SDK });
+    await again.restoreRememberedSession({ version: 1, mode: 'account', key: e64(server.masterKey), sid: Buffer.alloc(43, 9).toString('base64url'), user: 'user0001', name: 'Reader' });
+    assert.deepEqual((await again.children('mega:read0001')).map(item => item.name), ['ULTIMATE X-MEN']);
+    await again.disconnect(); await connection.disconnect();
+  } finally { globalThis.fetch = original; }
+});
