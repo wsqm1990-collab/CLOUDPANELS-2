@@ -1,9 +1,10 @@
 import { openComic } from './reader.js';
-import { wholePageFit, pageFit, guidedPanelFit, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation } from './reader-interactions.js';
+import { wholePageFit, pageFit, guidedPanelFit, resolvePanelIndex, canSwipePages, decideTapNavigation } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
 import { stepReadingPosition } from './reader-position.js';
+import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry } from './reader-gestures.js';
 
 const MiB = 1024 * 1024;
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -182,10 +183,18 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let serial = 0, pageSerial = 0, currentPage = -1, panel = 0, guided = false, loading = false, editing = false;
   let currentURL, imageWidth = 0, imageHeight = 0, pageWidth = 0, draft = [], pointer, popup;
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
-  let immersive = false, panMode = false, prefetch, prefetchTimer, gesture, settleTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
+  let immersive = false, panMode = false, prefetchTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
   let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0;
   let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [], lastTap, appFullscreenAsked = false;
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
+  // Decoded pages kept ready around the current one (previous, current, next),
+  // so a swipe shows the neighbouring page under the finger at once.
+  const decodedPages = new Map();
+  // The neighbouring page that slides in beside the current one while turning.
+  const neighbourLayer = document.createElement('div'); neighbourLayer.className = 'reader-neighbour'; neighbourLayer.setAttribute('aria-hidden', 'true'); neighbourLayer.hidden = true;
+  const neighbourImage = document.createElement('img'); neighbourImage.alt = ''; neighbourImage.draggable = false;
+  const neighbourNote = document.createElement('div'); neighbourNote.className = 'reader-neighbour-note';
+  neighbourLayer.append(neighbourImage, neighbourNote); shell.append(neighbourLayer);
   const pageAnimation = () => store.state.settings.readerPageAnimation || 'slide';
   const pageDuration = () => store.state.settings.readerPageDuration || 420;
   const turnLabels = () => language() === 'pt-BR'
@@ -445,11 +454,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function swipeAllowed() { return canSwipePages({ pageWidth, baselineWidth: baselineWidth(), browserScale: window.visualViewport?.scale || 1, panning: panMode, guided, guidedReady: guided && !analysisPending, editing, popup: Boolean(popup), loading: loading || turning }); }
   function isZoomed() { const baseline = baselineWidth(); return !baseline || Math.abs(pageWidth - baseline) > Math.max(1, baseline * .035) || (window.visualViewport?.scale || 1) > 1.035; }
   function syncGestureMode() {
-    // When a tall page must be scrolled while sideways swipes turn pages, the
-    // reader moves the page itself (with momentum and pinch-zoom). iPad Safari's
-    // own scrolling fought the page-turn gesture and felt stuck.
-    const tall = stage.scrollHeight - stage.clientHeight > 2;
-    stage.style.touchAction = swipeAllowed() ? (tall && !panMode ? 'none' : 'pan-y pinch-zoom') : 'pan-x pan-y pinch-zoom';
+    // The reader owns every touch on the page: scrolling, page turns and pinch.
+    // Browser scrolling fought the page-turn gesture on iPad and felt stuck, and
+    // one engine behaves the same on iPad Safari and Android Chrome.
+    stage.style.touchAction = 'none';
   }
   function showHint(message, duration = 4500) { clearTimeout(hintTimer); fitHint.textContent = message; fitHint.hidden = false; hintTimer = setTimeout(() => { fitHint.hidden = true; }, duration); }
   function setPanMode(value, { hint = true } = {}) {
@@ -539,13 +547,27 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (Math.abs(height - viewportHeight) < 1 && Math.abs(width - viewportWidth) < 1) return;
       viewportHeight = height; viewportWidth = width;
       dialog.style.setProperty('--reader-viewport-height', `${height}px`);
+      pagerAbort(); stopMotion();
       if (dialog.open && !loading && book && currentPage >= 0 && !editing && spreadActive() !== (spreadPages.length > 1) && (spreadActive() ? currentPage > 0 : true)) { void showPage(currentPage, panel); return; }
       if (dialog.open && !loading) { pageTransition.cancel(); layoutPage({ preserveWidthPosition: true }); if (editing) editToolbar(); }
     });
   }
   function scrollToPosition(left, top, smooth = false) {
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    stage.scrollTo({ left: Math.max(0, left), top: Math.max(0, top), behavior: smooth && !reduce ? 'smooth' : 'auto' });
+    // The browser's own smooth scrolling could keep running after a page turn
+    // and drag the new page down to its bottom. Our animation stops with any
+    // touch or page change; a direct position also cancels a running one.
+    stopMotion();
+    const limits = scrollLimits(), x = clamp(left, 0, limits.maxLeft), y = clamp(top, 0, limits.maxTop);
+    if (!smooth || reduce) { stage.scrollLeft = x; stage.scrollTop = y; return; }
+    const fromX = stage.scrollLeft, fromY = stage.scrollTop, began = performance.now(), token = {};
+    const step = now => {
+      if (motion !== token) return;
+      const progress = Math.min(1, (now - began) / 300), eased = 1 - (1 - progress) ** 3;
+      stage.scrollLeft = fromX + (x - fromX) * eased; stage.scrollTop = fromY + (y - fromY) * eased;
+      if (progress < 1) token.frame = requestAnimationFrame(step); else motion = undefined;
+    };
+    motion = token; token.frame = requestAnimationFrame(step);
   }
   function drawRect(rect, index, focus = false) {
     const node = document.createElement('div'); node.className = focus ? 'panel-focus' : 'panel-rect';
@@ -559,8 +581,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     else if (guided && guidedMode === 'panels' && !overview && panels()[panel]) overlay.append(drawRect(panels()[panel], panel, true));
   }
   function cancelCamera() { cameraGeneration++; if (cameraFrame) cancelAnimationFrame(cameraFrame); cameraFrame = undefined; dialog.classList.remove('reader-guided-moving'); }
-  function layoutPage({ smooth = false, keepZoom = false, preserveWidthPosition = false } = {}) {
+  function layoutPage({ smooth = false, keepZoom = false, preserveWidthPosition = false, fromBottom = false } = {}) {
     if (!imageWidth || !imageHeight || currentPage < 0) return;
+    stopMotion();
     const widthViewY = preserveWidthPosition && !guided && !editing && fitMode() === 'width' && pageWidth > 0
       ? Math.max(0, (stage.scrollTop - wrap.offsetTop) / (pageWidth * imageHeight / imageWidth)) : null;
     cancelCamera();
@@ -572,7 +595,6 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (rect) {
       const available = availableSize(), aspect = imageWidth / imageHeight;
       const target = guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect });
-      guidedFillFromBottom = false;
       if (!target) return;
       const style = getComputedStyle(stage), centerX = parseFloat(style.paddingLeft || 0) + available.width / 2, centerY = parseFloat(style.paddingTop || 0) + available.height / 2;
       const startWidth = pageWidth || fitWidth();
@@ -604,8 +626,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         const guidedFill = guidedWholeFills();
         const fit = pageFit({ mode: editing ? 'whole' : guided ? guidedFitMode() : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height });
         setPageWidth(fit.width);
-        const topY = guidedFillFromBottom && (guidedFill || ['width', 'fill', 'screen'].includes(fitMode())) && widthViewY === null ? wrap.offsetTop + fit.height : guidedFill ? 0 : widthViewY !== null ? wrap.offsetTop + widthViewY * fit.height : !guided && !editing && ['width', 'fill', 'screen'].includes(fitMode()) ? 0 : Math.max(0, (fit.height - available.height) / 2);
-        guidedFillFromBottom = false;
+        // A new page always starts at its top. Only reading backwards through a
+        // filled page with the keyboard or in Panel view starts at its bottom.
+        const topY = fromBottom && (guidedFill || ['width', 'fill', 'screen'].includes(fitMode())) && widthViewY === null ? wrap.offsetTop + fit.height : guidedFill ? 0 : widthViewY !== null ? wrap.offsetTop + widthViewY * fit.height : !guided && !editing && ['width', 'fill', 'screen'].includes(fitMode()) ? 0 : Math.max(0, (fit.height - available.height) / 2);
         scrollToPosition(Math.max(0, (fit.width - available.width) / 2), topY, smooth && guidedFill);
       }
       paintPanels();
@@ -996,103 +1019,133 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!candidate || candidate.url === currentURL) return;
     candidate.decodedImage?.removeAttribute('src'); URL.revokeObjectURL(candidate.url); pendingURLs.delete(candidate.url);
   }
+  // ---- Pages kept decoded around the current one ----
+  function decodedEntry(index, { start = true } = {}) {
+    if (!book || !comic || !sessionController || !Number.isInteger(index) || index < 0 || index >= book.pageCount) return null;
+    const existing = decodedPages.get(index);
+    if (existing && !existing.controller.signal.aborted) return existing;
+    if (!start) return null;
+    const controller = new AbortController(), activeBook = book, mySession = serial, activeSession = sessionController;
+    const entry = { index, controller, candidate: undefined, promise: undefined };
+    const cancel = () => controller.abort(); activeSession.signal.addEventListener('abort', cancel, { once: true });
+    entry.promise = (async () => {
+      const blob = await activeBook.page(index, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      const candidate = await decodedURL(blob, controller.signal);
+      if (mySession !== serial || controller.signal.aborted) { disposeCandidate(candidate); throw abortError(); }
+      entry.candidate = candidate; return candidate;
+    })().finally(() => activeSession.signal.removeEventListener('abort', cancel));
+    entry.promise.catch(() => { if (decodedPages.get(index) === entry && !entry.candidate) decodedPages.delete(index); });
+    decodedPages.set(index, entry);
+    return entry;
+  }
+  const cachedURL = url => Boolean(url) && [...decodedPages.values()].some(entry => entry.candidate?.url === url);
+  function releaseDecoded(entry) { entry.controller.abort(); if (entry.candidate) disposeCandidate(entry.candidate); }
+  function trimDecoded(keep) {
+    for (const [index, entry] of [...decodedPages]) if (!keep.has(index)) { decodedPages.delete(index); releaseDecoded(entry); }
+  }
+  function clearDecoded() { for (const entry of decodedPages.values()) releaseDecoded(entry); decodedPages.clear(); }
   function cancelPrefetch() {
     clearTimeout(prefetchTimer); prefetchTimer = undefined;
-    if (!prefetch) return;
-    const previous = prefetch; prefetch = undefined; previous.controller.abort(); disposeCandidate(previous.decoded);
+    // Pages still loading in the background stop; ready ones stay ready.
+    for (const [index, entry] of [...decodedPages]) if (!entry.candidate && index !== currentPage) { decodedPages.delete(index); entry.controller.abort(); }
   }
   function schedulePrefetch() {
-    clearTimeout(prefetchTimer);
-    if (!book || !comic || loading || editing || document.hidden || currentPage + 1 >= book.pageCount) { cancelPrefetch(); return; }
-    const index = currentPage + 1;
-    if (prefetch?.index === index) return;
-    cancelPrefetch();
-    const mySession = serial, activeBook = book, activeSession = sessionController;
-    // Allow the displayed image and the user's next input to paint first.
+    clearTimeout(prefetchTimer); prefetchTimer = undefined;
+    if (!book || !comic || loading || editing || document.hidden || currentPage < 0) return;
+    const mySession = serial, page = currentPage;
+    const last = spreadPages.length > 1 ? spreadPages[spreadPages.length - 1] : currentPage;
+    // Let the shown page and the next input paint first, then get the next page
+    // ready, then the previous one (usually already ready when reading forward).
     prefetchTimer = setTimeout(() => {
-      if (mySession !== serial || !book || loading || editing || document.hidden) return;
-      const controller = new AbortController(), state = { index, controller, decoded: undefined, promise: undefined };
-      const cancel = () => controller.abort(); activeSession.signal.addEventListener('abort', cancel, { once: true });
-      prefetch = state;
-      state.promise = (async () => {
-        const blob = await activeBook.page(index, { signal: controller.signal });
-        controller.signal.throwIfAborted();
-        const candidate = await decodedURL(blob, controller.signal);
-        if (mySession !== serial || controller.signal.aborted) { disposeCandidate(candidate); return undefined; }
-        state.decoded = candidate; return candidate;
-      })().catch(() => undefined).finally(() => activeSession.signal.removeEventListener('abort', cancel));
+      prefetchTimer = undefined;
+      if (mySession !== serial || !book || loading || editing || document.hidden || currentPage !== page) return;
+      const next = decodedEntry(last + 1);
+      const previous = () => { if (mySession === serial && currentPage === page && !spreadActive()) decodedEntry(page - 1); };
+      if (next && !next.candidate) next.promise.then(previous, previous); else previous();
     }, 120);
   }
-  async function showPage(index, targetPanel = 0, { prompt = true, targetOverview = false, animate = false, direction = 1 } = {}) {
+  function waitFor(promise, signal) {
+    if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : abortError());
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(signal.reason instanceof Error ? signal.reason : abortError());
+      signal.addEventListener('abort', abort, { once: true });
+      promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => { signal.removeEventListener('abort', abort); reject(error); });
+    });
+  }
+  async function showPage(index, targetPanel = 0, { prompt = true, targetOverview = false, animate = false, direction = 1, pager: fromPager = false } = {}) {
     if (!book || !comic || editing) return;
     index = clamp(Math.floor(index), 0, book.pageCount - 1);
     const spreading = spreadActive();
     if (spreading) index = spreadStart(index);
-    pageTransition.cancel(); turning = false; cancelAnalysis(); cancelCamera(); panMode = false; positionCommitted = false;
+    if (!fromPager) pagerAbort();
+    const fromBottom = guidedFillFromBottom; guidedFillFromBottom = false;
+    pageTransition.cancel(); if (!fromPager) turning = false; cancelAnalysis(); cancelCamera(); stopMotion(); clearStretch(); panMode = false; positionCommitted = false;
     clearTimeout(prefetchTimer); prefetchTimer = undefined;
-    // The foreground takes ownership of the already running next-page promise.
-    // A different speculative page is aborted before any active request starts.
-    const warm = prefetch?.index === index && !prefetch.controller.signal.aborted ? prefetch : undefined;
-    if (warm) prefetch = undefined; else cancelPrefetch();
+    // Keep only the pages around the new position (and the one still shown).
+    const around = center => { const keep = new Set(); const reach = spreading ? 2 : 1; for (let i = center - reach; i <= center + reach + (spreading ? 1 : 0); i++) keep.add(i); return keep; };
+    const keep = around(index); keep.add(currentPage); trimDecoded(keep);
     pageController?.abort(); pageController = new AbortController();
     const request = pageController, mySession = serial, myPage = ++pageSerial, activeBook = book;
     const sessionAbort = () => request.abort(sessionController?.signal.reason);
     const activeSessionSignal = sessionController.signal;
     activeSessionSignal.addEventListener('abort', sessionAbort, { once: true });
-    const cancelWarm = () => warm?.controller.abort(); request.signal.addEventListener('abort', cancelWarm, { once: true });
     hidePopup(); loading = true; activity(true); updateControls(); statusMessage(text().loadingPage(index + 1));
     let candidate, snapshot, previousURL;
+    // Pages kept in the decoded cache own their address; a two-page composite
+    // belongs to this view only and is released when it is replaced.
+    const release = value => { if (value?.url && value.url !== currentURL && !cachedURL(value.url)) { URL.revokeObjectURL(value.url); pendingURLs.delete(value.url); } };
     try {
-      let blob;
-      if (warm) { candidate = await warm.promise; blob = candidate?.blob; }
-      request.signal.throwIfAborted();
-      if (!candidate) { blob = await activeBook.page(index, { signal: request.signal }); request.signal.throwIfAborted(); candidate = await decodedURL(blob, request.signal); }
+      const entry = decodedEntry(index);
+      if (!entry) throw new Error(text().pageFailed);
+      candidate = await waitFor(entry.promise, request.signal);
+      const blob = candidate.blob;
       let pairedPages = [index];
       if (spreading && index > 0 && index + 1 < activeBook.pageCount && candidate.height > candidate.width) {
-        let partner;
         try {
-          const partnerBlob = await activeBook.page(index + 1, { signal: request.signal }); request.signal.throwIfAborted();
-          partner = await decodedURL(partnerBlob, request.signal);
-          if (partner.height > partner.width) {
+          const partnerEntry = decodedEntry(index + 1);
+          const partner = partnerEntry ? await waitFor(partnerEntry.promise, request.signal) : null;
+          if (partner && partner.height > partner.width) {
             const combined = await composeSpread(candidate, partner, request.signal);
-            const merged = await decodedURL(combined, request.signal);
-            URL.revokeObjectURL(candidate.url); pendingURLs.delete(candidate.url);
-            candidate = merged; pairedPages = [index, index + 1];
+            candidate = await decodedURL(combined, request.signal);
+            pairedPages = [index, index + 1];
           }
         } catch (error) { if (request.signal.aborted) throw error; }
-        finally { if (partner) { URL.revokeObjectURL(partner.url); pendingURLs.delete(partner.url); } }
       }
-      if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) { URL.revokeObjectURL(candidate.url); pendingURLs.delete(candidate.url); return; }
+      if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) { release(candidate); return; }
       spreadPages = pairedPages;
       previousURL = currentURL;
-      if (animate && currentPage >= 0 && currentURL) { resetGesture(false); snapshot = pageTransition.capture(); }
+      if (animate && !fromPager && currentPage >= 0 && currentURL) { resetGesture(); clearStretch(); snapshot = pageTransition.capture(); }
       currentURL = candidate.url; pendingURLs.delete(candidate.url);
       image.src = currentURL; showImage(true); image.alt = spreadPages.length > 1 ? `${text().pageOf(index + 1, activeBook.pageCount)} + ${index + 2}` : text().pageOf(index + 1, activeBook.pageCount);
       imageWidth = candidate.width; imageHeight = candidate.height;
       currentPage = index; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
-      layoutPage();
+      layoutPage({ fromBottom });
       if (guided) {
         const rects = await obtainPagePanels({ signal: request.signal, imageElement: candidate.decodedImage });
         if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
         panel = resolvePanelIndex(targetPanel, rects.length); overview = Boolean(targetOverview && rects.length);
       }
-      loading = false; positionCommitted = true; turning = Boolean(snapshot); layoutPage(); persist(); updateControls(); normalStatus();
+      loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom }); persist(); updateControls(); normalStatus();
       if (snapshot) await pageTransition.play({ snapshot, style: pageAnimation(), duration: pageDuration(), direction: direction * (rtl() ? -1 : 1) });
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
-      turning = false; paintPanels(); updateControls(); activity(false);
+      if (!fromPager) turning = false;
+      paintPanels(); updateControls(); activity(false);
       wakeRestore();
       if (index === 0 && onCoverFirstPage) void Promise.resolve().then(() => onCoverFirstPage(comic, blob)).catch(() => {});
       if (guided && guidedFallbackPage === currentPage) showHint(guidedLabels().fallback, 6500);
+      trimDecoded(around(index));
       schedulePrefetch();
     } catch (error) {
-      if (candidate?.url && candidate.url !== currentURL) { URL.revokeObjectURL(candidate.url); pendingURLs.delete(candidate.url); }
+      release(candidate);
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
-      pageTransition.cancel(); turning = false; loading = false; activity(false); updateControls();
+      pageTransition.cancel(); if (!fromPager) turning = false; loading = false; activity(false); updateControls();
       try { window.dispatchEvent(new CustomEvent('cloudpanels-error', { detail: { where: 'page', error, extra: { page: index + 1, format: comic?.format, size: comic?.size, ...(error?.details || {}) } } })); } catch {}
       statusMessage(error?.message || text().pageFailed, true, () => showPage(index, targetPanel, { prompt, targetOverview }));
     } finally {
-      if (previousURL && previousURL !== currentURL) URL.revokeObjectURL(previousURL);
-      activeSessionSignal.removeEventListener('abort', sessionAbort); request.signal.removeEventListener('abort', cancelWarm); }
+      if (previousURL && previousURL !== currentURL && !cachedURL(previousURL)) URL.revokeObjectURL(previousURL);
+      activeSessionSignal.removeEventListener('abort', sessionAbort);
+    }
   }
   async function endOfBook() {
     const mySession = serial, finishedComic = comic;
@@ -1110,10 +1163,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       statusMessage(turnLabels().nextFailed, true, endOfBook);
     }
   }
-  function move(delta) {
+  async function move(delta, { stepScroll = false } = {}) {
     if (!book || currentPage < 0 || loading || turning || editing || popup || analysisPending || !positionCommitted) return;
-    // A filled landscape page is read top to bottom before turning.
-    const scrollsPage = guidedWholeFills() || (!guided && !editing && ['width', 'fill', 'screen'].includes(fitMode()));
+    stopMotion(); clearStretch();
+    // In Panel view a filled landscape page is read top to bottom before
+    // turning; elsewhere only the keyboard's Page Down/Space scrolls first.
+    // Taps and swipes always turn the page, and the new page starts at its top.
+    const scrollsPage = guidedWholeFills() || (stepScroll && !guided && !editing && ['width', 'fill', 'screen'].includes(fitMode()));
     if (scrollsPage && !isZoomed() && stage.scrollHeight - stage.clientHeight > 4) {
       const maxTop = stage.scrollHeight - stage.clientHeight, step = stage.clientHeight * .8;
       if (delta > 0 && stage.scrollTop < maxTop - 4) { scrollToPosition(stage.scrollLeft, Math.min(maxTop, stage.scrollTop + step), true); return; }
@@ -1129,173 +1185,373 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     }
     const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta, showOverview: store.state.settings.readerOverview !== false });
     if (step.kind === 'panel' || step.kind === 'overview') {
-      panel = step.panel; overview = step.overview; layoutPage({ smooth: true }); persist(); updateControls(); normalStatus();
+      const fromBottom = guidedFillFromBottom; guidedFillFromBottom = false;
+      panel = step.panel; overview = step.overview; layoutPage({ smooth: true, fromBottom }); persist(); updateControls(); normalStatus();
       if (overview) showHint(turnLabels().overview, 2600);
       return;
     }
+    guidedFillFromBottom = guidedFillFromBottom && step.kind === 'page';
     if (step.kind === 'end') return endOfBook();
-    if (step.kind === 'page') return showPage(step.page, step.panel, { targetOverview: step.overview, animate: true, direction: delta });
+    if (step.kind === 'page') {
+      // The page slides in beside the current one, the same way a swipe does.
+      if (!guided && step.page === currentPage + delta && await pagerTurn(delta)) return;
+      return showPage(step.page, step.panel, { targetOverview: step.overview, animate: true, direction: delta });
+    }
   }
   function markRead() {
     if (!book || currentPage < 0 || loading || editing || analysisPending || !positionCommitted) return;
     const saved = persist(true); updateControls(); statusMessage(saved ? text().finished : text().marked);
   }
-  function zoom(multiplier, point) {
+  function zoom(multiplier, point, { anchor = 'center', pan } = {}) {
     if (!book || currentPage < 0 || loading || editing) return;
-    cancelCamera();
+    cancelCamera(); stopMotion(); clearStretch();
     const box = stage.getBoundingClientRect();
     const focusX = point ? point.x - box.left : stage.clientWidth / 2, focusY = point ? point.y - box.top : stage.clientHeight / 2;
     const oldWidth = pageWidth || fitWidth(), ratioX = (stage.scrollLeft + focusX - wrap.offsetLeft) / oldWidth;
     const oldHeight = oldWidth * imageHeight / imageWidth, ratioY = (stage.scrollTop + focusY - wrap.offsetTop) / oldHeight;
     setPageWidth(clamp(oldWidth * multiplier, fitWidth() * .5, Math.max(fitWidth() * 8, imageWidth * 2)));
     paintPanels();
-    scrollToPosition(wrap.offsetLeft + ratioX * pageWidth - (point ? stage.clientWidth / 2 : focusX),
-      wrap.offsetTop + ratioY * pageWidth * imageHeight / imageWidth - (point ? stage.clientHeight / 2 : focusY));
+    // A double tap brings the tapped spot to the centre; a pinch keeps the
+    // spot under the fingers and follows them as they move.
+    const keep = anchor === 'finger' && point;
+    scrollToPosition(wrap.offsetLeft + ratioX * pageWidth - (keep ? focusX : point ? stage.clientWidth / 2 : focusX) - (pan?.x || 0),
+      wrap.offsetTop + ratioY * pageWidth * imageHeight / imageWidth - (keep ? focusY : point ? stage.clientHeight / 2 : focusY) - (pan?.y || 0));
   }
-  function resetGesture(animate = true) {
-    const previous = gesture; gesture = undefined;
-    if (previous?.distance >= 12 || previous?.multiTouch) suppressClicksUntil = performance.now() + 600;
-    if (previous && stage.hasPointerCapture?.(previous.id)) {
-      try { stage.releasePointerCapture(previous.id); } catch { /* The UA may have released it already. */ }
-    }
-    dialog.classList.remove('reader-page-dragging');
-    dialog.classList.toggle('reader-page-settling', animate); wrap.style.setProperty('--reader-drag-x', '0px');
-    clearTimeout(settleTimer); settleTimer = setTimeout(() => dialog.classList.remove('reader-page-settling'), 160);
-  }
-  let momentumFrame, pinch;
+  // ---- Touch: scrolling, page turns and pinch, all owned by the reader -----
+  // The page follows the finger 1:1, glides after a flick and stretches at the
+  // edges like an iPad scroll view. A sideways drag slides the neighbouring page
+  // in beside the current one (like the Panels app): letting go far enough, or
+  // with a flick, turns the page; otherwise both spring back into place.
+  const PAGE_GAP = 14;
+  const easeOut = 'cubic-bezier(.22,.8,.3,1)';
+  let gesture, pinch, motion, pager, stretch = { x: 0, y: 0 };
   const touchPoints = new Map();
-  function stopMomentum() { if (momentumFrame) cancelAnimationFrame(momentumFrame); momentumFrame = undefined; }
-  function startMomentum(velocity) {
-    stopMomentum();
-    let v = clamp(velocity, -4, 4), last = performance.now();
-    const step = now => {
-      const dt = Math.min(48, now - last); last = now;
-      const maxTop = stage.scrollHeight - stage.clientHeight, before = stage.scrollTop;
-      stage.scrollTop = clamp(before + v * dt, 0, Math.max(0, maxTop));
-      v *= Math.pow(.94, dt / 16);
-      if (Math.abs(v) < .02 || stage.scrollTop === before) { momentumFrame = undefined; return; }
-      momentumFrame = requestAnimationFrame(step);
-    };
-    momentumFrame = requestAnimationFrame(step);
+  const reducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+  function scrollLimits() { return { maxLeft: Math.max(0, stage.scrollWidth - stage.clientWidth), maxTop: Math.max(0, stage.scrollHeight - stage.clientHeight) }; }
+  function clearStretch() { if (stretch.x || stretch.y) { stretch = { x: 0, y: 0 }; wrap.style.translate = ''; } }
+  // Positions may lie past the edges while the page is stretched: the browser
+  // keeps a valid scroll position and the overflow moves the page itself.
+  function renderScroll(x, y, limits) {
+    const left = clamp(x, 0, limits.maxLeft), top = clamp(y, 0, limits.maxTop);
+    if (Math.abs(stage.scrollLeft - left) >= .5) stage.scrollLeft = left;
+    if (Math.abs(stage.scrollTop - top) >= .5) stage.scrollTop = top;
+    const ox = left - x, oy = top - y;
+    if (ox !== stretch.x || oy !== stretch.y) { stretch = { x: ox, y: oy }; wrap.style.translate = ox || oy ? `${ox}px ${oy}px` : ''; }
   }
-  const ownsTouch = () => stage.style.touchAction === 'none';
-  stage.addEventListener('pointerdown', event => {
-    stopMomentum();
-    activePointers.add(event.pointerId);
-    if (event.pointerType !== 'mouse') touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (activePointers.size === 2 && ownsTouch() && touchPoints.size === 2 && book && !editing && !popup) {
-      const [a, b] = [...touchPoints.values()];
-      pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1 };
+  function currentScroll() { return { x: stage.scrollLeft - stretch.x, y: stage.scrollTop - stretch.y }; }
+  function stopMotion() { if (motion) { cancelAnimationFrame(motion.frame); motion = undefined; } }
+  // Keep moving after a flick (and bounce back from an edge), like iOS.
+  function glide(vx, vy) {
+    stopMotion();
+    const limits = scrollLimits(), start = currentScroll();
+    let x = { pos: start.x, vel: limits.maxLeft > 0 ? vx : 0 }, y = { pos: start.y, vel: limits.maxTop > 0 ? vy : 0 };
+    if (Math.abs(x.vel) < .02 && Math.abs(y.vel) < .02 && !stretch.x && !stretch.y) return;
+    const token = {}; let last = performance.now();
+    const step = now => {
+      if (motion !== token) return;
+      const dt = Math.min(48, Math.max(1, now - last)); last = now;
+      x = stepScroll(x, dt, { min: 0, max: limits.maxLeft }); y = stepScroll(y, dt, { min: 0, max: limits.maxTop });
+      renderScroll(x.pos, y.pos, limits);
+      if (x.done && y.done) { motion = undefined; clearStretch(); return; }
+      token.frame = requestAnimationFrame(step);
+    };
+    motion = token; token.frame = requestAnimationFrame(step);
+  }
+
+  // ---- Sliding pages ----
+  const pagerLabels = () => language() === 'pt-BR'
+    ? { end: 'Fim da revista · Solte para abrir a próxima', loading: n => `Carregando página ${n}…` }
+    : language() === 'es' ? { end: 'Fin del cómic · Suelta para abrir el siguiente', loading: n => `Cargando página ${n}…` }
+      : { end: 'End of this comic · Let go to open the next one', loading: n => `Loading page ${n}…` };
+  function pagerAllowed({ zoomed = false } = {}) {
+    return Boolean(book && comic && currentPage >= 0 && !guided && !editing && !popup && !panMode && !loading && !turning && !analysisPending && positionCommitted && !spreadActive() && (zoomed || swipeAllowed()));
+  }
+  function neighbourPlacement(candidate) {
+    const available = availableSize(), style = getComputedStyle(stage);
+    const fit = pageFit({ mode: fitMode(), imageWidth: candidate.width, imageHeight: candidate.height, availableWidth: available.width, availableHeight: available.height });
+    return neighbourGeometry({ fit, available, padding: { left: parseFloat(style.paddingLeft) || 0, top: parseFloat(style.paddingTop) || 0 } });
+  }
+  function pagerBegin() {
+    stopMotion(); clearStretch();
+    const rect = stage.getBoundingClientRect();
+    pager = { width: rect.width, offset: 0, delta: 0, physical: 0, index: -1, exists: false, ready: false, animating: false, animations: [] };
+    Object.assign(neighbourLayer.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`,
+      background: getComputedStyle(stage).backgroundColor, transform: `translate3d(${rect.width + PAGE_GAP}px,0,0)`, opacity: '' });
+    neighbourImage.style.filter = image.style.filter;
+    neighbourLayer.classList.remove('has-image'); neighbourImage.removeAttribute('src'); neighbourNote.textContent = '';
+    neighbourLayer.hidden = false; dialog.classList.add('reader-paging');
+    return pager;
+  }
+  // Show the page that belongs on this side (logical +1 next, -1 previous).
+  function pagerShowSide(delta) {
+    const p = pager; if (!p) return;
+    const index = currentPage + delta;
+    p.delta = delta; p.index = index; p.exists = index >= 0 && index < book.pageCount; p.ready = false;
+    neighbourLayer.classList.remove('has-image'); neighbourImage.removeAttribute('src');
+    neighbourNote.textContent = p.exists ? pagerLabels().loading(index + 1) : delta > 0 ? pagerLabels().end : '';
+    if (!p.exists) return;
+    const entry = decodedEntry(index);
+    const apply = candidate => {
+      if (pager !== p || p.index !== index) return;
+      const place = neighbourPlacement(candidate); if (!place) return;
+      Object.assign(neighbourImage.style, { left: `${place.left}px`, top: `${place.top}px`, width: `${place.width}px`, height: `${place.height}px` });
+      neighbourImage.src = candidate.url; neighbourLayer.classList.add('has-image'); p.ready = true;
+    };
+    if (entry?.candidate) apply(entry.candidate); else entry?.promise.then(apply, () => {});
+  }
+  function pagerPosition(offset) {
+    const p = pager; if (!p) return;
+    p.offset = offset;
+    stage.style.transform = offset ? `translate3d(${offset}px,0,0)` : '';
+    neighbourLayer.style.transform = `translate3d(${offset + (p.physical || 1) * (p.width + PAGE_GAP)}px,0,0)`;
+  }
+  function pagerDrag(dx) {
+    const p = pager; if (!p || p.animating) return;
+    // +1: the finger moves left and the page on the right slides in.
+    const physical = dx < 0 ? 1 : dx > 0 ? -1 : 0;
+    if (physical && physical !== p.physical) { p.physical = physical; pagerShowSide(rtl() ? -physical : physical); }
+    pagerPosition(p.exists ? dx : rubberBand(dx, p.width, .55));
+  }
+  function animateTransform(node, from, to, duration, p) {
+    return new Promise(resolve => {
+      node.style.transform = `translate3d(${to}px,0,0)`;
+      if (reducedMotion() || duration <= 0 || Math.abs(to - from) < .5 || typeof node.animate !== 'function') { resolve(); return; }
+      const animation = node.animate([{ transform: `translate3d(${from}px,0,0)` }, { transform: `translate3d(${to}px,0,0)` }], { duration, easing: easeOut });
+      p.animations.push(animation);
+      animation.onfinish = animation.oncancel = () => resolve();
+    });
+  }
+  async function pagerSettle(p, stageTo, duration) {
+    const side = (p.physical || 1) * (p.width + PAGE_GAP);
+    await Promise.all([animateTransform(stage, p.offset, stageTo, duration, p), animateTransform(neighbourLayer, p.offset + side, stageTo + side, duration, p)]);
+    p.offset = stageTo;
+  }
+  function pagerFinish(p) {
+    if (!p || pager !== p) return;
+    for (const animation of p.animations) { try { animation.cancel(); } catch { /* Already finished. */ } }
+    stage.style.transform = ''; neighbourLayer.hidden = true; neighbourLayer.style.transform = ''; neighbourLayer.style.opacity = '';
+    neighbourLayer.classList.remove('has-image'); neighbourImage.removeAttribute('src');
+    dialog.classList.remove('reader-paging'); pager = undefined;
+    if (p.animating) { turning = false; updateControls(); }
+  }
+  function pagerAbort() { if (pager) pagerFinish(pager); }
+  async function pagerRelease(dx, vx) {
+    const p = pager; if (!p || p.animating) return;
+    const decision = decidePageTurn({ dx, vx, width: p.width, resistance: swipeResistance(), direction: rtl() ? 'rtl' : 'ltr' });
+    p.animating = true; turning = true; updateControls();
+    if (decision && decision === p.delta && p.exists) {
+      const to = -(p.physical || 1) * (p.width + PAGE_GAP);
+      await pagerSettle(p, to, turnDuration(to - p.offset, vx));
+      return pagerComplete(p);
     }
-    if (activePointers.size > 1 || cancelledPointers.size) { if (gesture) gesture.multiTouch = true; resetGesture(); return; }
-    if (!book || currentPage < 0 || loading || turning || editing || popup || (event.pointerType === 'mouse' && event.button !== 0)) return;
-    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, started: performance.now(), multiTouch: false, dragging: false, distance: 0,
-      session: serial, page: pageSerial, panel, guided, overview, allowSwipe: swipeAllowed(), scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop };
-    // Touch pointers are only captured once a sideways page swipe is
-    // recognised: capturing at touch-down stops iPad Safari from scrolling.
-    if (gesture.allowSwipe && event.pointerType === 'mouse') stage.setPointerCapture?.(event.pointerId);
+    await pagerSettle(p, 0, turnDuration(p.offset, vx, { min: 180, max: 300 }));
+    pagerFinish(p);
+    // Pulling past the last page finishes this comic and opens the next one.
+    if (decision > 0 && p.delta > 0 && !p.exists && book && currentPage === book.pageCount - 1) void endOfBook();
+  }
+  // The neighbouring page now fills the screen: make it the current page.
+  async function pagerComplete(p) {
+    const entry = decodedEntry(p.index);
+    try { if (!entry) throw new Error(text().pageFailed); if (!entry.candidate) await entry.promise; }
+    catch (error) {
+      if (pager !== p) return;
+      await pagerSettle(p, 0, 260); pagerFinish(p);
+      if (error?.name !== 'AbortError') statusMessage(error?.message || text().pageFailed, true, () => move(p.delta));
+      return;
+    }
+    if (pager !== p) return;
+    await showPage(p.index, 0, { pager: true });
+    if (pager !== p) return;
+    // The new page sits exactly where the sliding copy shows it; swap them
+    // once it is painted so nothing flickers.
+    if (currentPage === p.index && typeof image.decode === 'function') { try { await Promise.race([image.decode(), new Promise(resolve => setTimeout(resolve, 350))]); } catch { /* Shown anyway. */ } }
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    pagerFinish(p);
+  }
+  // Taps, buttons and arrow keys: the same slide, when the page is ready.
+  async function pagerTurn(delta) {
+    if (!pagerAllowed({ zoomed: true })) return false;
+    const entry = decodedEntry(currentPage + delta, { start: false });
+    if (!entry?.candidate) return false;
+    const p = pagerBegin();
+    p.physical = rtl() ? -delta : delta; pagerShowSide(delta); pagerPosition(0);
+    p.animating = true; turning = true; updateControls();
+    const style = reducedMotion() ? 'none' : pageAnimation();
+    if (style === 'slide') await pagerSettle(p, -p.physical * (p.width + PAGE_GAP), pageDuration());
+    else {
+      neighbourLayer.style.transform = 'translate3d(0,0,0)';
+      if (style === 'fade' && typeof neighbourLayer.animate === 'function') {
+        await new Promise(resolve => { const fade = neighbourLayer.animate([{ opacity: 0 }, { opacity: 1 }], { duration: pageDuration(), easing: 'ease-out' }); p.animations.push(fade); fade.onfinish = fade.oncancel = () => resolve(); });
+      }
+    }
+    await pagerComplete(p);
+    return true;
+  }
+
+  // ---- Fingers ----
+  function resetGesture() {
+    const g = gesture; gesture = undefined;
+    if (g && stage.hasPointerCapture?.(g.id)) { try { stage.releasePointerCapture(g.id); } catch { /* Already released. */ } }
+    if (g?.turn === 'drag' && pager && !pager.animating) pagerFinish(pager);
+  }
+  function dragScroll(g, event) {
+    const lim = g.limits, band = (value, max, size) => value < 0 ? rubberBand(value, size) : value > max ? max + rubberBand(value - max, size) : value;
+    const x = g.axis === 'free' ? band(g.startX - (event.clientX - g.x0), lim.maxLeft, stage.clientWidth) : clamp(g.startX, 0, lim.maxLeft);
+    renderScroll(x, band(g.startY - (event.clientY - g.y0), lim.maxTop, stage.clientHeight), lim);
+  }
+  function requestAppFullscreen() {
+    // Installed app: if the system bars are still showing, ask once per app
+    // launch for true fullscreen (a touch is required for this). It is not left
+    // when closing a comic, so the system's notice appears at most once.
+    if (installedApp() && comic && !appFullscreenAsked && !fullscreenElement() && !fullscreenRequest && fullscreenSupported() && !window.matchMedia?.('(display-mode: fullscreen)').matches) {
+      appFullscreenAsked = true;
+      try { const request = document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }); request?.catch?.(() => {}); } catch { /* Not allowed. */ }
+    }
+  }
+  function beginPinch() {
+    const g = gesture; gesture = undefined;
+    if (g?.turn === 'drag' && pager && !pager.animating) void pagerRelease(0, 0);
+    stopMotion(); clearStretch();
+    if (!book || currentPage < 0 || loading || editing || popup || turning || touchPoints.size !== 2) { pinch = undefined; return; }
+    const [a, b] = [...touchPoints.values()];
+    pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, frame: undefined };
+    suppressClicksUntil = performance.now() + 600;
+  }
+  function updatePinch(event) {
+    event.preventDefault();
+    if (!pinch || touchPoints.size !== 2 || pinch.frame) return;
+    // One zoom step per frame keeps pinching smooth on slower tablets.
+    pinch.frame = requestAnimationFrame(() => {
+      if (!pinch) return;
+      pinch.frame = undefined;
+      if (touchPoints.size !== 2) return;
+      const [a, b] = [...touchPoints.values()], distance = Math.hypot(a.x - b.x, a.y - b.y) || 1, mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const ratio = distance / pinch.distance, pan = { x: mid.x - pinch.mid.x, y: mid.y - pinch.mid.y };
+      if (Math.abs(ratio - 1) > .004 || Math.abs(pan.x) + Math.abs(pan.y) > .5) { zoom(ratio, pinch.mid, { anchor: 'finger', pan }); pinch.distance = distance; pinch.mid = mid; }
+    });
+  }
+  function endPinch() {
+    if (pinch?.frame) cancelAnimationFrame(pinch.frame);
+    pinch = undefined; suppressClicksUntil = performance.now() + 600;
+    // Let go smaller than the fitted page: return to the fitted page.
+    if (book && currentPage >= 0 && !editing && !loading && pageWidth < baselineWidth() * .98) layoutPage();
+  }
+  function settleGesture(g) {
+    if (g.turn === 'drag') void pagerRelease(0, 0); else glide(0, 0);
+  }
+  stage.addEventListener('pointerdown', event => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    activePointers.add(event.pointerId);
+    touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (touchPoints.size >= 2) { if (touchPoints.size === 2) beginPinch(); return; }
+    gesture = undefined;
+    if (!book || currentPage < 0 || loading || editing || popup || turning || pager) return;
+    const now = performance.now(), caughtMoving = Boolean(motion) || Boolean(stretch.x || stretch.y);
+    const caught = currentScroll(); stopMotion();
+    const limits = scrollLimits();
+    // A finger that catches a stretched page continues the stretch smoothly.
+    const raw = (value, max, size) => value < 0 ? inverseRubberBand(value, size) : value > max ? max + inverseRubberBand(value - max, size) : value;
+    gesture = { id: event.pointerId, x0: event.clientX, y0: event.clientY, t0: now, samples: [{ t: now, x: event.clientX, y: event.clientY }], axis: null, turn: null, distance: 0,
+      limits, startX: raw(caught.x, limits.maxLeft, stage.clientWidth), startY: raw(caught.y, limits.maxTop, stage.clientHeight), caught: caughtMoving,
+      session: serial, page: pageSerial, panel, guided, overview, scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop,
+      atLeft: caught.x <= 1, atRight: caught.x >= limits.maxLeft - 1 };
   });
   stage.addEventListener('pointermove', event => {
     if (touchPoints.has(event.pointerId)) touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (pinch && touchPoints.size === 2) {
-      const [a, b] = [...touchPoints.values()], distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-      event.preventDefault();
-      if (Math.abs(distance / pinch.distance - 1) > .01) { zoom(distance / pinch.distance, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }); pinch.distance = distance; }
-      return;
+    if (pinch) { updatePinch(event); return; }
+    const g = gesture;
+    if (!g || g.id !== event.pointerId) return;
+    const now = performance.now(), dx = event.clientX - g.x0, dy = event.clientY - g.y0;
+    g.samples.push({ t: now, x: event.clientX, y: event.clientY }); if (g.samples.length > 20) g.samples.shift();
+    g.distance = Math.max(g.distance, Math.hypot(dx, dy));
+    // A swipe that began with a small vertical wobble is still a page turn:
+    // if it soon becomes clearly sideways, undo the scroll and turn instead.
+    if (g.axis === 'y' && !g.relocked && now - g.lockedAt < 260 && Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy) * 1.6 && !(isZoomed() || panMode)) {
+      g.relocked = true; renderScroll(clamp(g.startX, 0, g.limits.maxLeft), clamp(g.startY, 0, g.limits.maxTop), g.limits); clearStretch();
+      g.axis = 'x'; g.turn = pagerAllowed() ? 'drag' : 'release';
+      if (g.turn === 'drag') pagerBegin();
     }
-    if (!gesture || gesture.id !== event.pointerId || editing || activePointers.size > 1) return;
-    const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
-    gesture.distance = Math.max(gesture.distance, Math.hypot(dx, dy));
-    if (!gesture.allowSwipe && !gesture.vertical) return;
-    if (!gesture.dragging && (gesture.vertical || (Math.abs(dy) > 6 && Math.abs(dy) > Math.abs(dx)))) {
-      gesture.vertical = true;
-      const maxTop = stage.scrollHeight - stage.clientHeight;
-      // Follow the finger directly when the reader owns touch scrolling, or as
-      // a fallback whenever the browser is not scrolling by itself.
-      if (maxTop > 2 && event.pointerType !== 'mouse' && (gesture.manual || ownsTouch() || (Math.abs(dy) > 18 && Math.abs(stage.scrollTop - gesture.scrollTop) < 2))) {
-        if (!gesture.manual) { gesture.manual = true; gesture.anchorY = event.clientY; gesture.anchorTop = stage.scrollTop; }
-        event.preventDefault();
-        const now = performance.now(), top = clamp(gesture.anchorTop - (event.clientY - gesture.anchorY), 0, maxTop);
-        const instant = gesture.lastMoveAt ? (top - stage.scrollTop) / Math.max(1, now - gesture.lastMoveAt) : 0;
-        gesture.velocity = gesture.velocity === undefined ? instant : gesture.velocity * .3 + instant * .7;
-        gesture.lastMoveAt = now; stage.scrollTop = top;
-      }
-      return;
+    if (!g.axis) {
+      const zoomed = isZoomed() || panMode;
+      const axis = lockAxis({ dx, dy, canScrollY: g.limits.maxTop > 1, zoomed });
+      if (!axis) return;
+      g.axis = axis; g.lockedAt = now;
+      if (axis === 'x') g.turn = pagerAllowed() ? 'drag' : 'release';
+      // Zoomed in and already at a side: pulling further outwards turns the page.
+      if (axis === 'free' && !panMode && Math.abs(dx) > Math.abs(dy) * 1.2 && ((dx > 0 && g.atLeft) || (dx < 0 && g.atRight)) && pagerAllowed({ zoomed: true })) { g.axis = 'x'; g.turn = 'drag'; }
+      // Touch pointers already stay with the page (implicit capture). Capturing
+      // them again makes the browser report a lost capture, which used to cancel
+      // every swipe: the page trembled and sprang back instead of turning.
+      if (event.pointerType === 'mouse') { try { stage.setPointerCapture(event.pointerId); } catch { /* Not capturable. */ } }
+      if (g.turn === 'drag') pagerBegin();
     }
-    if (!gesture.dragging && Math.abs(dx) >= 44 && Math.abs(dx) >= Math.abs(dy) * 2.5) { gesture.dragging = true; try { stage.setPointerCapture?.(event.pointerId); } catch {} }
-    if (!gesture.dragging) return;
-    event.preventDefault(); dialog.classList.remove('reader-page-settling'); dialog.classList.add('reader-page-dragging');
-    const distance = clamp(dx * .45, -stage.clientWidth * .8, stage.clientWidth * .8);
-    wrap.style.setProperty('--reader-drag-x', `${distance}px`);
+    event.preventDefault();
+    if (g.axis === 'y' || g.axis === 'free') dragScroll(g, event);
+    else if (g.axis === 'x' && g.turn === 'drag') pagerDrag(dx);
   });
-  stage.addEventListener('pointerup', event => {
-    touchPoints.delete(event.pointerId); if (touchPoints.size < 2) pinch = undefined;
-    activePointers.delete(event.pointerId);
-    // In the installed iPad app, the first touch while reading also asks the
-    // system to hide the clock and battery bar (a touch is required for this).
-    // Installed app: if the system bars are still showing, ask once per app
-    // launch for true fullscreen. It is not left when closing a comic, so the
-    // system's "how to exit full screen" notice appears at most once.
-    if (installedApp() && comic && !appFullscreenAsked && !fullscreenElement() && !fullscreenRequest && fullscreenSupported() && !window.matchMedia?.('(display-mode: fullscreen)').matches) {
-      appFullscreenAsked = true;
-      try { const request = document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }); request?.catch?.(() => {}); } catch {}
-    }
-    if (!gesture || gesture.id !== event.pointerId) return;
-    const ended = gesture, dx = event.clientX - ended.x, dy = event.clientY - ended.y, duration = performance.now() - ended.started;
-    if (ended.vertical) {
-      resetGesture(false); suppressClicksUntil = performance.now() + 450;
-      if (ended.manual && performance.now() - (ended.lastMoveAt || 0) < 90 && Math.abs(ended.velocity || 0) > .15) startMomentum(ended.velocity);
-      return;
-    }
-    ended.distance = Math.max(ended.distance, Math.hypot(dx, dy));
-    const unchanged = ended.session === serial && ended.page === pageSerial && ended.panel === panel && ended.guided === guided && ended.overview === overview && Math.abs(stage.scrollTop - ended.scrollTop) < 3;
-    const delta = unchanged && ended.dragging && ended.allowSwipe && swipeAllowed() ? decideSwipe({ dx, dy, duration, width: stage.clientWidth, resistance: swipeResistance(), direction: rtl() ? 'rtl' : 'ltr', editing, multiTouch: ended.multiTouch || activePointers.size > 0 }) : 0;
-    if (ended.distance >= 12 || ended.dragging) suppressClicksUntil = performance.now() + 600;
-    resetGesture();
-    if (delta) { event.preventDefault(); void move(delta); return; }
+  function handleTap(g, event, now) {
+    const duration = now - g.t0, dx = event.clientX - g.x0, dy = event.clientY - g.y0;
+    const unchanged = g.session === serial && g.page === pageSerial && g.panel === panel && g.guided === guided && g.overview === overview && Math.abs(stage.scrollTop - g.scrollTop) < 3;
     const box = stage.getBoundingClientRect(), x = (event.clientX - box.left) / box.width, y = (event.clientY - box.top) / box.height;
     const style = getComputedStyle(stage);
     const inset = edge => Math.max(0, parseFloat(style.getPropertyValue(`--reader-safe-${edge}`)) || 0);
     const insideSafeArea = event.clientX >= box.left + inset('left') && event.clientX <= box.right - inset('right') && event.clientY >= box.top + inset('top') && event.clientY <= box.bottom - inset('bottom');
-    const tapDelta = decideTapNavigation({ x, y, dx, dy, distance: ended.distance, duration, unchanged: unchanged && Math.abs(stage.scrollLeft - ended.scrollLeft) < 3, insideSafeArea,
-      zoomed: !ended.allowSwipe || !swipeAllowed(), panning: panMode, editing, popup: Boolean(popup), loading, analysisPending,
-      multiTouch: ended.multiTouch || activePointers.size > 0, dragging: ended.dragging });
-    if (tapDelta) {
-      event.preventDefault(); suppressClicksUntil = performance.now() + 450;
-      void move(tapDelta); return;
-    }
-    if (unchanged && !ended.dragging && !ended.multiTouch && !activePointers.size && ended.distance < 9 && Math.abs(dx) < 9 && Math.abs(dy) < 9 && Math.abs(stage.scrollLeft - ended.scrollLeft) < 3 && duration < 400 && !editing && !popup && (x > .25 && x < .75 || (isZoomed() && !guided))) {
-      suppressClicksUntil = performance.now() + 450;
+    const tapDelta = decideTapNavigation({ x, y, dx, dy, distance: g.distance, duration, unchanged: unchanged && Math.abs(stage.scrollLeft - g.scrollLeft) < 3, insideSafeArea,
+      zoomed: !swipeAllowed(), panning: panMode, editing, popup: Boolean(popup), loading, analysisPending, multiTouch: activePointers.size > 0, dragging: false });
+    if (tapDelta) { event.preventDefault(); suppressClicksUntil = now + 450; void move(tapDelta); return; }
+    if (unchanged && !activePointers.size && g.distance < 9 && Math.abs(stage.scrollLeft - g.scrollLeft) < 3 && duration < 400 && !editing && !popup && (x > .25 && x < .75 || (isZoomed() && !guided))) {
+      suppressClicksUntil = now + 450;
       // Double tap zooms into that spot (or back to the fitted page); a single
       // tap still shows or hides the controls after a short wait.
-      const now = performance.now();
       if (lastTap && now - lastTap.time < 300 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40) {
         clearTimeout(lastTap.timer); lastTap = undefined;
-        if (book && currentPage >= 0 && !loading) {
-          if (isZoomed()) layoutPage(); else zoom(2.2, { x: event.clientX, y: event.clientY });
-          syncGestureMode();
-        }
+        if (book && currentPage >= 0 && !loading) { if (isZoomed()) layoutPage(); else zoom(2.2, { x: event.clientX, y: event.clientY }); syncGestureMode(); }
         return;
       }
       if (lastTap) clearTimeout(lastTap.timer);
       const centred = y > .15 && y < .85 && x > .25 && x < .75;
       lastTap = { time: now, x: event.clientX, y: event.clientY, timer: setTimeout(() => { lastTap = undefined; if (centred) setImmersive(!immersive); }, 300) };
     }
-  });
-  function endPointer(event) {
-    touchPoints.delete(event.pointerId); if (touchPoints.size < 2) pinch = undefined;
-    activePointers.delete(event.pointerId); cancelledPointers.delete(event.pointerId);
-    if (gesture?.id === event.pointerId) { suppressClicksUntil = performance.now() + 600; resetGesture(); }
   }
-  stage.addEventListener('pointercancel', endPointer);
-  stage.addEventListener('lostpointercapture', event => {
-    if (gesture?.id !== event.pointerId) return;
-    cancelledPointers.add(event.pointerId); activePointers.delete(event.pointerId);
-    suppressClicksUntil = performance.now() + 600; resetGesture();
+  stage.addEventListener('pointerup', event => {
+    touchPoints.delete(event.pointerId); activePointers.delete(event.pointerId);
+    if (pinch) { if (touchPoints.size < 2) endPinch(); return; }
+    requestAppFullscreen();
+    const g = gesture;
+    if (!g || g.id !== event.pointerId) return;
+    gesture = undefined;
+    try { if (stage.hasPointerCapture?.(event.pointerId)) stage.releasePointerCapture(event.pointerId); } catch { /* Already released. */ }
+    const now = performance.now(), velocity = releaseVelocity(g.samples, now), dx = event.clientX - g.x0;
+    if (g.axis === 'y' || g.axis === 'free') { suppressClicksUntil = now + 450; glide(g.axis === 'free' ? -velocity.x : 0, -velocity.y); return; }
+    if (g.axis === 'x') {
+      suppressClicksUntil = now + 600;
+      if (g.turn === 'drag') { void pagerRelease(dx, velocity.x); return; }
+      // Panel view: a swipe moves to the next or previous panel.
+      const unchanged = g.session === serial && g.page === pageSerial && g.panel === panel && g.guided === guided && g.overview === overview;
+      const delta = unchanged && swipeAllowed() ? decidePageTurn({ dx, vx: velocity.x, width: stage.clientWidth, resistance: swipeResistance(), direction: rtl() ? 'rtl' : 'ltr' }) : 0;
+      if (delta) void move(delta);
+      return;
+    }
+    if (g.axis === 'none') { suppressClicksUntil = now + 450; return; }
+    // A tap. Touching a gliding page only stops it, like on iOS.
+    if (g.caught) { suppressClicksUntil = now + 450; glide(0, 0); return; }
+    handleTap(g, event, now);
   });
-  // Noncaptured native pan/pinch sequences can finish outside the stage.
-  window.addEventListener('pointerup', endPointer); window.addEventListener('pointercancel', endPointer);
-  window.addEventListener('blur', () => { activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; resetGesture(false); });
+  stage.addEventListener('pointercancel', event => {
+    touchPoints.delete(event.pointerId); activePointers.delete(event.pointerId);
+    if (pinch) { if (touchPoints.size < 2) endPinch(); return; }
+    const g = gesture; if (!g || g.id !== event.pointerId) return;
+    gesture = undefined; suppressClicksUntil = performance.now() + 600; settleGesture(g);
+  });
+  // A finger lifted outside the page (without capture) still ends its gesture.
+  const forgetPointer = event => {
+    if (!touchPoints.has(event.pointerId)) return;
+    touchPoints.delete(event.pointerId); activePointers.delete(event.pointerId);
+    if (pinch && touchPoints.size < 2) endPinch();
+    const g = gesture; if (g?.id === event.pointerId) { gesture = undefined; settleGesture(g); }
+  };
+  window.addEventListener('pointerup', forgetPointer); window.addEventListener('pointercancel', forgetPointer);
+  window.addEventListener('blur', () => { touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; if (pinch?.frame) cancelAnimationFrame(pinch.frame); pinch = undefined; resetGesture(); });
   dialog.addEventListener('pointerdown', event => {
     if (event.isPrimary !== false) suppressClicksUntil = 0;
     if (event.target.closest?.('#reader-close') && event.isPrimary !== false && (event.pointerType !== 'mouse' || event.button === 0)) closeIntent = { id: event.pointerId, x: event.clientX, y: event.clientY, time: performance.now() };
@@ -1315,7 +1571,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
     comic = undefined; currentPage = -1; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
-    clearTimeout(restoreTimer); clearTimeout(hintTimer); fitHint.hidden = true; hidePopup(); resetGesture(false); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
+    clearTimeout(restoreTimer); clearTimeout(hintTimer); fitHint.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;
     wrap.style.removeProperty('width'); wrap.style.removeProperty('min-height'); wrap.style.removeProperty('margin-top');
@@ -1407,8 +1663,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     let delta;
     if (event.key === 'ArrowLeft') delta = rtl() ? 1 : -1;
     else if (event.key === 'ArrowRight') delta = rtl() ? -1 : 1;
-    else if (event.key === 'PageDown' || (event.key === ' ' && event.target === stage)) delta = 1;
-    else if (event.key === 'PageUp') delta = -1;
+    else if (event.key === 'PageDown' || (event.key === ' ' && event.target === stage)) { event.preventDefault(); void move(1, { stepScroll: true }); return; }
+    else if (event.key === 'PageUp') { event.preventDefault(); void move(-1, { stepScroll: true }); return; }
     else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(1.3); }
     else if (event.key === '-') { event.preventDefault(); zoom(1 / 1.3); }
     if (delta) { event.preventDefault(); void move(delta); }
@@ -1418,6 +1674,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const fullscreenChanged = () => {
     if (fullscreenRequest && fullscreenElement() === fullscreenTarget) finishFullscreenRequest(fullscreenRequest);
     if (!fullscreenElement()) fullscreenOwned = false;
+    // Full screen puts the whole app on top of the open reader, which then
+    // looked like the library and ignored every touch. Bring the reader back
+    // to the front (its own close handler ignores this immediate reopen).
+    const owner = fullscreenElement();
+    if (owner && dialog.open && owner !== dialog && owner.contains(dialog)) { try { dialog.close(); dialog.showModal(); stage.focus({ preventScroll: true }); } catch { /* Kept as it is. */ } }
     syncViewport();
   };
   document.addEventListener('fullscreenchange', fullscreenChanged); document.addEventListener('webkitfullscreenchange', fullscreenChanged);

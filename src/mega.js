@@ -241,9 +241,75 @@ export class MegaConnection {
     const newest = this._syncFiles(folders)[0];
     return (newest && folders.find(folder => folder.children?.includes(newest))) || folders[0];
   }
+  /**
+   * Fetch the folder tree from MEGA again, so folders and comics that were
+   * added, moved, renamed or deleted elsewhere show up. MEGAJS's own reload
+   * keeps old nodes where they were, so a fresh tree is built and swapped in;
+   * pages already being read keep working with their existing nodes.
+   */
   async refreshTree({ signal } = {}) {
-    if (!this.canSync || typeof this._storage.reload !== 'function') return;
-    await waitAbortable(this._storage.reload(true), signal);
+    checkSignal(signal);
+    if (!this.connected) return false;
+    const generation = this._generation;
+    if (this.mode === 'link') {
+      if (!this._rememberedLinkURL) return false;
+      const file = this._sdk.File.fromURL(this._rememberedLinkURL, this._isolatedAPI ? { api: this._isolatedAPI } : undefined);
+      await waitAbortable(file.loadAttributes(), signal);
+      if (generation !== this._generation) throw cancelled();
+      if (!file.name || (file.directory && !Array.isArray(file.children))) throw new MegaConnectionError('The folder link could not be loaded. Try again.', 'TREE');
+      this._nodes.clear(); this._parents.clear(); this._rootNodes = [file]; this._register(file, null);
+      return true;
+    }
+    const storage = this._storage;
+    if (this.mode !== 'account' || typeof storage?.reload !== 'function') return false;
+    const previous = { files: storage.files, root: storage.root, trash: storage.trash, inbox: storage.inbox, mounts: storage.mounts };
+    storage.files = {}; storage.mounts = [];
+    try {
+      await waitAbortable(storage.reload(true), signal);
+      if (!storage.root?.directory) throw new MegaConnectionError('Your MEGA Cloud Drive could not be loaded. Try again.', 'TREE');
+    } catch (error) { Object.assign(storage, previous); throw safeError(error); }
+    if (generation !== this._generation || this._storage !== storage) throw cancelled();
+    this._nodes.clear(); this._parents.clear(); this._rootNodes = [storage.root]; this._register(storage.root, null);
+    return true;
+  }
+
+  /**
+   * Find the MEGA folder a library was indexed from, even after it was renamed
+   * or moved: the remembered folder, else the folder that most of its comics
+   * still sit under, else a single folder with the same name.
+   * samples: [{ id, depth }] where depth is how many folders above the comic
+   * the library folder was when it was indexed.
+   */
+  findLibraryFolder({ name, samples = [], hintId } = {}) {
+    if (!this.connected) return null;
+    const trash = this._storage?.trash;
+    const inTrash = node => { for (let p = node, i = 0; p && i < 64; p = p.parent, i++) if (p === trash) return true; return false; };
+    const idOf = node => { try { return this._register(node, this._parents.get(`mega:${node.nodeId}`) ?? null); } catch { return null; } };
+    if (hintId) {
+      const node = this._findNode(hintId);
+      if (node?.directory && !inTrash(node)) return idOf(node);
+    }
+    const votes = new Map();
+    for (const { id, depth } of samples.slice(0, 60)) {
+      const node = this._findNode(id);
+      if (!node || node.directory || inTrash(node)) continue;
+      let folder = node;
+      for (let i = 0; i < depth && folder; i++) folder = folder.parent;
+      if (!folder?.directory) continue;
+      const entry = votes.get(folder) || { count: 0, named: safeName(folder.name, '') === name };
+      entry.count++; votes.set(folder, entry);
+    }
+    const ranked = [...votes.entries()].sort((a, b) => Number(b[1].named) - Number(a[1].named) || b[1].count - a[1].count);
+    if (ranked.length) return idOf(ranked[0][0]);
+    // Nothing left to follow: look for exactly one folder with that name.
+    const matches = [], queue = [...this._rootNodes];
+    for (let cursor = 0; cursor < queue.length && cursor < MAX_LIBRARY_FILES; cursor++) {
+      const node = queue[cursor];
+      if (!node?.directory || inTrash(node)) continue;
+      if (cursor > 0 && safeName(node.name, '') === name) matches.push(node);
+      for (const child of node.children ?? []) if (child?.directory) queue.push(child);
+    }
+    return matches.length === 1 ? idOf(matches[0]) : null;
   }
   async readSyncFile({ signal, name = SYNC_FILE } = {}) {
     if (!this.canSync) return null;
