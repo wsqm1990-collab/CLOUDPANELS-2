@@ -39,6 +39,9 @@ Object.assign(copy.es,{syncTitle:'Sincronizar entre dispositivos',syncDetail:'Tu
 Object.assign(copy.en,{convertOne:'Convert to CBZ',convertFolder:'Convert {count} to CBZ',convertTitle:'Convert to CBZ',convertText:'CBZ opens instantly and shows covers quickly. Each comic is downloaded, repackaged without changing its images, checked, and uploaded to the same folder with the same name. Only then does the original go to your MEGA Rubbish Bin, where you can still recover it. Your reading progress, panels, favorites and edits move to the new file. Large comics take a few minutes each: keep CloudPanels open while it works (the screen stays on).',convertStart:'Convert',convertCount:'{count} comics will be converted.',converting:'Converting {done}/{total}: {name}',convertStep:{open:'opening',pages:'pages {a}/{b}',verify:'checking',upload:'uploading'},convertDone:'{count} comics converted to CBZ.',convertFailed:'Could not convert {name}: {reason} The original was kept.',convertTooBig:'{name} is too large to convert on this device (over 250 MB); it was kept as it is.',convertCancel:'Cancel',convertCancelled:'Conversion stopped. Comics already converted stay converted; the rest were not touched.',convertNeedsAccount:'Converting needs your MEGA account login (not a link).'});
 Object.assign(copy['pt-BR'],{convertOne:'Converter para CBZ',convertFolder:'Converter {count} para CBZ',convertTitle:'Converter para CBZ',convertText:'O CBZ abre na hora e mostra as capas rápido. Cada quadrinho é baixado, reempacotado sem mexer nas imagens, conferido e enviado para a mesma pasta, com o mesmo nome. Só depois disso o original vai para a lixeira do MEGA, de onde ainda dá para recuperar. Seu progresso, quadros, favoritos e edições passam para o arquivo novo. Quadrinhos grandes levam alguns minutos cada: deixe o CloudPanels aberto enquanto converte (a tela fica ligada).',convertStart:'Converter',convertCount:'{count} quadrinhos serão convertidos.',converting:'Convertendo {done}/{total}: {name}',convertStep:{open:'abrindo',pages:'páginas {a}/{b}',verify:'conferindo',upload:'enviando'},convertDone:'{count} quadrinhos convertidos para CBZ.',convertFailed:'Não foi possível converter {name}: {reason} O original foi mantido.',convertTooBig:'{name} é grande demais para converter neste aparelho (mais de 250 MB) e foi mantido como está.',convertCancel:'Cancelar',convertCancelled:'Conversão interrompida. Os já convertidos continuam convertidos; os outros não foram mexidos.',convertNeedsAccount:'Para converter, entre com a sua conta do MEGA (não com link).'});
 copy.es.convertOne=copy.en.convertOne;
+Object.assign(copy.en,{libraryCheckedShort:'Checked with MEGA at {time} · {added} new · {moved} moved · {removed} removed',treeLoading:'Loading your folders from MEGA…',treeFresh:'Your MEGA folders as they are right now (loaded at {time}).',treeStale:'Could not reload from MEGA ({reason}). Showing the folders loaded at {time}.'});
+Object.assign(copy['pt-BR'],{libraryCheckedShort:'Conferido com o MEGA às {time} · {added} novos · {moved} movidos · {removed} removidos',treeLoading:'Carregando suas pastas do MEGA…',treeFresh:'Suas pastas do MEGA como estão agora (carregadas às {time}).',treeStale:'Não foi possível recarregar do MEGA ({reason}). Mostrando as pastas carregadas às {time}.'});
+Object.assign(copy.es,{libraryCheckedShort:'Revisado con MEGA a las {time} · {added} nuevos · {moved} movidos · {removed} quitados',treeLoading:'Cargando tus carpetas de MEGA…',treeFresh:'Tus carpetas de MEGA tal como están ahora (cargadas a las {time}).',treeStale:'No se pudo recargar desde MEGA ({reason}). Mostrando las carpetas cargadas a las {time}.',updatingApp:'Actualizando CloudPanels a la versión más nueva…',appVersion:'Versión de la app',libraryNotChecked:'Todavía no se revisó en esta sesión.',libraryCheckedAt:'Última revisión a las {time}: {found} de {total} carpetas de la biblioteca encontradas en MEGA · {added} nuevos, {moved} movidos, {removed} quitados.',libraryCheckFailed:'La revisión de las {time} falló: {reason}',refreshLibrary:'Actualizar desde MEGA',refreshingLibrary:'Revisando tus carpetas de MEGA…',libraryUpdated:'Biblioteca actualizada desde MEGA: {added} nuevos, {moved} movidos o renombrados, {removed} quitados.',libraryUpToDate:'Tu biblioteca ya coincide con tus carpetas de MEGA.',refreshLibraryDetail:'Las carpetas y cómics que añades, mueves o renombras en MEGA aparecen aquí solos cuando la app se abre o vuelve al frente. También puedes actualizar ahora.'});
 Object.assign(copy.en,{updatingApp:'Updating CloudPanels to the newest version…',appVersion:'App version',libraryNotChecked:'Not checked yet in this session.',libraryCheckedAt:'Last checked at {time}: {found} of {total} library folders found in MEGA · {added} new, {moved} moved, {removed} removed.',libraryCheckFailed:'Last check at {time} failed: {reason}',refreshLibrary:'Update from MEGA',refreshingLibrary:'Checking your MEGA folders…',libraryUpdated:'Library updated from MEGA: {added} new, {moved} moved or renamed, {removed} removed.',libraryUpToDate:'Your library already matches your MEGA folders.',refreshLibraryDetail:'Folders and comics you add, move or rename in MEGA appear here automatically when the app opens or comes back to the front. You can also update now.'});
 Object.assign(copy['pt-BR'],{updatingApp:'Atualizando o CloudPanels para a versão mais nova…',appVersion:'Versão do app',libraryNotChecked:'Ainda não conferido nesta sessão.',libraryCheckedAt:'Última conferência às {time}: {found} de {total} pastas da biblioteca encontradas no MEGA · {added} novos, {moved} movidos, {removed} removidos.',libraryCheckFailed:'A conferência das {time} falhou: {reason}',refreshLibrary:'Atualizar do MEGA',refreshingLibrary:'Conferindo suas pastas do MEGA…',libraryUpdated:'Biblioteca atualizada do MEGA: {added} novos, {moved} movidos ou renomeados, {removed} removidos.',libraryUpToDate:'Sua biblioteca já está igual às pastas do MEGA.',refreshLibraryDetail:'Pastas e quadrinhos que você adiciona, move ou renomeia no MEGA aparecem aqui sozinhos quando o app abre ou volta para a tela. Você também pode atualizar agora.'});
 copy.es.refreshLibrary=copy.en.refreshLibrary;
@@ -303,6 +306,7 @@ function renderLibrary() {
   const selectButton=(comics.length||selectionMode)?action(t(selectionMode?'cancelSelection':'selectComics'),()=>{selectionMode=!selectionMode;selectedComicIds.clear();render();},'button secondary compact',{'data-bulk-select':'toggle','aria-pressed':String(selectionMode)}):null;
   const refreshButton=mega.connected&&!selectionMode&&store.state.comics.some(c=>c.source==='mega')?action('↻ '+t('refreshLibrary'),()=>void refreshLibrary({announce:true}),'button secondary compact',{'data-refresh-library':'1',disabled:Boolean(libraryRefresh)}):null;
   main.append(heading(continuing?t('continueReading'):(smart?t(libraryMode):(folderMode&&folderPath.length?folderPath.at(-1):t('library'))),continuing?t('keepReading'):(smart?t(libraryMode==='favorites'?'favoritesText':'readLaterText'):(folderMode?t('folderContents'):t('subtitle'))),...[refreshButton,selectButton].filter(Boolean)));
+  if(refreshButton&&!continuing)main.append(element('p',{class:'muted library-check-line','data-library-check-short':'1',text:libraryCheckText(true)}));
   if(!continuing){main.append(libraryModeSwitch());if(folderMode&&store.state.comics.length)main.append(folderBreadcrumbs());}
   if(!store.state.comics.length&&!continuing&&!smart)main.append(hero());
   if(!comics.length) {
@@ -922,9 +926,9 @@ function openConnection() {
 }
 function showFolders() {
   const {body,current}=openModal(t('folderTitle'),t('folderText'));
-  const breadcrumbs=element('div',{class:'breadcrumb'}),list=element('div',{class:'folder-list'}),status=text('','muted'),actions=element('div',{class:'form-actions'});
+  const breadcrumbs=element('div',{class:'breadcrumb'}),list=element('div',{class:'folder-list'}),status=text('','muted'),freshness=element('p',{class:'muted folder-freshness'}),actions=element('div',{class:'form-actions'});
   const stack=[];let navigation=0;
-  body.append(breadcrumbs,list,status,actions);
+  body.append(breadcrumbs,list,freshness,status,actions);
   async function draw(folder=null,push=false){
     if(!current())return;if(push&&folder)stack.push(folder);
     const localGeneration=modalGeneration,request=++navigation;list.replaceChildren(text(t('loading')));actions.replaceChildren(action(t('cancel'),closeModal,'button ghost'));status.textContent='';
@@ -953,9 +957,13 @@ function showFolders() {
       changed();toast(t('indexed',{count:comics.length}));
     }catch(error){if(current()&&!controller.signal.aborted){status.className='form-error';status.textContent=publicError(error,t('connectionError'));buttons.forEach(button=>button.disabled=false);actions.replaceChildren(action(t('cancel'),closeModal,'button ghost'),action(t('tryAgain'),()=>index(folder),'button primary'));}}
   }
-  // Show MEGA exactly as it is now (folders moved in the MEGA app included).
-  list.replaceChildren(text(t('loading')));
-  void Promise.resolve(mega.refreshTree()).catch(error=>diag('mega-tree',error)).finally(()=>{if(current())draw();});
+  // Show MEGA exactly as it is now (folders moved in the MEGA app included),
+  // and say when that list came from MEGA.
+  list.replaceChildren(text(t('loading')));freshness.textContent=t('treeLoading');
+  void Promise.resolve(mega.refreshTree())
+    .then(()=>{freshness.textContent=t('treeFresh',{time:clockTime(mega.treeLoadedAt,true)});})
+    .catch(error=>{diag('mega-tree',error);freshness.textContent=t('treeStale',{reason:publicError(error,t('connectionError')),time:clockTime(mega.treeLoadedAt,true)});})
+    .finally(()=>{if(current())draw();});
 }
 function openDemo() {
   const {body,current}=openModal(t('demoTitle'),t('demoText'));
@@ -1063,14 +1071,23 @@ function reloadWithUpdate(){toast(t('updatingApp'));setTimeout(()=>location.relo
 setTimeout(()=>void checkForNewVersion(),4000);
 // ---- Keep the library in step with MEGA (read only: nothing is written) ----
 let libraryRefresh=null,lastLibraryRefresh=0,libraryCheck=null;
-function libraryCheckText(){
-  if(libraryRefresh)return t('refreshingLibrary');
-  if(!libraryCheck)return t('libraryNotChecked');
-  const time=new Date(libraryCheck.at).toLocaleTimeString(store.state.settings.language==='en'?'en-US':store.state.settings.language,{hour:'2-digit',minute:'2-digit'});
-  if(libraryCheck.error)return t('libraryCheckFailed',{time,reason:libraryCheck.error});
-  return t('libraryCheckedAt',{time,added:libraryCheck.added,moved:libraryCheck.moved,removed:libraryCheck.removed,found:libraryCheck.folders,total:libraryCheck.of});
+function clockTime(at,seconds=false){
+  if(!at)return '—';
+  try{return new Date(at).toLocaleTimeString(store.state.settings.language==='en'?'en-US':store.state.settings.language,seconds?{hour:'2-digit',minute:'2-digit',second:'2-digit'}:{hour:'2-digit',minute:'2-digit'});}
+  catch{return new Date(at).toISOString().slice(11,seconds?19:16);}
 }
-function renderSettingsCheck(){for(const node of document.querySelectorAll('[data-library-check]'))node.textContent=libraryCheckText();}
+function libraryCheckText(short=false){
+  if(libraryRefresh)return t('refreshingLibrary');
+  if(!libraryCheck)return short?'':t('libraryNotChecked');
+  const time=clockTime(libraryCheck.at);
+  if(libraryCheck.error)return t('libraryCheckFailed',{time,reason:libraryCheck.error});
+  const values={time,added:libraryCheck.added,moved:libraryCheck.moved,removed:libraryCheck.removed,found:libraryCheck.folders,total:libraryCheck.of};
+  return t(short?'libraryCheckedShort':'libraryCheckedAt',values);
+}
+function renderSettingsCheck(){
+  for(const node of document.querySelectorAll('[data-library-check]'))node.textContent=libraryCheckText();
+  for(const node of document.querySelectorAll('[data-library-check-short]'))node.textContent=libraryCheckText(true);
+}
 function libraryRoots(){
   const roots=new Map();
   for(const comic of store.state.comics){
@@ -1085,40 +1102,52 @@ function refreshLibrary({announce=false,reloadTree=true}={}){
   if(!mega.connected){if(announce){toast(t('reconnect'));openConnection();}return Promise.resolve(false);}
   if(libraryRefresh)return libraryRefresh;
   const busyButtons=()=>document.querySelectorAll('[data-refresh-library]').forEach(button=>{button.disabled=Boolean(libraryRefresh);});
-  libraryRefresh=(async()=>{
+  const run=(async()=>{
+    // Start on the next tick: a check with nothing to wait for must still
+    // finish after it is marked as running, or it would look busy forever.
+    await null;
     try{
       if(announce)toast(t('refreshingLibrary'));
       if(reloadTree)await mega.refreshTree();
       // List every indexed folder first, then update the library in one go, so
       // a folder moved from one indexed folder to another keeps its history.
-      const roots=libraryRoots(),listings=[];
+      const roots=libraryRoots(),listings=[],found=[];
       for(const root of roots){
         const hint=rememberedConnection?.folder?.name===root.name?rememberedConnection.folder.id:null;
         const folderId=mega.findLibraryFolder({name:root.name,samples:root.samples,hintId:hint});
-        if(!folderId)continue;
-        listings.push({prefix:root.name,comics:await mega.listComics(folderId)});
+        if(!folderId){found.push(`${root.name} → not found`);continue;}
+        const comics=await mega.listComics(folderId);
+        listings.push({prefix:root.name,comics});found.push(`${root.name} → ${mega.folderPath(folderId)} (${comics.length})`);
       }
       const {added,moved,removed}=store.reconcileLibrary(listings);
       lastLibraryRefresh=Date.now();
       libraryCheck={at:lastLibraryRefresh,added,moved,removed,folders:listings.length,of:roots.length};
-      diag('library-check',`ok: ${listings.length}/${roots.length} folders found in MEGA; ${added} new, ${moved} moved, ${removed} removed`);
+      diag('library-check',`ok: ${listings.length}/${roots.length} folders found in MEGA; ${added} new, ${moved} moved, ${removed} removed; MEGA list from ${clockTime(mega.treeLoadedAt,true)} (${mega.treeSize} items); ${found.join('; ')}`);
       if(added||moved||removed){mainDirty=true;queueMainRefresh();scheduleSync();toast(t('libraryUpdated',{added,moved,removed}));}
       else if(announce)toast(t('libraryUpToDate'));
       return true;
     }catch(error){libraryCheck={at:Date.now(),error:publicError(error,t('connectionError'))};diag('library-refresh',error);if(announce)toast(publicError(error,t('connectionError')));return false;}
-    finally{libraryRefresh=null;busyButtons();if(view==='settings')renderSettingsCheck();}
+    finally{if(libraryRefresh===run)libraryRefresh=null;busyButtons();renderSettingsCheck();}
   })();
-  busyButtons();
-  return libraryRefresh;
+  libraryRefresh=run;
+  busyButtons();renderSettingsCheck();
+  return run;
 }
 // Coming back to the app after a while (for example after organising folders
 // in the MEGA app) quietly brings the library up to date.
 let hiddenSince=0;
+function cameBack(){
+  // Back from another app (for example after moving folders in the MEGA app):
+  // check MEGA again, unless the library was checked just a moment ago.
+  if(mega.connected&&!restoringConnection&&hiddenSince&&Date.now()-hiddenSince>2000&&Date.now()-lastLibraryRefresh>8000)void refreshLibrary();
+  void checkForNewVersion();
+}
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='hidden'){hiddenSince=Date.now();return;}
-  if(mega.connected&&!restoringConnection&&hiddenSince&&Date.now()-hiddenSince>5000&&Date.now()-lastLibraryRefresh>30000)void refreshLibrary();
-  void checkForNewVersion();
+  cameBack();
 });
+window.addEventListener('pagehide',()=>{hiddenSince=Date.now();});
+window.addEventListener('pageshow',event=>{if(event.persisted)cameBack();});
 function syncStatusText(){
   if(!MEGA_WRITES_ENABLED)return t('syncPaused');
   if(!mega.connected||!mega.canSync)return t('syncNeedsAccount');

@@ -477,7 +477,8 @@ test('a CBZ is uploaded in pieces next to the original; the original moves to th
 
 // A storage that behaves like MEGAJS: reload() only adds handles it has not
 // seen, so moved or deleted nodes stay where they were unless files is reset.
-function movingFixture() {
+function movingFixture({ treeTimeoutMs } = {}) {
+  let hang = false;
   let server = {
     root0001: { t: 2, p: null, name: 'Cloud Drive' },
     hqs00001: { t: 1, p: 'root0001', name: 'HQs' },
@@ -488,6 +489,7 @@ function movingFixture() {
   class Storage {
     constructor(options) { this.options = options; this.files = {}; this.ready = this.reload(true).then(() => this); }
     async reload() {
+      if (hang) return new Promise(() => {}); // a request that never comes back
       // MEGA lists parents before their children.
       const depth = h => { let d = 0; for (let p = server[h]?.p; p && d < 50; p = server[p]?.p) d++; return d; };
       for (const [h, f] of Object.entries(server).sort((a, b) => depth(a[0]) - depth(b[0]))) {
@@ -501,8 +503,8 @@ function movingFixture() {
     }
     close(callback) { callback?.(); }
   }
-  const connection = new MegaConnection({ sdk: { Storage, API: class {}, File: {} } });
-  return { connection, setServer(next) { server = next(server); } };
+  const connection = new MegaConnection({ sdk: { Storage, API: class {}, File: {} }, ...(treeTimeoutMs ? { treeTimeoutMs } : {}) });
+  return { connection, setServer(next) { server = next(server); }, setHang(value) { hang = value; } };
 }
 
 test('refreshing MEGA shows folders that were moved, added or deleted elsewhere', async () => {
@@ -544,4 +546,38 @@ test('end to end: folders moved in the MEGA app show up in the library after an 
   assert.deepEqual(result, { added: 1, moved: 1, removed: 0 });
   assert.deepEqual(store.state.comics.map(c => c.path).sort(), ['HQs/Batman/Batman 1.cbz', 'HQs/Batman/Batman 3.cbz', 'HQs/DC/Batman 2.cbz']);
   assert.equal(store.state.progress['mega:bat00001'].page, 4);
+});
+
+test('a MEGA refresh that never hears back gives up, keeps the old folders and the next refresh works', async () => {
+  const f = movingFixture({ treeTimeoutMs: 40 });
+  await f.connection.login({ email: 'reader@example.com', password: 'secret' });
+  const loadedAt = f.connection.treeLoadedAt;
+  assert.ok(loadedAt > 0);
+  f.setServer(server => ({ ...server, bat00001: { ...server.bat00001, p: 'hqs00001' } }));
+  f.setHang(true);
+  await assert.rejects(f.connection.refreshTree(), error => error.code === 'TREE_TIMEOUT');
+  // Nothing was lost while waiting: the folders loaded before are still there.
+  assert.deepEqual((await f.connection.listComics('mega:hqs00001')).map(c => c.path), ['HQs/DC/Batman 1.cbz', 'HQs/DC/Batman 2.cbz']);
+  assert.equal(f.connection.treeLoadedAt, loadedAt);
+  // MEGA answers again: the next refresh is not stuck behind the failed one.
+  f.setHang(false);
+  assert.equal(await f.connection.refreshTree(), true);
+  assert.deepEqual((await f.connection.listComics('mega:hqs00001')).map(c => c.path), ['HQs/Batman 1.cbz', 'HQs/DC/Batman 2.cbz']);
+  assert.ok(f.connection.treeLoadedAt >= loadedAt);
+  assert.equal(f.connection.treeSize, 5);
+});
+
+test('reconnecting never waits behind a refresh left over from the old connection', async () => {
+  const f = movingFixture({ treeTimeoutMs: 60000 });
+  await f.connection.login({ email: 'reader@example.com', password: 'secret' });
+  f.setHang(true);
+  const stale = f.connection.refreshTree();
+  stale.catch(() => {});
+  assert.equal(f.connection.refreshTree(), stale, 'callers share the refresh that is running');
+  f.setHang(false);
+  await f.connection.login({ email: 'reader@example.com', password: 'secret' });
+  await assert.rejects(stale, error => error.name === 'AbortError');
+  const fresh = f.connection.refreshTree();
+  assert.notEqual(fresh, stale);
+  assert.equal(await fresh, true);
 });
