@@ -472,7 +472,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (result?.catch) void result.catch(() => {});
     } catch { /* The user agent retains control of fullscreen. */ }
   }
-  const installedApp = () => window.navigator.standalone === true || Boolean(window.matchMedia?.('(display-mode: standalone)').matches);
+  // The iPad app (TestFlight) hides the clock and battery itself; never ask the
+  // web view for full screen there.
+  const nativeApp = () => Boolean(window.Capacitor?.isNativePlatform?.());
+  const installedApp = () => nativeApp() || window.navigator.standalone === true || Boolean(window.matchMedia?.('(display-mode: standalone)').matches);
   function fullscreenFallback() {
     // The installed app already hides Safari; stay quiet if the system keeps the clock.
     if (installedApp()) return;
@@ -1403,7 +1406,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // Installed app: if the system bars are still showing, ask once per app
     // launch for true fullscreen (a touch is required for this). It is not left
     // when closing a comic, so the system's notice appears at most once.
-    if (installedApp() && comic && !appFullscreenAsked && !fullscreenElement() && !fullscreenRequest && fullscreenSupported() && !window.matchMedia?.('(display-mode: fullscreen)').matches) {
+    if (installedApp() && !nativeApp() && comic && !appFullscreenAsked && !fullscreenElement() && !fullscreenRequest && fullscreenSupported() && !window.matchMedia?.('(display-mode: fullscreen)').matches) {
       appFullscreenAsked = true;
       try { const request = document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }); request?.catch?.(() => {}); } catch { /* Not allowed. */ }
     }
