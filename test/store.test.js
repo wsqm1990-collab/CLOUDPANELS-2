@@ -311,3 +311,29 @@ test('replacing a converted comic keeps progress, panels, bookmarks, shelves and
   assert.equal(store.state.progress['mega:new1'].page, 5); assert.equal(store.state.progress['mega:old1'], undefined);
   assert.deepEqual(store.state.favorites, ['mega:new1']);
 });
+
+test('reconciling a MEGA folder adds, moves, keeps replaced files and removes vanished ones', () => {
+  const store = new LibraryStore({ storage: memory() }); store.load();
+  const mk = (id, path, size = 100) => ({ id, name: path.split('/').pop(), size, path, source: 'mega', format: 'cbr' });
+  store.upsertComics([mk('mega:a', 'HQs/DC/Batman 1.cbr'), mk('mega:b', 'HQs/DC/Batman 2.cbr'), mk('mega:c', 'HQs/Old/Gone.cbr'), mk('mega:d', 'HQs/X/Replaced.cbr', 777), mk('mega:z', 'Other/Keep.cbr')]);
+  store.setProgress('mega:a', { page: 3, pageCount: 20, status: 'reading' });
+  store.setProgress('mega:d', { page: 9, pageCount: 20, status: 'reading' });
+  store.state.favorites = ['mega:d']; store.save();
+  const result = store.reconcileFolder('HQs', [
+    mk('mega:a', 'HQs/Batman/Batman 1.cbr'),       // moved to another folder
+    mk('mega:b', 'HQs/DC/Batman 2.cbr'),           // unchanged
+    mk('mega:n', 'HQs/New/Fresh 1.cbr'),           // new
+    mk('mega:d2', 'HQs/Y/Replaced.cbr', 777),       // same file, new MEGA id
+  ]);
+  assert.deepEqual(result, { added: 1, moved: 2, removed: 1 });
+  const byId = Object.fromEntries(store.state.comics.map(c => [c.id, c]));
+  assert.equal(byId['mega:a'].path, 'HQs/Batman/Batman 1.cbr');
+  assert.equal(store.state.progress['mega:a'].page, 3, 'moved comic keeps its place');
+  assert.ok(!byId['mega:c'], 'vanished comic leaves the library');
+  assert.ok(byId['mega:n']);
+  assert.ok(!byId['mega:d'] && byId['mega:d2']);
+  assert.equal(store.state.progress['mega:d2'].page, 9, 'replaced file keeps its place');
+  assert.deepEqual(store.state.favorites, ['mega:d2']);
+  assert.ok(byId['mega:z'], 'other indexed folders are untouched');
+  assert.deepEqual(store.reconcileFolder('HQs', store.state.comics.filter(c => c.path.startsWith('HQs/'))), { added: 0, moved: 0, removed: 0 });
+});

@@ -7,7 +7,7 @@ import {CoverService} from './covers.js';
 import {OfflineLibrary} from './offline.js';
 import {streamToCbz,verifyCbz} from './convert.js';
 import {clearArchiveListings} from './reader.js';
-import {assistantStore,libraryContext,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
+import {assistantStore,buildLibraryIndex,libraryBrief,libraryTools,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder} from './app-helpers.js';
 
 const copy = {
@@ -39,6 +39,9 @@ Object.assign(copy.es,{syncTitle:'Sincronizar entre dispositivos',syncDetail:'Tu
 Object.assign(copy.en,{convertOne:'Convert to CBZ',convertFolder:'Convert {count} to CBZ',convertTitle:'Convert to CBZ',convertText:'CBZ opens instantly and shows covers quickly. Each comic is downloaded, repackaged without changing its images, checked, and uploaded to the same folder with the same name. Only then does the original go to your MEGA Rubbish Bin, where you can still recover it. Your reading progress, panels, favorites and edits move to the new file. Large comics take a few minutes each: keep CloudPanels open while it works (the screen stays on).',convertStart:'Convert',convertCount:'{count} comics will be converted.',converting:'Converting {done}/{total}: {name}',convertStep:{open:'opening',pages:'pages {a}/{b}',verify:'checking',upload:'uploading'},convertDone:'{count} comics converted to CBZ.',convertFailed:'Could not convert {name}: {reason} The original was kept.',convertTooBig:'{name} is too large to convert on this device (over 250 MB); it was kept as it is.',convertCancel:'Cancel',convertCancelled:'Conversion stopped. Comics already converted stay converted; the rest were not touched.',convertNeedsAccount:'Converting needs your MEGA account login (not a link).'});
 Object.assign(copy['pt-BR'],{convertOne:'Converter para CBZ',convertFolder:'Converter {count} para CBZ',convertTitle:'Converter para CBZ',convertText:'O CBZ abre na hora e mostra as capas rápido. Cada quadrinho é baixado, reempacotado sem mexer nas imagens, conferido e enviado para a mesma pasta, com o mesmo nome. Só depois disso o original vai para a lixeira do MEGA, de onde ainda dá para recuperar. Seu progresso, quadros, favoritos e edições passam para o arquivo novo. Quadrinhos grandes levam alguns minutos cada: deixe o CloudPanels aberto enquanto converte (a tela fica ligada).',convertStart:'Converter',convertCount:'{count} quadrinhos serão convertidos.',converting:'Convertendo {done}/{total}: {name}',convertStep:{open:'abrindo',pages:'páginas {a}/{b}',verify:'conferindo',upload:'enviando'},convertDone:'{count} quadrinhos convertidos para CBZ.',convertFailed:'Não foi possível converter {name}: {reason} O original foi mantido.',convertTooBig:'{name} é grande demais para converter neste aparelho (mais de 250 MB) e foi mantido como está.',convertCancel:'Cancelar',convertCancelled:'Conversão interrompida. Os já convertidos continuam convertidos; os outros não foram mexidos.',convertNeedsAccount:'Para converter, entre com a sua conta do MEGA (não com link).'});
 copy.es.convertOne=copy.en.convertOne;
+Object.assign(copy.en,{refreshLibrary:'Update from MEGA',refreshingLibrary:'Checking your MEGA folders…',libraryUpdated:'Library updated from MEGA: {added} new, {moved} moved or renamed, {removed} removed.',libraryUpToDate:'Your library already matches your MEGA folders.',refreshLibraryDetail:'Folders and comics you add, move or rename in MEGA appear here automatically when the app opens or comes back to the front. You can also update now.'});
+Object.assign(copy['pt-BR'],{refreshLibrary:'Atualizar do MEGA',refreshingLibrary:'Conferindo suas pastas do MEGA…',libraryUpdated:'Biblioteca atualizada do MEGA: {added} novos, {moved} movidos ou renomeados, {removed} removidos.',libraryUpToDate:'Sua biblioteca já está igual às pastas do MEGA.',refreshLibraryDetail:'Pastas e quadrinhos que você adiciona, move ou renomeia no MEGA aparecem aqui sozinhos quando o app abre ou volta para a tela. Você também pode atualizar agora.'});
+copy.es.refreshLibrary=copy.en.refreshLibrary;
 Object.assign(copy.en,{syncPaused:'Sync between devices is paused while it is being fixed. Nothing is written to your MEGA. To move your reading to another device, use Export backup here and Import backup on the other device.',diagTitle:'Diagnostics',diagDetail:'If something fails, copy this report and send it to whoever is fixing the app. It contains error messages only — no passwords, keys or comic files.',diagCopy:'Copy report',diagCopied:'Report copied.',diagEmpty:'No problems recorded.'});
 Object.assign(copy['pt-BR'],{syncPaused:'A sincronização entre aparelhos está pausada enquanto é corrigida. Nada é gravado no seu MEGA. Para levar sua leitura para outro aparelho, use Exportar backup aqui e Importar backup no outro.',diagTitle:'Diagnóstico',diagDetail:'Se algo falhar, copie este relatório e envie para quem está corrigindo o app. Ele contém só mensagens de erro — nenhuma senha, chave ou arquivo de quadrinho.',diagCopy:'Copiar relatório',diagCopied:'Relatório copiado.',diagEmpty:'Nenhum problema registrado.'});
 
@@ -298,7 +301,8 @@ function renderLibrary() {
   if(smart){const ids=new Set(store.state[libraryMode]||[]);comics=comics.filter(comic=>ids.has(comic.id));}
   const folderMode=!continuing&&libraryMode==='folders',contents=folderContents(comics,folderPath,store.state.progress);
   const selectButton=(comics.length||selectionMode)?action(t(selectionMode?'cancelSelection':'selectComics'),()=>{selectionMode=!selectionMode;selectedComicIds.clear();render();},'button secondary compact',{'data-bulk-select':'toggle','aria-pressed':String(selectionMode)}):null;
-  main.append(heading(continuing?t('continueReading'):(smart?t(libraryMode):(folderMode&&folderPath.length?folderPath.at(-1):t('library'))),continuing?t('keepReading'):(smart?t(libraryMode==='favorites'?'favoritesText':'readLaterText'):(folderMode?t('folderContents'):t('subtitle'))),...[selectButton].filter(Boolean)));
+  const refreshButton=mega.connected&&!selectionMode&&store.state.comics.some(c=>c.source==='mega')?action('↻ '+t('refreshLibrary'),()=>void refreshLibrary({announce:true}),'button secondary compact',{'data-refresh-library':'1',disabled:Boolean(libraryRefresh)}):null;
+  main.append(heading(continuing?t('continueReading'):(smart?t(libraryMode):(folderMode&&folderPath.length?folderPath.at(-1):t('library'))),continuing?t('keepReading'):(smart?t(libraryMode==='favorites'?'favoritesText':'readLaterText'):(folderMode?t('folderContents'):t('subtitle'))),...[refreshButton,selectButton].filter(Boolean)));
   if(!continuing){main.append(libraryModeSwitch());if(folderMode&&store.state.comics.length)main.append(folderBreadcrumbs());}
   if(!store.state.comics.length&&!continuing&&!smart)main.append(hero());
   if(!comics.length) {
@@ -706,8 +710,8 @@ function editCollection(id) {
   body.append(form);if(collection)body.append(action(t('deleteCollection'),()=>{store.state.collections=store.state.collections.filter(c=>c.id!==id);store.save();selectedCollection=null;closeModal();changed();},'button danger'));draw();
 }
 const AI_TEXT={
-  'pt-BR':{title:'Assistente de quadrinhos',subtitle:'Pergunte o que ler, ordens de leitura, o que falta na sua coleção ou a opinião dele sobre uma série.',setupTitle:'Ligue o seu assistente',setupText:'O assistente usa a IA Claude, da Anthropic. Você cria uma chave uma vez e ela fica guardada só neste aparelho. O uso é cobrado pela Anthropic, normalmente alguns centavos por conversa.',steps:['Abra console.anthropic.com e crie sua conta (pode entrar com o Google).','Em Billing (Cobrança), adicione um pouco de crédito — US$ 5 duram bastante.','Em API Keys, toque em Create Key, dê um nome (ex.: CloudPanels) e copie a chave.','Cole a chave aqui embaixo e toque em Salvar.'],keyLabel:'Chave da IA (começa com sk-ant-)',save:'Salvar chave',keyInvalid:'Essa chave não parece certa. Ela começa com sk-ant-.',placeholder:'Pergunte qualquer coisa sobre quadrinhos…',send:'Enviar',listening:'Ouvindo…',mic:'Falar',voice:'Responder em voz alta',web:'Pesquisar na internet',newChat:'Nova conversa',changeKey:'Trocar chave',you:'VOCÊ',bot:'ASSISTENTE',thinking:'Pensando…',searching:'Pesquisando na internet…',hello:'Olá! Eu conheço sua biblioteca e o que você já leu. Posso indicar a próxima leitura, montar a ordem de um arco, mostrar o que falta nas suas coleções ou dar minha opinião sobre uma série. Por onde começamos?',chips:['O que eu leio agora?','O que está faltando nas minhas coleções?','Me indique algo parecido com o que estou lendo','Qual a ordem de leitura de um arco?'],keySaved:'Chave salva. Pode perguntar!',stop:'Parar'},
-  en:{title:'Comics assistant',subtitle:'Ask what to read, reading orders, what is missing from your collection or its opinion on a series.',setupTitle:'Turn on your assistant',setupText:'The assistant uses Claude AI by Anthropic. You create a key once and it stays only on this device. Usage is billed by Anthropic, usually a few cents per conversation.',steps:['Open console.anthropic.com and create an account.','In Billing, add a little credit — US$5 lasts a long time.','In API Keys, tap Create Key, name it (e.g. CloudPanels) and copy the key.','Paste the key below and tap Save.'],keyLabel:'AI key (starts with sk-ant-)',save:'Save key',keyInvalid:'That key does not look right. It starts with sk-ant-.',placeholder:'Ask anything about comics…',send:'Send',listening:'Listening…',mic:'Speak',voice:'Read answers aloud',web:'Search the web',newChat:'New conversation',changeKey:'Change key',you:'YOU',bot:'ASSISTANT',thinking:'Thinking…',searching:'Searching the web…',hello:'Hi! I know your library and what you have read. I can suggest your next read, build a reading order, show what is missing from your collections or give my opinion on a series. Where shall we start?',chips:['What should I read now?','What is missing from my collections?','Suggest something like what I am reading','What is the reading order of an arc?'],keySaved:'Key saved. Ask away!',stop:'Stop'},
+  'pt-BR':{title:'Assistente de quadrinhos',subtitle:'Pergunte o que ler, ordens de leitura, o que falta na sua coleção ou a opinião dele sobre uma série.',setupTitle:'Ligue o seu assistente',setupText:'O assistente usa a IA Claude, da Anthropic. Você cria uma chave uma vez e ela fica guardada só neste aparelho. O uso é cobrado pela Anthropic, normalmente alguns centavos por conversa.',steps:['Abra console.anthropic.com e crie sua conta (pode entrar com o Google).','Em Billing (Cobrança), adicione um pouco de crédito — US$ 5 duram bastante.','Em API Keys, toque em Create Key, dê um nome (ex.: CloudPanels) e copie a chave.','Cole a chave aqui embaixo e toque em Salvar.'],keyLabel:'Chave da IA (começa com sk-ant-)',save:'Salvar chave',keyInvalid:'Essa chave não parece certa. Ela começa com sk-ant-.',placeholder:'Pergunte qualquer coisa sobre quadrinhos…',send:'Enviar',listening:'Ouvindo…',mic:'Falar',voice:'Responder em voz alta',web:'Pesquisar na internet',newChat:'Nova conversa',changeKey:'Trocar chave',you:'VOCÊ',bot:'ASSISTENTE',thinking:'Pensando…',searching:'Pesquisando na internet…',library:'Olhando sua biblioteca…',hello:'Olá! Eu conheço sua biblioteca e o que você já leu. Posso indicar a próxima leitura, montar a ordem de um arco, mostrar o que falta nas suas coleções ou dar minha opinião sobre uma série. Por onde começamos?',chips:['O que eu leio agora?','O que está faltando nas minhas coleções?','Me indique algo parecido com o que estou lendo','Qual a ordem de leitura de um arco?'],keySaved:'Chave salva. Pode perguntar!',stop:'Parar'},
+  en:{title:'Comics assistant',subtitle:'Ask what to read, reading orders, what is missing from your collection or its opinion on a series.',setupTitle:'Turn on your assistant',setupText:'The assistant uses Claude AI by Anthropic. You create a key once and it stays only on this device. Usage is billed by Anthropic, usually a few cents per conversation.',steps:['Open console.anthropic.com and create an account.','In Billing, add a little credit — US$5 lasts a long time.','In API Keys, tap Create Key, name it (e.g. CloudPanels) and copy the key.','Paste the key below and tap Save.'],keyLabel:'AI key (starts with sk-ant-)',save:'Save key',keyInvalid:'That key does not look right. It starts with sk-ant-.',placeholder:'Ask anything about comics…',send:'Send',listening:'Listening…',mic:'Speak',voice:'Read answers aloud',web:'Search the web',newChat:'New conversation',changeKey:'Change key',you:'YOU',bot:'ASSISTANT',thinking:'Thinking…',searching:'Searching the web…',library:'Looking through your library…',hello:'Hi! I know your library and what you have read. I can suggest your next read, build a reading order, show what is missing from your collections or give my opinion on a series. Where shall we start?',chips:['What should I read now?','What is missing from my collections?','Suggest something like what I am reading','What is the reading order of an arc?'],keySaved:'Key saved. Ask away!',stop:'Stop'},
 };
 AI_TEXT.es=AI_TEXT.en;
 const aiText=()=>AI_TEXT[store.state.settings.language]||AI_TEXT.en;
@@ -748,7 +752,10 @@ function renderAssistant() {
     main.append(card);return;
   }
   if(!aiChat)aiChat=assistantStore.loadChat();
-  const context=libraryContext(store.state,{folderOf:c=>{try{return comicFolderParts(c).join(' / ');}catch{return '';}}});
+  // The assistant sees a short overview and looks up any folder, series or
+  // comic itself with library tools, so a big collection is never cut off.
+  const libraryIndex=buildLibraryIndex(store.state,{folderOf:c=>{try{return comicFolderParts(c).join(' / ');}catch{return '';}}});
+  const context={text:libraryBrief(libraryIndex),byRef:libraryIndex.byRef,tools:libraryTools(libraryIndex)};
   const messages=element('div',{class:'ai-messages'});
   const bubble=(role,content)=>element('div',{class:'message '+role},element('span',{class:'message-label',text:role==='user'?L.you:L.bot}),content);
   messages.append(bubble('assistant',richText(L.hello,context.byRef)));
@@ -780,13 +787,14 @@ function renderAssistant() {
     const controller=new AbortController();aiBusy=controller;sendButton.textContent=L.stop;
     let frame=0,latest='';
     try{
-      const reply=await askAssistant({key:assistantStore.key,messages:aiChat.slice(-16),system:systemPrompt(context.text,store.state.settings.language),signal:controller.signal,web:assistantStore.options.web,
-        onText:(value,info)=>{latest=value;if(info?.searching&&!value){answerBox.textContent=L.searching;return;}if(frame)return;frame=requestAnimationFrame(()=>{frame=0;answerBox.replaceChildren(richText(latest,context.byRef));answerBox.className='';node.scrollIntoView({block:'end'});});}});
+      const reply=await askAssistant({key:assistantStore.key,messages:aiChat,system:systemPrompt(context.text,store.state.settings.language),signal:controller.signal,web:assistantStore.options.web,tools:context.tools,
+        onText:(value,info)=>{latest=value;if(!value&&(info?.searching||info?.library)){answerBox.textContent=info.library?L.library:L.searching;answerBox.className='ai-pending';return;}if(frame)return;frame=requestAnimationFrame(()=>{frame=0;answerBox.replaceChildren(richText(latest,context.byRef));answerBox.className='';node.scrollIntoView({block:'end'});});}});
       if(frame)cancelAnimationFrame(frame);
       answerBox.replaceChildren(richText(reply,context.byRef));answerBox.className='';
       aiChat.push({role:'assistant',text:reply});assistantStore.saveChat(aiChat);
       if(assistantStore.options.voice)speak(reply,store.state.settings.language==='en'?'en-US':'pt-BR');
     }catch(error){
+      if(error?.name!=='AbortError')diag('assistant',error,{status:error?.status,type:error?.type});
       aiChat.pop();const message=friendlyError(error,store.state.settings.language);
       if(message){answerBox.textContent=message;answerBox.className='form-error';}else node.remove();
       if(error?.status===401){assistantStore.key='';}
@@ -817,6 +825,7 @@ function renderSettings() {
     settingRow(t('navigationButtons'),t('navigationButtonsDetail'),selectControl(t('navigationButtons'),[0,3,5,8].map(seconds=>[String(seconds),t(seconds?'navigation'+seconds:'navigationOff')]),String(store.state.settings.readerNavigationSeconds??3),value=>{store.setSettings({readerNavigationSeconds:Number(value)});changed();},'input')),
     settingRow(t('swipeResistance'),t('swipeResistanceDetail'),swipeResistanceControl()),
     settingRow(t('buffer'),t('bufferDetail'),selectControl(t('buffer'),[16,32,64,128,256].map(n=>[String(n),n+' MB']),String(store.state.settings.cacheMiB),value=>{store.setSettings({cacheMiB:Number(value)});changed();},'input')),
+    mega.connected?settingRow(t('refreshLibrary'),t('refreshLibraryDetail'),action(t('refreshLibrary'),()=>void refreshLibrary({announce:true}),'button secondary compact',{'data-refresh-library':'1'})):null,
     settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();clearArchiveListings();toast(t('bufferCleared'));render();},'button secondary compact')),
     settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();toast(t('coversCleared'));render();},'button secondary compact')),
     element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
@@ -853,6 +862,8 @@ async function restoreRememberedConnection() {
       if(Array.isArray(saved.browsePath)&&saved.browsePath.length<=64&&saved.browsePath.every(part=>typeof part==='string'&&part.length<=512))folderPath=saved.browsePath.slice();
       libraryMode='folders';refreshHeader();mainDirty=true;queueMainRefresh();
       void syncWithMega({pull:true});
+      // The tree was just loaded fresh: bring the library up to date with it.
+      void refreshLibrary({reloadTree:false});
     }catch(error){
       diag('mega-restore',error);
       if(['LOGIN','ACCESS','SESSION_INPUT'].includes(error?.code)){try{await sessionVault.clearSession();}catch{}rememberedConnection=null;}
@@ -1026,6 +1037,52 @@ document.addEventListener('visibilitychange',()=>{
   if(!mega.canSync)return;
   if(document.visibilityState==='hidden'){if(syncPayload()!==sync.lastText||covers.fresh.size)void syncWithMega({pull:false});}
   else if(Date.now()-sync.lastPull>10*60000)void syncWithMega({pull:true});
+});
+// ---- Keep the library in step with MEGA (read only: nothing is written) ----
+let libraryRefresh=null,lastLibraryRefresh=0;
+function libraryRoots(){
+  const roots=new Map();
+  for(const comic of store.state.comics){
+    if(comic.source!=='mega')continue;
+    const parts=String(comic.path||'').split('/');if(parts.length<2)continue;
+    if(!roots.has(parts[0]))roots.set(parts[0],{name:parts[0],samples:[]});
+    const root=roots.get(parts[0]);if(root.samples.length<60)root.samples.push({id:comic.id,depth:parts.length-1});
+  }
+  return [...roots.values()];
+}
+function refreshLibrary({announce=false,reloadTree=true}={}){
+  if(!mega.connected){if(announce){toast(t('reconnect'));openConnection();}return Promise.resolve(false);}
+  if(libraryRefresh)return libraryRefresh;
+  const busyButtons=()=>document.querySelectorAll('[data-refresh-library]').forEach(button=>{button.disabled=Boolean(libraryRefresh);});
+  libraryRefresh=(async()=>{
+    try{
+      if(announce)toast(t('refreshingLibrary'));
+      if(reloadTree)await mega.refreshTree();
+      let added=0,moved=0,removed=0;
+      for(const root of libraryRoots()){
+        const hint=rememberedConnection?.folder?.name===root.name?rememberedConnection.folder.id:null;
+        const folderId=mega.findLibraryFolder({name:root.name,samples:root.samples,hintId:hint});
+        if(!folderId)continue;
+        const comics=await mega.listComics(folderId);
+        const result=store.reconcileFolder(root.name,comics);
+        added+=result.added;moved+=result.moved;removed+=result.removed;
+      }
+      lastLibraryRefresh=Date.now();
+      if(added||moved||removed){mainDirty=true;queueMainRefresh();scheduleSync();toast(t('libraryUpdated',{added,moved,removed}));}
+      else if(announce)toast(t('libraryUpToDate'));
+      return true;
+    }catch(error){diag('library-refresh',error);if(announce)toast(publicError(error,t('connectionError')));return false;}
+    finally{libraryRefresh=null;busyButtons();}
+  })();
+  busyButtons();
+  return libraryRefresh;
+}
+// Coming back to the app after a while (for example after organising folders
+// in the MEGA app) quietly brings the library up to date.
+let hiddenSince=0;
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='hidden'){hiddenSince=Date.now();return;}
+  if(mega.connected&&!restoringConnection&&hiddenSince&&Date.now()-hiddenSince>15000&&Date.now()-lastLibraryRefresh>60000)void refreshLibrary();
 });
 function syncStatusText(){
   if(!MEGA_WRITES_ENABLED)return t('syncPaused');

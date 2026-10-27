@@ -200,6 +200,50 @@ export class LibraryStore {
     if (map.size > MAX_COMICS) throw new Error(`The library limit is ${MAX_COMICS} comics.`);
     this.state.comics = [...map.values()]; this.save(); return this.state.comics;
   }
+  /**
+   * Bring one indexed MEGA folder up to date with what is there now: new
+   * comics are added, moved or renamed ones keep their history under the new
+   * path, and comics no longer in that folder leave the library. A file that
+   * was replaced (same name and size, new MEGA id) keeps its reading history.
+   */
+  reconcileFolder(prefix, fresh) {
+    if (typeof prefix !== 'string' || !prefix || !Array.isArray(fresh)) throw new Error('Comics must be a list.');
+    const inScope = c => c.source === 'mega' && (c.path === prefix || String(c.path).startsWith(prefix + '/'));
+    const current = new Map(this.state.comics.map(c => [c.id, c]));
+    const freshIds = new Set(fresh.map(c => c?.id));
+    const missing = this.state.comics.filter(c => inScope(c) && !freshIds.has(c.id));
+    const newcomers = fresh.filter(c => c && !current.has(c.id));
+    const remap = new Map(); // new id -> old id
+    for (const old of missing) {
+      const twins = newcomers.filter(n => n.name === old.name && n.size === old.size && !remap.has(n.id));
+      if (twins.length === 1) remap.set(twins[0].id, old.id);
+    }
+    let added = 0, moved = 0, removed = 0;
+    for (const value of fresh) {
+      const previousId = remap.get(value?.id), previous = current.get(value?.id) || (previousId ? current.get(previousId) : undefined);
+      const valid = comic(value, previous);
+      if (!valid) continue;
+      const existing = current.get(valid.id);
+      if (!existing) previousId ? moved++ : added++;
+      else if (existing.path !== valid.path || existing.name !== valid.name || existing.size !== valid.size) moved++;
+      current.set(valid.id, valid);
+    }
+    for (const [newId, oldId] of remap) {
+      const swap = id => id === oldId ? newId : id;
+      if (this.state.progress[oldId]) { this.state.progress[newId] = this.state.progress[oldId]; delete this.state.progress[oldId]; }
+      if (this.state.panels[oldId]) { this.state.panels[newId] = this.state.panels[oldId]; delete this.state.panels[oldId]; }
+      this.state.favorites = [...new Set(this.state.favorites.map(swap))];
+      this.state.readLater = [...new Set(this.state.readLater.map(swap))];
+      this.state.bookmarks = this.state.bookmarks.map(b => b.comicId === oldId ? { ...b, comicId: newId } : b);
+      this.state.collections = this.state.collections.map(c => ({ ...c, comicIds: [...new Set(c.comicIds.map(swap))] }));
+    }
+    const transferred = new Set(remap.values());
+    for (const old of missing) { current.delete(old.id); if (!transferred.has(old.id)) removed++; }
+    if (current.size > MAX_COMICS) throw new Error(`The library limit is ${MAX_COMICS} comics.`);
+    if (!added && !moved && !removed) return { added, moved, removed };
+    this.state.comics = [...current.values()]; this.save();
+    return { added, moved, removed };
+  }
   updateComic(id, patch) {
     const entry = this.state.comics.find(c => c.id === id); if (!entry) return null;
     // Accept a metadata wrapper or direct metadata fields, never rename/move cloud files.

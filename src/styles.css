@@ -598,3 +598,14 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .conversion-bar { grid-column: 1 / -1; height: 5px; border-radius: 3px; background: #ffffff1a; overflow: hidden; }
 .conversion-bar span { display: block; height: 100%; width: 0; background: var(--lime, #c5ef62); transition: width .3s ease; }
 @media (max-width: 760px) { .conversion-panel { bottom: calc(84px + env(safe-area-inset-bottom)); } }
+
+/* Page turning: the neighbouring page slides in beside the current one while
+   the finger moves it, like a paged iPad view. The reader owns all touches. */
+.reader-dialog .reader-stage { touch-action: none; }
+.reader-neighbour { position: fixed; z-index: 3; overflow: hidden; pointer-events: none; contain: layout paint; will-change: transform; background: var(--reader-reading-background, #000); }
+.reader-neighbour[hidden] { display: none !important; }
+.reader-neighbour img { position: absolute; display: block; max-width: none; max-height: none; margin: 0; user-select: none; -webkit-user-select: none; -webkit-user-drag: none; }
+.reader-neighbour img:not([src]) { display: none; }
+.reader-neighbour-note { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: #a9b8cc; font-size: 14px; line-height: 1.5; text-align: center; }
+.reader-neighbour.has-image .reader-neighbour-note { display: none; }
+.reader-dialog.reader-paging .reader-stage { will-change: transform; }

@@ -474,3 +474,54 @@ test('a CBZ is uploaded in pieces next to the original; the original moves to th
   await assert.rejects(short.end(), /original was kept/);
   assert.ok(!events.some(e => e[0] === 'delete'));
 });
+
+// A storage that behaves like MEGAJS: reload() only adds handles it has not
+// seen, so moved or deleted nodes stay where they were unless files is reset.
+function movingFixture() {
+  let server = {
+    root0001: { t: 2, p: null, name: 'Cloud Drive' },
+    hqs00001: { t: 1, p: 'root0001', name: 'HQs' },
+    dc000001: { t: 1, p: 'hqs00001', name: 'DC' },
+    bat00001: { t: 0, p: 'dc000001', name: 'Batman 1.cbz', size: 100 },
+    bat00002: { t: 0, p: 'dc000001', name: 'Batman 2.cbz', size: 100 },
+  };
+  class Storage {
+    constructor(options) { this.options = options; this.files = {}; this.ready = this.reload(true).then(() => this); }
+    async reload() {
+      // MEGA lists parents before their children.
+      const depth = h => { let d = 0; for (let p = server[h]?.p; p && d < 50; p = server[p]?.p) d++; return d; };
+      for (const [h, f] of Object.entries(server).sort((a, b) => depth(a[0]) - depth(b[0]))) {
+        if (this.files[h]) continue;
+        const node = { nodeId: h, name: f.name, size: f.size, directory: f.t > 0, children: [] };
+        this.files[h] = node;
+        if (f.t === 2) this.root = node;
+        if (f.p && this.files[f.p]) { this.files[f.p].children.push(node); node.parent = this.files[f.p]; }
+      }
+      return [];
+    }
+    close(callback) { callback?.(); }
+  }
+  const connection = new MegaConnection({ sdk: { Storage, API: class {}, File: {} } });
+  return { connection, setServer(next) { server = next(server); } };
+}
+
+test('refreshing MEGA shows folders that were moved, added or deleted elsewhere', async () => {
+  const f = movingFixture();
+  await f.connection.login({ email: 'reader@example.com', password: 'secret' });
+  let comics = await f.connection.listComics('mega:hqs00001');
+  assert.deepEqual(comics.map(c => c.path), ['HQs/DC/Batman 1.cbz', 'HQs/DC/Batman 2.cbz']);
+  // Elsewhere: Batman moves to its own folder, a new comic appears, one is deleted, HQs is renamed.
+  f.setServer(server => {
+    const next = { ...server, hqs00001: { ...server.hqs00001, name: 'Quadrinhos' }, batf0001: { t: 1, p: 'hqs00001', name: 'Batman' }, new00001: { t: 0, p: 'batf0001', name: 'Batman 3.cbz', size: 100 } };
+    next.bat00001 = { ...server.bat00001, p: 'batf0001' }; delete next.bat00002;
+    return next;
+  });
+  assert.equal(await f.connection.refreshTree(), true);
+  comics = await f.connection.listComics('mega:hqs00001');
+  assert.deepEqual(comics.map(c => c.path), ['Quadrinhos/Batman/Batman 1.cbz', 'Quadrinhos/Batman/Batman 3.cbz']);
+  // The library folder is found again from its comics even without the remembered id.
+  assert.equal(f.connection.findLibraryFolder({ name: 'HQs', samples: [{ id: 'mega:bat00001', depth: 2 }] }), 'mega:hqs00001');
+  assert.equal(f.connection.findLibraryFolder({ name: 'HQs', samples: [], hintId: 'mega:hqs00001' }), 'mega:hqs00001');
+  assert.equal(f.connection.findLibraryFolder({ name: 'Quadrinhos', samples: [] }), 'mega:hqs00001');
+  assert.equal(f.connection.findLibraryFolder({ name: 'Nowhere', samples: [] }), null);
+});
