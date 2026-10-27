@@ -1,0 +1,14 @@
+{
+  "appId": "com.wsqm1990.cloudpanels",
+  "appName": "CloudPanels",
+  "webDir": "www",
+  "backgroundColor": "#03070b",
+  "loggingBehavior": "debug",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#03070b",
+    "allowsLinkPreview": false,
+    "scrollEnabled": true,
+    "webContentsDebuggingEnabled": true
+  }
+}

@@ -1,0 +1,75 @@
+name: iPad app
+
+# Builds the CloudPanels iPad app on GitHub's Macs (no computer needed).
+# Every build is opened in an iPad simulator and screenshots are saved to the
+# "ci-results" branch. Once the App Store Connect key is saved as secrets, the
+# same run also signs the app and sends it to TestFlight.
+on:
+  push:
+    branches: [main]
+    paths: ['native/**', 'src/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ipad-app
+  cancel-in-progress: true
+
+jobs:
+  ipad:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - name: Get the project
+        uses: actions/checkout@v4
+      - name: Get the published web app
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: native/www
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prepare the iPad project
+        working-directory: native
+        run: |
+          set -o pipefail
+          mkdir -p ../results
+          { sw_vers; xcodebuild -version; node --version; } > ../results/machine.txt 2>&1
+          rm -rf www/.git
+          npm install --no-audit --no-fund 2>&1 | tee ../results/npm.log | tail -5
+          npx cap add ios 2>&1 | tee ../results/cap-add.log
+          node configure-ios.mjs 2>&1 | tee ../results/configure.log
+          npx cap sync ios 2>&1 | tee ../results/cap-sync.log
+      - name: Build for the iPad simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project native/ios/App/App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build > results/build-simulator.log 2>&1 \
+            || { grep -E "error:|BUILD FAILED" results/build-simulator.log | head -40; exit 1; }
+          grep -E "BUILD SUCCEEDED" results/build-simulator.log
+      - name: Open the app in an iPad simulator
+        run: python3 native/ci/simulator.py
+      - name: Send to TestFlight
+        if: env.ASC_KEY_ID != '' && env.ASC_ISSUER_ID != '' && env.ASC_KEY_P8 != '' && env.APPLE_TEAM_ID != ''
+        run: bash native/ci/testflight.sh 2>&1 | tee results/testflight.log
+      - name: Publish the results
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p results && cd results
+          echo "status=${{ job.status }} commit=${GITHUB_SHA} run=${GITHUB_RUN_NUMBER} testflight=$([ -n "$ASC_KEY_ID" ] && echo configured || echo not-configured)" > STATUS.txt
+          git init -q && git checkout -q -b ci-results
+          git add -A
+          git -c user.name="CloudPanels build" -c user.email="build@users.noreply.github.com" commit -qm "iPad build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA})"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-results
