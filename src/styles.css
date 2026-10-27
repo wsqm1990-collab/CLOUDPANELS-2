@@ -609,3 +609,9 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .reader-neighbour-note { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: #a9b8cc; font-size: 14px; line-height: 1.5; text-align: center; }
 .reader-neighbour.has-image .reader-neighbour-note { display: none; }
 .reader-dialog.reader-paging .reader-stage { will-change: transform; }
+
+/* When the library and the folder browser last heard from MEGA. */
+.library-check-line { margin: -14px 0 18px; font-size: 12.5px; line-height: 1.45; }
+.library-check-line:empty { display: none; }
+.folder-freshness { margin: 12px 0 0; font-size: 12.5px; line-height: 1.45; }
+.folder-freshness:empty { display: none; }

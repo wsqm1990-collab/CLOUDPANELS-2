@@ -73,6 +73,13 @@ export function validateMegaRange(size, start, end) {
   if (end - start > MAX_MEGA_READ) throw new MegaConnectionError('This page is too large to read safely in this browser.', 'READ_LIMIT');
 }
 
+function countNodes(root, limit = 200000) {
+  let count = 0;
+  const queue = [root];
+  for (let cursor = 0; cursor < queue.length && count < limit; cursor++) { count++; for (const child of queue[cursor]?.children ?? []) queue.push(child); }
+  return count;
+}
+
 function waitAbortable(promise, signal, onCancel) {
   checkSignal(signal);
   if (!signal) return Promise.resolve(promise);
@@ -91,7 +98,7 @@ const SYNC_FOLDER = 'CloudPanels', SYNC_FILE = 'cloudpanels-biblioteca.json', CO
 const OUR_FILES = new Set([SYNC_FILE, COVERS_FILE]);
 
 export class MegaConnection {
-  constructor({ sdk = { Storage, File: MEGAFile, API }, maxConcurrentReads = 2, logoutTimeoutMs = 3000 } = {}) {
+  constructor({ sdk = { Storage, File: MEGAFile, API }, maxConcurrentReads = 2, logoutTimeoutMs = 3000, treeTimeoutMs = 120000 } = {}) {
     this._sdk = sdk;
     this._maxConcurrentReads = Math.max(1, Math.min(2, Number(maxConcurrentReads) || 2));
     this._nodes = new Map(); this._parents = new Map(); this._rootNodes = [];
@@ -101,6 +108,8 @@ export class MegaConnection {
     this._isolatedAPI = null; this._rememberedLinkURL = null;
     this._closingStorages = new WeakMap();
     this._logoutTimeoutMs = Math.min(4000, Math.max(10, Number(logoutTimeoutMs) || 3000));
+    this._treeTimeoutMs = Math.max(10, Number(treeTimeoutMs) || 120000);
+    this._treeRefresh = null; this.treeLoadedAt = 0; this.treeSize = 0;
   }
   get connected() { return this._rootNodes.length > 0; }
 
@@ -127,6 +136,7 @@ export class MegaConnection {
       if (!storage.root?.directory) throw new MegaConnectionError('Your MEGA Cloud Drive could not be loaded. Try again.', 'TREE');
       this._storage = storage; this._isolatedAPI = storage.api ?? null; this._rootNodes = [storage.root]; this.mode = 'account';
       this._register(storage.root, null);
+      this.treeLoadedAt = Date.now(); this.treeSize = Object.keys(storage.files || {}).length;
       return this.roots();
     } catch (error) { connectionController.abort(); if (storage) this._closeStorage(storage); throw safeError(error); }
     finally { this._scrubLoginOptions(storage); }
@@ -153,6 +163,7 @@ export class MegaConnection {
       if (!file.name || (file.directory && !Array.isArray(file.children))) throw new MegaConnectionError('The folder link could not be decrypted. Copy its complete link and key from MEGA.', 'LINK_KEY');
       this._isolatedAPI = api ?? file.api ?? null;
       this._rootNodes = [file]; this.mode = 'link'; this._register(file, null); this._rememberedLinkURL = parsed.url;
+      this.treeLoadedAt = Date.now(); this.treeSize = countNodes(file);
       return this.roots();
     } catch (error) { connectionController.abort(); throw safeError(error); }
   }
@@ -203,6 +214,7 @@ export class MegaConnection {
       storage.status = 'ready';
       this._storage = storage; this._isolatedAPI = storage.api; this._rootNodes = [storage.root]; this.mode = 'account';
       this._register(storage.root, null);
+      this.treeLoadedAt = Date.now(); this.treeSize = Object.keys(storage.files || {}).length;
       return this.roots();
     } catch (error) {
       connectionController.abort(); this._detachStorage(storage);
@@ -249,35 +261,71 @@ export class MegaConnection {
    */
   refreshTree(options = {}) {
     // One refresh at a time: a second caller shares the one already running.
-    if (this._treeRefresh) return this._treeRefresh;
-    const running = this._refreshTree(options).finally(() => { if (this._treeRefresh === running) this._treeRefresh = null; });
-    this._treeRefresh = running;
-    return running;
+    // A refresh left over from an earlier connection is never shared, so a
+    // reconnect can never inherit a request that will not finish.
+    const current = this._treeRefresh;
+    if (current && current.generation === this._generation) return current.promise;
+    const promise = this._refreshTree(options).finally(() => { if (this._treeRefresh?.promise === promise) this._treeRefresh = null; });
+    this._treeRefresh = { promise, generation: this._generation };
+    return promise;
   }
-  async _refreshTree({ signal } = {}) {
+  async _refreshTree({ signal, timeoutMs = this._treeTimeoutMs } = {}) {
     checkSignal(signal);
     if (!this.connected) return false;
     const generation = this._generation;
-    if (this.mode === 'link') {
-      if (!this._rememberedLinkURL) return false;
-      const file = this._sdk.File.fromURL(this._rememberedLinkURL, this._isolatedAPI ? { api: this._isolatedAPI } : undefined);
-      await waitAbortable(file.loadAttributes(), signal);
-      if (generation !== this._generation) throw cancelled();
-      if (!file.name || (file.directory && !Array.isArray(file.children))) throw new MegaConnectionError('The folder link could not be loaded. Try again.', 'TREE');
-      this._nodes.clear(); this._parents.clear(); this._rootNodes = [file]; this._register(file, null);
-      return true;
-    }
-    const storage = this._storage;
-    if (this.mode !== 'account' || typeof storage?.reload !== 'function') return false;
-    const previous = { files: storage.files, root: storage.root, trash: storage.trash, inbox: storage.inbox, mounts: storage.mounts };
-    storage.files = {}; storage.mounts = [];
+    // Never wait forever: a stalled mobile connection gives up after a while,
+    // so the next refresh can try again instead of waiting behind it.
+    const controller = new AbortController();
+    let timedOut = false;
+    const stop = () => controller.abort();
+    const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
+    const connectionSignal = this._connectionController?.signal;
+    signal?.addEventListener('abort', stop, { once: true });
+    connectionSignal?.addEventListener('abort', stop, { once: true });
+    if (signal?.aborted || connectionSignal?.aborted) stop();
+    const failure = error => timedOut ? new MegaConnectionError('MEGA took too long to answer. Check your internet connection and try again.', 'TREE_TIMEOUT') : safeError(error);
     try {
-      await waitAbortable(storage.reload(true), signal);
-      if (!storage.root?.directory) throw new MegaConnectionError('Your MEGA Cloud Drive could not be loaded. Try again.', 'TREE');
-    } catch (error) { Object.assign(storage, previous); throw safeError(error); }
-    if (generation !== this._generation || this._storage !== storage) throw cancelled();
-    this._nodes.clear(); this._parents.clear(); this._rootNodes = [storage.root]; this._register(storage.root, null);
-    return true;
+      if (this.mode === 'link') {
+        if (!this._rememberedLinkURL) return false;
+        const file = this._sdk.File.fromURL(this._rememberedLinkURL, this._isolatedAPI ? { api: this._isolatedAPI } : undefined);
+        try { await waitAbortable(file.loadAttributes(), controller.signal); } catch (error) { throw failure(error); }
+        if (generation !== this._generation) throw cancelled();
+        if (!file.name || (file.directory && !Array.isArray(file.children))) throw new MegaConnectionError('The folder link could not be loaded. Try again.', 'TREE');
+        this._nodes.clear(); this._parents.clear(); this._rootNodes = [file]; this._register(file, null);
+        this.treeLoadedAt = Date.now(); this.treeSize = countNodes(file);
+        return true;
+      }
+      const storage = this._storage;
+      if (this.mode !== 'account' || typeof storage?.reload !== 'function') return false;
+      const previous = { files: storage.files, root: storage.root, trash: storage.trash, inbox: storage.inbox, mounts: storage.mounts };
+      storage.files = {}; storage.mounts = [];
+      try {
+        // The SDK sends its tree request synchronously inside reload(): give
+        // just that request this refresh's own lifetime, then put it back.
+        const api = storage.api, originalFetch = api?.fetch;
+        // Each SDK reload adds a listener for live updates, which are off here.
+        try { api?.removeAllListeners?.('sc'); } catch {}
+        let reloading;
+        if (api && typeof originalFetch === 'function') api.fetch = this._connectionFetch(controller.signal);
+        try { reloading = storage.reload(true); } finally { if (api && typeof originalFetch === 'function') api.fetch = originalFetch; }
+        await waitAbortable(reloading, controller.signal);
+        if (!storage.root?.directory) throw new MegaConnectionError('Your MEGA Cloud Drive could not be loaded. Try again.', 'TREE');
+      } catch (error) { Object.assign(storage, previous); throw failure(error); }
+      if (generation !== this._generation || this._storage !== storage) throw cancelled();
+      this._nodes.clear(); this._parents.clear(); this._rootNodes = [storage.root]; this._register(storage.root, null);
+      this.treeLoadedAt = Date.now(); this.treeSize = Object.keys(storage.files || {}).length;
+      return true;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      connectionSignal?.removeEventListener('abort', stop);
+    }
+  }
+  /** Folder names from Cloud Drive down to a folder, for messages and diagnostics. */
+  folderPath(id) {
+    const names = [];
+    for (let node = this._findNode(id), i = 0; node && i < 64; node = node.parent, i++) names.unshift(safeName(node.name, 'Cloud Drive'));
+    return names.join('/');
   }
 
   /**
@@ -512,6 +560,7 @@ export class MegaConnection {
     this._streams.clear();
     for (const waiter of this._waiters.splice(0)) waiter.reject(cancelled());
     this._nodes.clear(); this._parents.clear(); this._rootNodes = []; this.mode = null; this._isolatedAPI = null; this._rememberedLinkURL = null;
+    this._treeRefresh = null; this.treeLoadedAt = 0; this.treeSize = 0;
     if (revoke) await this._closeStorage(storage); else this._detachStorage(storage);
     if (!storage) { try { isolatedAPI?.close?.(); } catch {} }
   }
