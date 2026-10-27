@@ -10,6 +10,11 @@ if (!existsSync(plist)) throw new Error('Run `npx cap add ios` first.');
 const set = (key, type, value) => execFileSync('plutil', ['-replace', key, `-${type}`, value, plist], { stdio: 'inherit' });
 
 set('CFBundleDisplayName', 'string', 'CloudPanels');
+// Export compliance, as answered in App Store Connect on 27 October 2026:
+// standard encryption only, no France distribution; Apple said no
+// documentation is needed and suggested recording it here so each build does
+// not ask again. Revisit if the app's use of encryption changes.
+set('ITSAppUsesNonExemptEncryption', 'bool', 'NO');
 // Hide the clock and battery bar everywhere in the app, like the Panels app.
 set('UIStatusBarHidden', 'bool', 'YES');
 set('UIViewControllerBasedStatusBarAppearance', 'bool', 'NO');

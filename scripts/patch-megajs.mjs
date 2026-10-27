@@ -45,17 +45,22 @@ replaceOnce(
   '      if (!end) {\n        last = last ? import_buffer.Buffer.concat([last, chunk]) : chunk;',
   '      if (!end) {\n        last = chunk;'
 );
+// The tree MEGA sends can be a saved copy from a while ago, together with the
+// point ("sn") it was saved at. MEGA's own apps then fetch the changes made
+// since that point; keep it so CloudPanels can do the same (see mega.js).
 // MEGA does not promise to list a folder before what is inside it (its own SDK
 // links "dangling" nodes after reading the whole tree). Upstream drops such a
 // node: a folder moved into a newer folder vanished from the tree. Remember
 // nodes whose folder has not arrived yet and attach them once all are read.
+// An older version of a file sits under the newer file, which has no list of
+// children: keep it out of the folder instead of failing the whole tree.
 replaceOnce(
   '      if (f.p) {\n        const parent = this.files[f.p];\n        if (parent) {\n          parent.children.push(file);\n          file.parent = parent;\n        }\n      }',
-  '      if (f.p) {\n        const parent = this.files[f.p];\n        if (parent) {\n          parent.children.push(file);\n          file.parent = parent;\n        } else {\n          (this._waitingForParent ||= []).push([file, f.p]);\n        }\n      }'
+  '      if (f.p) {\n        const parent = this.files[f.p];\n        if (parent && Array.isArray(parent.children)) {\n          parent.children.push(file);\n          file.parent = parent;\n        } else if (parent) {\n          file.parent = parent;\n        } else {\n          (this._waitingForParent ||= []).push([file, f.p]);\n        }\n      }'
 );
 replaceOnce(
   '    this.api.request({ a: "f", c: 1 }, (err, response) => {\n      if (err) return cb(err);',
-  '    this.api.request({ a: "f", c: 1 }, (err, response) => {\n      if (err) return cb(err);\n      this._waitingForParent = [];'
+  '    this.api.request({ a: "f", c: 1 }, (err, response) => {\n      if (err) return cb(err);\n      this._waitingForParent = [];\n      this.sn = typeof response.sn === "string" ? response.sn : null;'
 );
 replaceOnce(
   '      cb(null, this.mounts);',

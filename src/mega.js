@@ -80,6 +80,13 @@ function countNodes(root, limit = 200000) {
   return count;
 }
 
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(cancelled()); }, { once: true });
+  });
+}
+
 function waitAbortable(promise, signal, onCancel) {
   checkSignal(signal);
   if (!signal) return Promise.resolve(promise);
@@ -109,7 +116,7 @@ export class MegaConnection {
     this._closingStorages = new WeakMap();
     this._logoutTimeoutMs = Math.min(4000, Math.max(10, Number(logoutTimeoutMs) || 3000));
     this._treeTimeoutMs = Math.max(10, Number(treeTimeoutMs) || 120000);
-    this._treeRefresh = null; this.treeLoadedAt = 0; this.treeSize = 0;
+    this._treeRefresh = null; this.treeLoadedAt = 0; this.treeSize = 0; this.lastCatchUp = null;
   }
   get connected() { return this._rootNodes.length > 0; }
 
@@ -134,6 +141,8 @@ export class MegaConnection {
       if (generation !== this._generation) { this._closeStorage(storage); throw cancelled(); }
       checkSignal(signal);
       if (!storage.root?.directory) throw new MegaConnectionError('Your MEGA Cloud Drive could not be loaded. Try again.', 'TREE');
+      await this._bringUpToDate(storage, connectionController.signal);
+      if (generation !== this._generation) { this._closeStorage(storage); throw cancelled(); }
       this._storage = storage; this._isolatedAPI = storage.api ?? null; this._rootNodes = [storage.root]; this.mode = 'account';
       this._register(storage.root, null);
       this.treeLoadedAt = Date.now(); this.treeSize = Object.keys(storage.files || {}).length;
@@ -211,6 +220,8 @@ export class MegaConnection {
       if (generation !== this._generation) throw cancelled();
       checkSignal(connectionController.signal);
       if (!storage.root?.directory) throw new MegaConnectionError('Your saved MEGA session could not load Cloud Drive. Sign in again.', 'SESSION_EXPIRED');
+      await this._bringUpToDate(storage, connectionController.signal);
+      if (generation !== this._generation) throw cancelled();
       storage.status = 'ready';
       this._storage = storage; this._isolatedAPI = storage.api; this._rootNodes = [storage.root]; this.mode = 'account';
       this._register(storage.root, null);
@@ -311,6 +322,7 @@ export class MegaConnection {
         await waitAbortable(reloading, controller.signal);
         if (!storage.root?.directory) throw new MegaConnectionError('Your MEGA Cloud Drive could not be loaded. Try again.', 'TREE');
       } catch (error) { Object.assign(storage, previous); throw failure(error); }
+      await this._bringUpToDate(storage, controller.signal);
       if (generation !== this._generation || this._storage !== storage) throw cancelled();
       this._nodes.clear(); this._parents.clear(); this._rootNodes = [storage.root]; this._register(storage.root, null);
       this.treeLoadedAt = Date.now(); this.treeSize = Object.keys(storage.files || {}).length;
@@ -319,6 +331,107 @@ export class MegaConnection {
       clearTimeout(timer);
       signal?.removeEventListener('abort', stop);
       connectionSignal?.removeEventListener('abort', stop);
+    }
+  }
+  /**
+   * The tree MEGA sends can be a copy saved some time ago. Like MEGA's own
+   * apps, ask MEGA for every change made since that copy (folders moved,
+   * created, renamed or deleted) and apply them, until MEGA says the tree is
+   * up to date. Read only: nothing is written to MEGA. Never throws; the
+   * result (how many changes, or what went wrong) is kept in lastCatchUp.
+   */
+  async _bringUpToDate(storage, signal, { maxRounds = 200, timeoutMs = 60000 } = {}) {
+    const result = { at: Date.now(), changes: 0, rounds: 0, upToDate: false, error: null };
+    this.lastCatchUp = result;
+    let sn = typeof storage?.sn === 'string' && storage.sn ? storage.sn : null;
+    const sid = storage?.api?.sid || storage?.sid;
+    if (!sn || !sid) { result.error = 'MEGA did not say when its copy of your folders was made'; return result; }
+    const gateway = typeof storage.api?.gateway === 'string' && /^https:\/\//.test(storage.api.gateway) ? storage.api.gateway : 'https://g.api.mega.co.nz/';
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    const timer = setTimeout(stop, timeoutMs);
+    signal?.addEventListener('abort', stop, { once: true });
+    if (signal?.aborted) stop();
+    const request = this._connectionFetch(controller.signal);
+    const deleted = new Set();
+    let complete = false;
+    try {
+      for (let busy = 0; result.rounds < maxRounds;) {
+        checkSignal(controller.signal);
+        const response = await request(`${gateway}sc?${new URLSearchParams({ sn, ssl: '1', sid })}`, { method: 'POST' });
+        if (!response.ok) throw new MegaConnectionError(`MEGA answered ${response.status} when asked for recent changes.`, 'CHANGES');
+        const body = await response.json();
+        if (typeof body === 'number') {
+          if (body === -3 && busy < 3) { busy++; await delay(1000 * busy, controller.signal); continue; }
+          throw new MegaConnectionError(`MEGA could not send its recent changes (code ${body}).`, 'CHANGES');
+        }
+        result.rounds++;
+        if (body && typeof body.w === 'string') { complete = true; break; }
+        const changes = Array.isArray(body?.a) ? body.a : [];
+        result.changes += changes.length;
+        this._applyChanges(storage, changes, deleted);
+        if (typeof body?.sn !== 'string' || !body.sn || body.sn === sn) { complete = !changes.length; break; }
+        sn = body.sn;
+      }
+    } catch (error) {
+      result.error = controller.signal.aborted && !signal?.aborted ? 'MEGA took too long to send its recent changes' : String(error?.message || error || 'unknown problem');
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+    }
+    // A move arrives as "removed here" followed by "added there": only remove
+    // what was really deleted, and only when every change arrived.
+    if (complete) for (const handle of deleted) this._dropNode(storage, handle);
+    result.upToDate = complete;
+    storage.sn = sn;
+    return result;
+  }
+  _applyChanges(storage, changes, deleted) {
+    for (const change of changes) {
+      if (!change || typeof change !== 'object') continue;
+      try {
+        if (change.a === 'd' && typeof change.n === 'string') deleted.add(change.n);
+        else if (change.a === 'u' && typeof change.n === 'string') {
+          const node = storage.files?.[change.n];
+          if (node && typeof change.at === 'string') node.decryptAttributes(change.at);
+          if (node && Number.isFinite(change.ts)) node.timestamp = change.ts;
+        } else if (change.a === 't' && Array.isArray(change.t?.f)) {
+          for (const value of change.t.f) {
+            if (!value || typeof value.h !== 'string') continue;
+            deleted.delete(value.h);
+            const existing = storage.files?.[value.h];
+            if (existing) this._moveNode(storage, existing, value.p);
+            else if (typeof storage._importFile === 'function') storage._importFile(value);
+          }
+          for (const [node, parentId] of storage._waitingForParent || []) {
+            const parent = storage.files?.[parentId];
+            if (parent && !node.parent && Array.isArray(parent.children)) { parent.children.push(node); node.parent = parent; }
+          }
+          storage._waitingForParent = [];
+        }
+      } catch { /* One unusual change never stops the others. */ }
+    }
+  }
+  _moveNode(storage, node, parentId) {
+    const parent = storage.files?.[parentId];
+    if (!parent || parent === node || node.parent === parent) return;
+    const previous = node.parent;
+    if (Array.isArray(previous?.children)) { const index = previous.children.indexOf(node); if (index >= 0) previous.children.splice(index, 1); }
+    // Under a file means it became an older version of that file: it leaves
+    // the folder and is not listed anywhere.
+    if (Array.isArray(parent.children) && !parent.children.includes(node)) parent.children.push(node);
+    node.parent = parent;
+  }
+  _dropNode(storage, handle) {
+    const node = storage.files?.[handle];
+    if (!node) return;
+    const parent = node.parent;
+    if (Array.isArray(parent?.children)) { const index = parent.children.indexOf(node); if (index >= 0) parent.children.splice(index, 1); }
+    const stack = [node];
+    for (let guard = 0; stack.length && guard < 200000; guard++) {
+      const current = stack.pop();
+      if (current?.nodeId && storage.files[current.nodeId] === current) delete storage.files[current.nodeId];
+      for (const child of current?.children || []) stack.push(child);
     }
   }
   /** Folder names from Cloud Drive down to a folder, for messages and diagnostics. */

@@ -22,16 +22,31 @@ function megaServer() {
   };
   nodes.set('root0001', { h: 'root0001', p: '', t: 2, u: 'user0001', ts: 1 });
   nodes.set('bin00001', { h: 'bin00001', p: '', t: 4, u: 'user0001', ts: 1 });
-  let fetches = 0;
+  let fetches = 0, saved = null, savedSn = 'sn0000000001', liveSn = savedSn;
+  const changes = new Map(); // sn -> { a: [...], sn: next } (what MEGA's sc channel answers)
+  const scCalls = [];
+  const json = value => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } });
   const fetch = async (url, options) => {
+    const target = new URL(url);
+    if (target.pathname.endsWith('/sc')) {
+      const sn = target.searchParams.get('sn'); scCalls.push(sn);
+      return json(changes.get(sn) ?? { w: 'https://g.api.mega.co.nz/wait/test' });
+    }
     const requests = JSON.parse(options.body);
     const answers = requests.map(request => {
-      if (request.a === 'f') { fetches++; return { f: [...nodes.values()].map(node => ({ ...node })), ok: [], s: [], u: [] }; }
+      if (request.a === 'f') { fetches++; return { f: (saved || [...nodes.values()]).map(node => ({ ...node })), ok: [], s: [], u: [], sn: saved ? savedSn : liveSn }; }
       return 0;
     });
-    return new Response(JSON.stringify(answers), { status: 200, headers: { 'content-type': 'application/json' } });
+    return json(answers);
   };
-  return { masterKey, folder, file, nodes, fetch, get fetches() { return fetches; }, move(h, parent) { nodes.set(h, { ...nodes.get(h), p: parent }); } };
+  return {
+    masterKey, folder, file, nodes, fetch, changes, scCalls,
+    get fetches() { return fetches; },
+    move(h, parent) { nodes.set(h, { ...nodes.get(h), p: parent }); },
+    // MEGA keeps sending this copy of the tree (with the point it was made at)
+    // while later changes only arrive through the change channel.
+    keepSavedCopy() { saved = [...nodes.values()].map(node => ({ ...node })); },
+  };
 }
 
 test('with the real MEGAJS code, folders moved in MEGA appear in their new place after an update', async () => {
@@ -95,5 +110,84 @@ test('a folder listed by MEGA before the folder it now sits in is not lost', asy
     await again.restoreRememberedSession({ version: 1, mode: 'account', key: e64(server.masterKey), sid: Buffer.alloc(43, 9).toString('base64url'), user: 'user0001', name: 'Reader' });
     assert.deepEqual((await again.children('mega:read0001')).map(item => item.name), ['ULTIMATE X-MEN']);
     await again.disconnect(); await connection.disconnect();
+  } finally { globalThis.fetch = original; }
+});
+
+test('changes made in MEGA after its saved copy of the tree are fetched and applied', async () => {
+  const server = megaServer();
+  server.folder('comics01', 'root0001', 'COMICS');
+  server.folder('reading1', 'comics01', 'READING');
+  server.folder('read0001', 'comics01', 'READ');
+  server.folder('ultxmen1', 'reading1', 'ULTIMATE X-MEN');
+  server.file('xmen0001', 'ultxmen1', 'Ultimate X-Men 001.cbr');
+  server.folder('gone0001', 'reading1', 'OLD STUFF');
+  server.keepSavedCopy();
+  // Made later in the MEGA app: a new folder, a move and a deletion.
+  server.folder('myapps01', 'root0001', 'MY APPS');
+  server.move('ultxmen1', 'read0001');
+  const node = h => ({ ...server.nodes.get(h) });
+  server.changes.set('sn0000000001', { a: [
+    { a: 't', t: { f: [node('myapps01')] } },
+    { a: 'd', n: 'ultxmen1', m: 1 }, { a: 't', t: { f: [node('ultxmen1'), node('xmen0001')] } },
+    { a: 'd', n: 'gone0001' },
+  ], sn: 'sn0000000002' });
+  const original = globalThis.fetch; globalThis.fetch = server.fetch;
+  try {
+    const connection = new MegaConnection({ sdk: SDK });
+    await connection.restoreRememberedSession({ version: 1, mode: 'account', key: e64(server.masterKey), sid: Buffer.alloc(43, 9).toString('base64url'), user: 'user0001', name: 'Reader' });
+    const names = async id => (await connection.children(id)).map(item => item.name);
+    assert.deepEqual(server.scCalls, ['sn0000000001', 'sn0000000002'], 'asked for changes until MEGA said it was up to date');
+    assert.deepEqual(connection.lastCatchUp && { changes: connection.lastCatchUp.changes, upToDate: connection.lastCatchUp.upToDate }, { changes: 4, upToDate: true });
+    assert.deepEqual(await names('mega:root0001'), ['COMICS', 'MY APPS']);
+    assert.deepEqual(await names('mega:reading1'), []);
+    assert.deepEqual(await names('mega:read0001'), ['ULTIMATE X-MEN']);
+    assert.deepEqual((await connection.listComics('mega:comics01')).map(c => c.path), ['COMICS/READ/ULTIMATE X-MEN/Ultimate X-Men 001.cbr']);
+    // Updating again later starts from MEGA's saved copy again and catches up again.
+    server.scCalls.length = 0;
+    await connection.refreshTree();
+    assert.deepEqual(server.scCalls, ['sn0000000001', 'sn0000000002']);
+    assert.deepEqual(await names('mega:read0001'), ['ULTIMATE X-MEN']);
+    await connection.disconnect();
+  } finally { globalThis.fetch = original; }
+});
+
+test('if MEGA cannot send its recent changes, nothing is removed and the reason is kept', async () => {
+  const server = megaServer();
+  server.folder('comics01', 'root0001', 'COMICS');
+  server.folder('reading1', 'comics01', 'READING');
+  server.folder('read0001', 'comics01', 'READ');
+  server.folder('ultxmen1', 'reading1', 'ULTIMATE X-MEN');
+  server.keepSavedCopy();
+  // The move starts in one answer, then MEGA fails before sending the rest.
+  server.changes.set('sn0000000001', { a: [{ a: 'd', n: 'ultxmen1', m: 1 }], sn: 'sn0000000002' });
+  server.changes.set('sn0000000002', -6);
+  const original = globalThis.fetch; globalThis.fetch = server.fetch;
+  try {
+    const connection = new MegaConnection({ sdk: SDK });
+    await connection.restoreRememberedSession({ version: 1, mode: 'account', key: e64(server.masterKey), sid: Buffer.alloc(43, 9).toString('base64url'), user: 'user0001', name: 'Reader' });
+    assert.equal(connection.lastCatchUp.upToDate, false);
+    assert.match(connection.lastCatchUp.error, /code -6/);
+    assert.deepEqual((await connection.children('mega:reading1')).map(item => item.name), ['ULTIMATE X-MEN'], 'kept where the saved copy had it');
+    await connection.disconnect();
+  } finally { globalThis.fetch = original; }
+});
+
+test('a comic replaced in MEGA shows once: the older version leaves the folder', async () => {
+  const server = megaServer();
+  server.folder('comics01', 'root0001', 'COMICS');
+  server.file('issue001', 'comics01', 'Issue 1.cbr');
+  server.keepSavedCopy();
+  // Uploaded again with the same name: the new file takes the old one's place
+  // and the old one becomes a version under it.
+  server.file('issue002', 'comics01', 'Issue 1.cbr');
+  server.move('issue001', 'issue002');
+  const node = h => ({ ...server.nodes.get(h) });
+  server.changes.set('sn0000000001', { a: [{ a: 't', t: { f: [node('issue002')] } }, { a: 'd', n: 'issue001', m: 1 }, { a: 't', t: { f: [node('issue001')] } }], sn: 'sn0000000002' });
+  const original = globalThis.fetch; globalThis.fetch = server.fetch;
+  try {
+    const connection = new MegaConnection({ sdk: SDK });
+    await connection.restoreRememberedSession({ version: 1, mode: 'account', key: e64(server.masterKey), sid: Buffer.alloc(43, 9).toString('base64url'), user: 'user0001', name: 'Reader' });
+    assert.deepEqual((await connection.listComics('mega:comics01')).map(c => c.id), ['mega:issue002']);
+    await connection.disconnect();
   } finally { globalThis.fetch = original; }
 });
