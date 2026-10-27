@@ -247,7 +247,14 @@ export class MegaConnection {
    * keeps old nodes where they were, so a fresh tree is built and swapped in;
    * pages already being read keep working with their existing nodes.
    */
-  async refreshTree({ signal } = {}) {
+  refreshTree(options = {}) {
+    // One refresh at a time: a second caller shares the one already running.
+    if (this._treeRefresh) return this._treeRefresh;
+    const running = this._refreshTree(options).finally(() => { if (this._treeRefresh === running) this._treeRefresh = null; });
+    this._treeRefresh = running;
+    return running;
+  }
+  async _refreshTree({ signal } = {}) {
     checkSignal(signal);
     if (!this.connected) return false;
     const generation = this._generation;
