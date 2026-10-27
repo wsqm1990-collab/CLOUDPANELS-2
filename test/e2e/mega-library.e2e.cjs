@@ -27,11 +27,18 @@ async function fakeMega() {
   file('xmen0001', 'ultxmen1', 'Ultimate X-Men 001.cbr'); file('xmen0002', 'ultxmen1', 'Ultimate X-Men 002.cbr'); file('visn0001', 'ultvisn1', 'Ultimate Vision 001.cbr');
   file('want0001', 'wanted01', 'Wanted 001.cbr'); file('saga0001f', 'saga0001', 'Saga 001.cbz');
   const session = { version: 1, connection: { version: 1, mode: 'account', key: e64(masterKey), sid: Buffer.alloc(43, 9).toString('base64url'), user: 'user0001', name: 'Reader' }, folder: null, browsePath: [] };
+  let saved = null;
   return {
-    session, treeFetches: 0,
+    session, treeFetches: 0, changes: new Map(),
     // What the person does in the MEGA app.
     moveUltimateToRead() { for (const h of ['ultxmen1', 'ultvisn1']) nodes.set(h, { ...nodes.get(h), p: 'read0001' }); },
-    answer(body) { return body.map(item => { if (item.a === 'f') { this.treeFetches++; return { f: [...nodes.values()].map(n => ({ ...n })), ok: [], s: [], u: [] }; } return -9; }); },
+    // Like the real MEGA for this account: every tree request gets the same
+    // saved copy, and later changes only come through the change channel.
+    keepSavedCopy() { saved = [...nodes.values()].map(n => ({ ...n })); },
+    node(h) { return { ...nodes.get(h) }; },
+    folder, file,
+    answer(body) { return body.map(item => { if (item.a === 'f') { this.treeFetches++; return { f: (saved || [...nodes.values()]).map(n => ({ ...n })), ok: [], s: [], u: [], sn: 'sn0000000001' }; } return -9; }); },
+    changesSince(sn) { return this.changes.get(sn) ?? { w: 'https://g.api.mega.co.nz/wait/test' }; },
   };
 }
 
@@ -42,6 +49,8 @@ async function openApp(browser, mega) {
   await context.route(/https:\/\/[^/]*mega\.(co\.)?nz\//, async route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    const target = new URL(request.url());
+    if (target.pathname.endsWith('/sc')) return route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify(mega.changesSince(target.searchParams.get('sn'))) });
     let body = []; try { body = JSON.parse(request.postData() || '[]'); } catch {}
     return route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify(mega.answer(body)) });
   });
@@ -143,9 +152,38 @@ async function hideAndReturn(page, hiddenMs) {
       // The folder browser says when it loaded the folders from MEGA.
       await page.locator('button', { hasText: 'Manage MEGA' }).first().click();
       await page.waitForFunction(() => /loaded at/.test(document.querySelector('.folder-freshness')?.textContent || ''), null, { timeout: 10000 }).catch(() => {});
-      check('D: the folder browser says the list is fresh', /as they are right now/.test(await page.locator('.folder-freshness').textContent()), {});
+      const freshness = await page.locator('.folder-freshness').textContent();
+      check('D: the folder browser says the list is fresh and up to date', /as they are right now/.test(freshness) && /0 recent changes/.test(freshness), { freshness });
       await context.close();
     } catch (error) { results.push('FAIL scenario D stopped: ' + String(error.message || error).split('\n')[0]); }
+    // E: like the person's account: MEGA keeps sending an older saved copy of
+    // the tree, and the moves only arrive as "recent changes".
+    try {
+      const mega = await fakeMega();
+      mega.keepSavedCopy();
+      mega.moveUltimateToRead();
+      mega.folder('myapps01', 'root0001', 'MY APPS');
+      mega.changes.set('sn0000000001', { a: [
+        { a: 't', t: { f: [mega.node('myapps01')] } },
+        { a: 'd', n: 'ultxmen1', m: 1 }, { a: 't', t: { f: [mega.node('ultxmen1')] } },
+        { a: 'd', n: 'ultvisn1', m: 1 }, { a: 't', t: { f: [mega.node('ultvisn1')] } },
+      ], sn: 'sn0000000002' });
+      const { context, page } = await openApp(browser, mega);
+      await page.locator('button', { hasText: 'Manage MEGA' }).first().click();
+      await page.locator('.folder-row', { hasText: 'Cloud Drive' }).click();
+      await page.waitForTimeout(400);
+      const root = await page.locator('.folder-list').innerText();
+      check('E: a folder created later in the MEGA app shows up', /MY APPS/.test(root), { root });
+      await page.locator('.folder-row').filter({ has: page.locator('.folder-name', { hasText: /^COMICS$/ }) }).click();
+      await page.locator('.folder-row').filter({ has: page.locator('.folder-name', { hasText: /^READING$/ }) }).click();
+      await page.waitForTimeout(400);
+      const reading = await page.locator('.folder-list').innerText();
+      check('E: folders moved later in the MEGA app left READING', /WANTED/.test(reading) && !/ULTIMATE/.test(reading), { reading });
+      const freshness = await page.locator('.folder-freshness').textContent();
+      check('E: the folder browser counts the recent changes', /5 recent changes/.test(freshness), { freshness });
+      check('E: no page errors', !page.errors.length, page.errors);
+      await context.close();
+    } catch (error) { results.push('FAIL scenario E stopped: ' + String(error.message || error).split('\n')[0]); }
   } catch (error) { results.push('SCRIPT ERROR ' + (error.stack || error)); }
   await browser.close();
   console.log(results.join('\n'));
