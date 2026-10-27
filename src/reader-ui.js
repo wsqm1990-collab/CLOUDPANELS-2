@@ -1,5 +1,5 @@
 import { openComic } from './reader.js';
-import { wholePageFit, pageFit, guidedPanelFit, resolvePanelIndex, canSwipePages, decideTapNavigation } from './reader-interactions.js';
+import { wholePageFit, pageFit, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideTapNavigation } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
@@ -448,7 +448,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   function baselineWidth() {
     const available = availableSize(), rect = guided && guidedMode === 'panels' && !editing && !overview ? panels()[panel] : undefined;
-    if (rect) return guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect })?.width || fitWidth();
+    if (rect) return guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect, margin: guidedPanelMargin(available.width, available.height) })?.width || fitWidth();
     return pageFit({ mode: editing ? 'whole' : guided ? guidedFitMode() : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width;
   }
   function swipeAllowed() { return canSwipePages({ pageWidth, baselineWidth: baselineWidth(), browserScale: window.visualViewport?.scale || 1, panning: panMode, guided, guidedReady: guided && !analysisPending, editing, popup: Boolean(popup), loading: loading || turning }); }
@@ -597,7 +597,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const rect = guided && guidedMode === 'panels' && !editing ? overview ? (guidedWholeFills() ? undefined : { x: 0, y: 0, width: 1, height: 1 }) : panels()[panel] : undefined;
     if (rect) {
       const available = availableSize(), aspect = imageWidth / imageHeight;
-      const target = guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect });
+      // The whole-page overview keeps using the full screen; single panels get a little room.
+      const target = guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect, margin: overview ? 0 : guidedPanelMargin(available.width, available.height) });
       if (!target) return;
       const style = getComputedStyle(stage), centerX = parseFloat(style.paddingLeft || 0) + available.width / 2, centerY = parseFloat(style.paddingTop || 0) + available.height / 2;
       const startWidth = pageWidth || fitWidth();

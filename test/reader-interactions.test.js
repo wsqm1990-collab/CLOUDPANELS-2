@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { wholePageFit, pageFit, guidedPanelFit, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation } from '../src/reader-interactions.js';
+import { wholePageFit, pageFit, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation } from '../src/reader-interactions.js';
 
 test('a portrait comic fits entirely inside a short landscape viewport', () => {
   const result = wholePageFit({ imageWidth: 1800, imageHeight: 2700, availableWidth: 1000, availableHeight: 600 });
@@ -246,4 +246,17 @@ test('side navigation rejects drags, diagonal movements, long holds and unsafe e
   }
   for (const flag of ['zoomed', 'panning', 'editing', 'popup', 'loading', 'analysisPending', 'multiTouch', 'cancelled', 'dragging']) assert.equal(decideTapNavigation({ ...tap, [flag]: true }), 0);
   for (const key of ['x', 'y', 'dx', 'dy', 'distance', 'duration']) assert.equal(decideTapNavigation({ ...tap, [key]: NaN }), 0);
+});
+
+test('Panel view leaves a little room around each panel so its border is never cut', () => {
+  // A phone in portrait: a wide panel fills the width minus the margin on both sides.
+  const margin = guidedPanelMargin(412, 915);
+  assert.ok(margin >= 8 && margin <= 12, `margin ${margin}`);
+  const fit = guidedPanelFit({ imageWidth: 1988, imageHeight: 3056, availableWidth: 412, availableHeight: 915, panel: { x: .03, y: .1, width: .94, height: .6 }, margin });
+  assert.ok(Math.abs(fit.width * .94 - (412 - 2 * margin)) < .001, 'panel spans the width minus the margins');
+  assert.ok(fit.height * .6 <= 915 - 2 * margin + .001);
+  // Without a margin it touches both edges, as before.
+  const tight = guidedPanelFit({ imageWidth: 1988, imageHeight: 3056, availableWidth: 412, availableHeight: 915, panel: { x: .03, y: .1, width: .94, height: .6 } });
+  assert.ok(Math.abs(tight.width * .94 - 412) < .001);
+  assert.equal(guidedPanelMargin(0, 100), 0);
 });

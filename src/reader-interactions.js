@@ -28,12 +28,20 @@ export function pageFit({ mode = 'whole', imageWidth, imageHeight, availableWidt
   return { width: Math.max(availableWidth, imageWidth * scale), height: Math.max(availableHeight, imageHeight * scale) };
 }
 
+/** Breathing room around a panel in Panel view: a panel found a few pixels
+ * off (or rounding) must never cut its own border off at the screen edge. */
+export function guidedPanelMargin(availableWidth, availableHeight) {
+  if (![availableWidth, availableHeight].every(value => Number.isFinite(value) && value > 0)) return 0;
+  return Math.max(8, Math.min(availableWidth, availableHeight) * .025);
+}
+
 /** Fit a normalized panel, retaining its location within the scaled full page. */
-export function guidedPanelFit({ imageWidth, imageHeight, availableWidth, availableHeight, panel } = {}) {
+export function guidedPanelFit({ imageWidth, imageHeight, availableWidth, availableHeight, panel, margin = 0 } = {}) {
   if (![imageWidth, imageHeight, availableWidth, availableHeight].every(value => Number.isFinite(value) && value > 0) || !panel || typeof panel !== 'object') return null;
   const x = panel.x, y = panel.y, panelWidth = panel.width ?? panel.w, panelHeight = panel.height ?? panel.h;
   if (![x, y, panelWidth, panelHeight].every(Number.isFinite) || x < 0 || y < 0 || panelWidth <= 0 || panelHeight <= 0 || x + panelWidth > 1 || y + panelHeight > 1) return null;
-  const scale = Math.min(availableWidth / (imageWidth * panelWidth), availableHeight / (imageHeight * panelHeight));
+  const inset = Number.isFinite(margin) && margin > 0 ? Math.min(margin, availableWidth * .2, availableHeight * .2) : 0;
+  const scale = Math.min((availableWidth - inset * 2) / (imageWidth * panelWidth), (availableHeight - inset * 2) / (imageHeight * panelHeight));
   const width = imageWidth * scale, height = imageHeight * scale;
   if (![scale, width, height].every(value => Number.isFinite(value) && value > 0)) return null;
   return {
