@@ -5,6 +5,7 @@ import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
 import { stepReadingPosition, spreadPartners } from './reader-position.js';
 import { PageThumbnails, pageThumbnailComicKey } from './page-thumbnails.js';
+import { createKeepAwake } from './keep-awake.js';
 import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry, entryEdge, stripDrag, sideDragAction, sideStep } from './reader-gestures.js';
 
 const MiB = 1024 * 1024;
@@ -191,6 +192,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   // Small pictures of the pages for the page navigator (kept on this device).
   const pageThumbs = new PageThumbnails();
   let thumbSeedTimer;
+  // The screen stays on while a comic is open (iPadOS turns it off after 30
+  // seconds in Low Power Mode); 15 minutes without a touch lets it sleep again.
+  const keepAwake = createKeepAwake();
+  const keepAwakeEnabled = () => store.state.settings.readerKeepAwake !== false;
   // Decoded pages kept ready around the current one (previous, current, next),
   // so a swipe shows the neighbouring page under the finger at once.
   const decodedPages = new Map();
@@ -998,7 +1003,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     for (const [value, label] of [['on', language() === 'pt-BR' ? 'Sim' : language() === 'es' ? 'Sí' : 'On'], ['off', language() === 'pt-BR' ? 'Não' : 'Off']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; overviewSelect.append(option); }
     overviewSelect.value = store.state.settings.readerOverview === false ? 'off' : 'on'; overviewField.append(overviewSelect);
     overviewSelect.addEventListener('change', () => saveAppearance({ readerOverview: overviewSelect.value === 'on' }));
-    menu.append(backgrounds, resistanceField, navigationField, animationField, durationField, overviewField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
+    const awakeField = document.createElement('label'); awakeField.className = 'reader-navigation-setting';
+    awakeField.textContent = language() === 'pt-BR' ? 'Manter a tela acesa durante a leitura' : language() === 'es' ? 'Mantener la pantalla encendida al leer' : 'Keep the screen on while reading';
+    const awakeSelect = document.createElement('select'); awakeSelect.id = 'reader-keep-awake';
+    for (const [value, label] of [['on', language() === 'pt-BR' ? 'Sim (apaga após 15 min sem toque)' : language() === 'es' ? 'Sí (se apaga tras 15 min sin tocar)' : 'On (sleeps after 15 min without a touch)'], ['off', language() === 'pt-BR' ? 'Não' : 'Off']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; awakeSelect.append(option); }
+    awakeSelect.value = keepAwakeEnabled() ? 'on' : 'off'; awakeField.append(awakeSelect);
+    awakeSelect.addEventListener('change', () => { saveAppearance({ readerKeepAwake: awakeSelect.value === 'on' }); if (keepAwakeEnabled() && comic) keepAwake.start(); else keepAwake.stop(); });
+    menu.append(backgrounds, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
   }
   function savePanelLayout(rects) {
     try { store.setPanels(comic.id, currentPage, rects); checkSaved(); observePersistence(); notify(); if (storageWarning) statusMessage('', true); return !storageWarning; }
@@ -1736,7 +1747,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   };
   window.addEventListener('pointerup', forgetPointer); window.addEventListener('pointercancel', forgetPointer);
   window.addEventListener('blur', () => { touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; if (pinch?.frame) cancelAnimationFrame(pinch.frame); pinch = undefined; resetGesture(); });
+  dialog.addEventListener('keydown', () => keepAwake.activity(), true);
   dialog.addEventListener('pointerdown', event => {
+    keepAwake.activity();
     if (event.isPrimary !== false) suppressClicksUntil = 0;
     if (event.target.closest?.('#reader-close') && event.isPrimary !== false && (event.pointerType !== 'mouse' || event.button === 0)) closeIntent = { id: event.pointerId, x: event.clientX, y: event.clientY, time: performance.now() };
     else closeIntent = undefined;
@@ -1745,7 +1758,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (event.detail > 0 && performance.now() < suppressClicksUntil) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
   function teardown({ closeDialog = true, notifyChange = true } = {}) {
-    navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false; slideHintShown = false;
+    navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false; slideHintShown = false; keepAwake.stop();
     const wasReading = Boolean(comic);
     if (comic && book && currentPage >= 0) persist(false, { observe: false });
     clearTimeout(persistenceTimer); persistenceTimer = undefined;
@@ -1881,6 +1894,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       loading = true; currentPage = -1; updateControls(); showImage(false);
       const pdf = /\.pdf$/i.test(source.name || value.name); statusMessage(pdf ? text().loadingPdf : text().loading);
       if (!dialog.open) dialog.showModal(); setImmersive(true); syncViewport(); activity(true, true); stage.focus({ preventScroll: true });
+      if (keepAwakeEnabled()) keepAwake.start();
       const budget = clamp(Number(store.state.settings.cacheMiB) || 64, 16, 256) * MiB;
       rangeBuffer = new ReadingRangeBuffer(source, budget, currentSession.signal);
       try {

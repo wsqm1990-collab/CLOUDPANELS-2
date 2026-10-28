@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { addKeepAwake } from './keep-awake-swift.mjs';
 
 const app = 'ios/App/App';
 const plist = join(app, 'Info.plist');
@@ -43,6 +44,10 @@ if (existsSync(storyboard)) {
   xml = xml.replace(/<color key="backgroundColor"[^>]*\/>/g, '<color key="backgroundColor" red="0.0118" green="0.0275" blue="0.0431" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>');
   writeFileSync(storyboard, xml);
 }
+
+// Keep the screen on while a comic is open (see keep-awake-swift.mjs).
+const delegatePath = join(app, 'AppDelegate.swift');
+writeFileSync(delegatePath, addKeepAwake(readFileSync(delegatePath, 'utf8')));
 
 // Version shown in TestFlight: the web app's version.
 const version = (() => { try { return JSON.parse(readFileSync('../package.json', 'utf8')).version; } catch { return '1.0.0'; } })();
