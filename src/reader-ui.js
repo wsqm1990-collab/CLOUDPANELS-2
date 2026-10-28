@@ -1912,6 +1912,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // Closing also releases PDF worker/document memory and the current page,
     // rather than merely emptying a counter while decoded pages remain alive.
     clearBuffer() { teardown(); },
+    // Settings → Clear thumbnails also forgets the page navigator's pictures.
+    clearThumbnails() { return pageThumbs.clear(); },
     get bufferedBytes() { return (rangeBuffer?.bytes || 0) + (rangeBuffer?.wholeBytes || 0) + (book?.bufferedBytes || 0); },
   };
   return controller;

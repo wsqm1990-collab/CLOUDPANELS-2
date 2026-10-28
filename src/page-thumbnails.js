@@ -159,6 +159,11 @@ export class PageThumbnails {
     const key = this._key(comicKey, index); this._remember(key, blob);
     try { await this.disk?.put(key, blob); } catch { /* Memory only. */ }
   }
+  /** Forget every page thumbnail (Settings → Clear thumbnails). */
+  async clear() {
+    this.memory.clear();
+    try { await this.disk?.clear(); } catch { /* Nothing stored. */ }
+  }
   /** Make (or reuse) the thumbnail of page `index` from a decoded page or its Blob. */
   async from(comicKey, index, source, { signal } = {}) {
     const existing = await this.get(comicKey, index); if (existing) return existing;
