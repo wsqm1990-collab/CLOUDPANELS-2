@@ -99,6 +99,7 @@ function settings(value, previous = defaultState().settings) {
     readerContrast: decimal(value.readerContrast, previous.readerContrast ?? 1, .6, 1.6),
     readerOverview: typeof value.readerOverview === 'boolean' ? value.readerOverview : previous.readerOverview !== false,
     readerSpread: typeof value.readerSpread === 'boolean' ? value.readerSpread : previous.readerSpread !== false,
+    readerSlideWide: typeof value.readerSlideWide === 'boolean' ? value.readerSlideWide : previous.readerSlideWide !== false,
     spoilers: typeof value.spoilers === 'boolean' ? value.spoilers : previous.spoilers};
 }
 

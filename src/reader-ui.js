@@ -1,10 +1,11 @@
 import { openComic } from './reader.js';
-import { wholePageFit, pageFit, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideTapNavigation } from './reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideTapNavigation } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
-import { stepReadingPosition } from './reader-position.js';
-import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry } from './reader-gestures.js';
+import { stepReadingPosition, spreadPartners } from './reader-position.js';
+import { PageThumbnails, pageThumbnailComicKey } from './page-thumbnails.js';
+import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry, entryEdge, stripDrag, sideDragAction, sideStep } from './reader-gestures.js';
 
 const MiB = 1024 * 1024;
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -62,9 +63,9 @@ const STRINGS = {
 };
 
 const FEATURE_STRINGS = {
-  en: { navigate: 'Page navigator', preview: 'Preview position — release the slider or choose Go to open the page.', go: 'Go', bookmarks: 'Bookmarks', addBookmark: 'Bookmark this position', noBookmarks: 'No bookmarks in this comic yet.', label: 'Label', note: 'Note', save: 'Save bookmark', edit: 'Edit', remove: 'Delete', cancel: 'Cancel', close: 'Done', appearance: 'Reading appearance', brightness: 'Brightness', contrast: 'Contrast', background: 'Background', black: 'Black', paper: 'Paper', sepia: 'Sepia', reset: 'Reset appearance', local: 'Bookmarks and notes are saved on this device and included in library backups.', width: 'Fit width', widthHint: 'Scroll vertically to read the page · Swipe sideways to turn pages', bookmarkSaved: 'Bookmark saved.', bookmarkDeleted: 'Bookmark deleted.', guided: 'Guided reading' },
-  'pt-BR': { navigate: 'Navegar pelas páginas', preview: 'Prévia da posição — solte o controle ou toque em Ir para abrir a página.', go: 'Ir', bookmarks: 'Marcadores', addBookmark: 'Marcar esta posição', noBookmarks: 'Este quadrinho ainda não tem marcadores.', label: 'Título', note: 'Anotação', save: 'Salvar marcador', edit: 'Editar', remove: 'Excluir', cancel: 'Cancelar', close: 'Concluir', appearance: 'Aparência da leitura', brightness: 'Brilho', contrast: 'Contraste', background: 'Fundo', black: 'Preto', paper: 'Papel', sepia: 'Sépia', reset: 'Restaurar aparência', local: 'Marcadores e anotações ficam neste aparelho e são incluídos no backup da biblioteca.', width: 'Ajustar à largura', widthHint: 'Role na vertical para ler a página · Deslize para os lados para trocar de página', bookmarkSaved: 'Marcador salvo.', bookmarkDeleted: 'Marcador excluído.', guided: 'Leitura guiada' },
-  es: { navigate: 'Navegar por las páginas', preview: 'Vista previa de posición — suelta el control o toca Ir para abrir la página.', go: 'Ir', bookmarks: 'Marcadores', addBookmark: 'Marcar esta posición', noBookmarks: 'Este cómic aún no tiene marcadores.', label: 'Título', note: 'Nota', save: 'Guardar marcador', edit: 'Editar', remove: 'Eliminar', cancel: 'Cancelar', close: 'Listo', appearance: 'Aspecto de lectura', brightness: 'Brillo', contrast: 'Contraste', background: 'Fondo', black: 'Negro', paper: 'Papel', sepia: 'Sepia', reset: 'Restablecer aspecto', local: 'Los marcadores y notas se guardan en este dispositivo y se incluyen en la copia de la biblioteca.', width: 'Ajustar al ancho', widthHint: 'Desplázate verticalmente para leer · Desliza a los lados para pasar páginas', bookmarkSaved: 'Marcador guardado.', bookmarkDeleted: 'Marcador eliminado.', guided: 'Lectura guiada' },
+  en: { navigate: 'Page navigator', preview: 'Tap a page to open it, or move the slider and let go.', go: 'Go', bookmarks: 'Bookmarks', addBookmark: 'Bookmark this position', noBookmarks: 'No bookmarks in this comic yet.', label: 'Label', note: 'Note', save: 'Save bookmark', edit: 'Edit', remove: 'Delete', cancel: 'Cancel', close: 'Done', appearance: 'Reading appearance', brightness: 'Brightness', contrast: 'Contrast', background: 'Background', black: 'Black', paper: 'Paper', sepia: 'Sepia', reset: 'Reset appearance', local: 'Bookmarks and notes are saved on this device and included in library backups.', width: 'Fit width', widthHint: 'Scroll vertically to read the page · Swipe sideways to turn pages', bookmarkSaved: 'Bookmark saved.', bookmarkDeleted: 'Bookmark deleted.', guided: 'Guided reading' },
+  'pt-BR': { navigate: 'Navegar pelas páginas', preview: 'Toque numa página para abrir, ou arraste o controle e solte.', go: 'Ir', bookmarks: 'Marcadores', addBookmark: 'Marcar esta posição', noBookmarks: 'Este quadrinho ainda não tem marcadores.', label: 'Título', note: 'Anotação', save: 'Salvar marcador', edit: 'Editar', remove: 'Excluir', cancel: 'Cancelar', close: 'Concluir', appearance: 'Aparência da leitura', brightness: 'Brilho', contrast: 'Contraste', background: 'Fundo', black: 'Preto', paper: 'Papel', sepia: 'Sépia', reset: 'Restaurar aparência', local: 'Marcadores e anotações ficam neste aparelho e são incluídos no backup da biblioteca.', width: 'Ajustar à largura', widthHint: 'Role na vertical para ler a página · Deslize para os lados para trocar de página', bookmarkSaved: 'Marcador salvo.', bookmarkDeleted: 'Marcador excluído.', guided: 'Leitura guiada' },
+  es: { navigate: 'Navegar por las páginas', preview: 'Toca una página para abrirla, o mueve el control y suéltalo.', go: 'Ir', bookmarks: 'Marcadores', addBookmark: 'Marcar esta posición', noBookmarks: 'Este cómic aún no tiene marcadores.', label: 'Título', note: 'Nota', save: 'Guardar marcador', edit: 'Editar', remove: 'Eliminar', cancel: 'Cancelar', close: 'Listo', appearance: 'Aspecto de lectura', brightness: 'Brillo', contrast: 'Contraste', background: 'Fondo', black: 'Negro', paper: 'Papel', sepia: 'Sepia', reset: 'Restablecer aspecto', local: 'Los marcadores y notas se guardan en este dispositivo y se incluyen en la copia de la biblioteca.', width: 'Ajustar al ancho', widthHint: 'Desplázate verticalmente para leer · Desliza a los lados para pasar páginas', bookmarkSaved: 'Marcador guardado.', bookmarkDeleted: 'Marcador eliminado.', guided: 'Lectura guiada' },
 };
 
 /** A bounded, session-only LRU for exact or contained byte intervals. */
@@ -187,6 +188,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0;
   let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [], lastTap, appFullscreenAsked = false;
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
+  // Small pictures of the pages for the page navigator (kept on this device).
+  const pageThumbs = new PageThumbnails();
+  let thumbSeedTimer;
   // Decoded pages kept ready around the current one (previous, current, next),
   // so a swipe shows the neighbouring page under the finger at once.
   const decodedPages = new Map();
@@ -202,6 +206,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     : language() === 'es'
       ? { animation: 'Animación de página', slide: 'Deslizar', fade: 'Disolver', none: 'Sin animación', speed: 'Velocidad de animación', speeds: ['Rápida', 'Suave', 'Lenta'], overview: 'Página completa · Desliza para continuar', next: 'Abriendo el siguiente cómic de la carpeta…', nextFailed: 'No se pudo abrir el siguiente cómic. Comprueba MEGA o vuelve a seleccionar el archivo local.', end: 'Fin de esta carpeta. El cómic está marcado como leído.' }
       : { animation: 'Page animation', slide: 'Slide', fade: 'Fade', none: 'No animation', speed: 'Animation speed', speeds: ['Quick', 'Smooth', 'Slow'], overview: 'Whole page · Swipe to continue', next: 'Opening the next comic in this folder…', nextFailed: 'Could not open the next comic. Check your MEGA connection or reselect the local file.', end: 'End of this folder. This comic is marked as read.' };
+  const slideLabels = () => language() === 'pt-BR'
+    ? { hint: 'Deslize para o lado para ver a página inteira', toggle: 'Página dupla em pé: ocupar a altura e deslizar', on: 'Ligado', off: 'Desligado', note: 'Com o iPad em pé, a página dupla ocupa a altura da tela: deslize para o lado para ver ela toda e, na ponta, deslize de novo para virar a página.' }
+    : language() === 'es'
+      ? { hint: 'Desliza hacia el lado para ver la página entera', toggle: 'Página doble en vertical: ocupar el alto y deslizar', on: 'Activado', off: 'Desactivado', note: 'Con el iPad en vertical, la página doble ocupa el alto de la pantalla: desliza hacia el lado para verla entera y, en el borde, desliza otra vez para pasar la página.' }
+      : { hint: 'Slide sideways to see the whole page', toggle: 'Double pages upright: fill the height and slide', on: 'On', off: 'Off', note: 'With the iPad upright, a double page fills the height of the screen: slide sideways to see all of it, and at its edge slide again to turn the page.' };
+  let slideHintShown = false;
   let viewportFrame, viewportWidth = 0, viewportHeight = 0, suppressClicksUntil = 0, closeIntent;
   let persistenceTimer, persistenceGeneration = 0;
   const activePointers = new Set();
@@ -419,6 +429,22 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     return wholePageFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width < available.width * .92;
   }
   function guidedFitMode() { return guidedWholeFills() ? 'width' : 'whole'; }
+  // A double page with the iPad upright fills the screen's height and slides
+  // sideways (see slideFitMode), unless turned off in Page fit.
+  const slideWideEnabled = () => store.state.settings.readerSlideWide !== false;
+  function layoutMode(width = imageWidth, height = imageHeight) {
+    if (editing) return 'whole';
+    if (guided) return guidedFitMode();
+    const available = availableSize();
+    return slideFitMode({ mode: fitMode(), imageWidth: width, imageHeight: height, availableWidth: available.width, availableHeight: available.height, slideWide: slideWideEnabled() });
+  }
+  // The page reaches past the sides of the screen at its normal size (a double
+  // page upright, or Fill screen on a phone): sideways drags slide across it,
+  // and past its edge the same drag pulls the neighbouring page in.
+  function slideable() {
+    if (!book || currentPage < 0 || guided || editing || panMode || !imageWidth || !imageHeight || isZoomed()) return false;
+    return scrollLimits().maxLeft > slideThreshold(availableSize().width);
+  }
   // Two-page spread: in landscape, with Whole page fit and outside Panel view,
   // facing pages are shown side by side like an open comic. The cover is alone.
   const spreadEnabled = () => store.state.settings.readerSpread !== false;
@@ -427,7 +453,6 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const width = stage.clientWidth || window.innerWidth, height = stage.clientHeight || window.innerHeight;
     return width > height * 1.1;
   }
-  const spreadStart = index => index <= 0 ? 0 : index % 2 ? index : index - 1;
   async function composeSpread(first, second, signal) {
     const left = rtl() ? second : first, right = rtl() ? first : second;
     const height = Math.min(Math.max(left.height, right.height), 3000);
@@ -449,7 +474,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function baselineWidth() {
     const available = availableSize(), rect = guided && guidedMode === 'panels' && !editing && !overview ? panels()[panel] : undefined;
     if (rect) return guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect, margin: guidedPanelMargin(available.width, available.height) })?.width || fitWidth();
-    return pageFit({ mode: editing ? 'whole' : guided ? guidedFitMode() : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width;
+    return pageFit({ mode: layoutMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width;
   }
   function swipeAllowed() { return canSwipePages({ pageWidth, baselineWidth: baselineWidth(), browserScale: window.visualViewport?.scale || 1, panning: panMode, guided, guidedReady: guided && !analysisPending, editing, popup: Boolean(popup), loading: loading || turning }); }
   function isZoomed() { const baseline = baselineWidth(); return !baseline || Math.abs(pageWidth - baseline) > Math.max(1, baseline * .035) || (window.visualViewport?.scale || 1) > 1.035; }
@@ -584,11 +609,15 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     else if (guided && guidedMode === 'panels' && !overview && panels()[panel]) overlay.append(drawRect(panels()[panel], panel, true));
   }
   function cancelCamera() { cameraGeneration++; if (cameraFrame) cancelAnimationFrame(cameraFrame); cameraFrame = undefined; dialog.classList.remove('reader-guided-moving'); }
-  function layoutPage({ smooth = false, keepZoom = false, preserveWidthPosition = false, fromBottom = false } = {}) {
+  function layoutPage({ smooth = false, keepZoom = false, preserveWidthPosition = false, fromBottom = false, enter = 1, keepCenter = false } = {}) {
     if (!imageWidth || !imageHeight || currentPage < 0) return;
     stopMotion();
-    const widthViewY = preserveWidthPosition && !guided && !editing && fitMode() === 'width' && pageWidth > 0
+    const widthViewY = preserveWidthPosition && !guided && !editing && layoutMode() === 'width' && pageWidth > 0
       ? Math.max(0, (stage.scrollTop - wrap.offsetTop) / (pageWidth * imageHeight / imageWidth)) : null;
+    // What sits in the middle of the screen stays there when the screen turns
+    // or a zoom ends (fraction of the page's width), for pages that slide.
+    const centerX = (preserveWidthPosition || keepCenter) && !guided && !editing && pageWidth > 0
+      ? (stage.scrollLeft + stage.clientWidth / 2 - wrap.offsetLeft) / pageWidth : null;
     cancelCamera();
     dialog.classList.toggle('reader-overlay-controls', !editing);
     dialog.classList.toggle('reader-guided', guided && !editing);
@@ -628,12 +657,20 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (!keepZoom) {
         const available = availableSize();
         const guidedFill = guidedWholeFills();
-        const fit = pageFit({ mode: editing ? 'whole' : guided ? guidedFitMode() : fitMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height });
+        const fit = pageFit({ mode: layoutMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height });
         setPageWidth(fit.width);
         // A new page always starts at its top. Only reading backwards through a
         // filled page with the keyboard or in Panel view starts at its bottom.
         const topY = fromBottom && (guidedFill || ['width', 'fill', 'screen'].includes(fitMode())) && widthViewY === null ? wrap.offsetTop + fit.height : guidedFill ? 0 : widthViewY !== null ? wrap.offsetTop + widthViewY * fit.height : !guided && !editing && ['width', 'fill', 'screen'].includes(fitMode()) ? 0 : Math.max(0, (fit.height - available.height) / 2);
-        scrollToPosition(Math.max(0, (fit.width - available.width) / 2), topY, smooth && guidedFill);
+        // A page wider than the screen starts at the edge it is entered from
+        // (its left edge when reading forward); others stay centred.
+        const overflowX = fit.width - available.width;
+        let left = Math.max(0, overflowX / 2);
+        if (!guided && !editing && overflowX > slideThreshold(available.width)) {
+          left = centerX !== null ? clamp(centerX * fit.width - available.width / 2, 0, overflowX)
+            : entryEdge({ direction: enter, rtl: rtl() }) === 'left' ? 0 : overflowX;
+        }
+        scrollToPosition(left, topY, smooth && guidedFill);
       }
       paintPanels();
     }
@@ -671,9 +708,17 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, panel);
     }, spreadEnabled());
     toggle.setAttribute('aria-pressed', String(spreadEnabled()));
+    const slide = slideLabels(), slideNote = document.createElement('p'); slideNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    slideNote.textContent = slide.note;
+    const slideRow = document.createElement('div'); slideRow.className = 'row'; menu.append(slideNote, slideRow);
+    const slideToggle = popupButton(slideRow, `${slide.toggle}: ${slideWideEnabled() ? slide.on : slide.off}`, () => {
+      store.setSettings({ readerSlideWide: !slideWideEnabled() }); checkSaved(); observePersistence(); hidePopup(); layoutPage(); updateControls();
+    }, slideWideEnabled());
+    slideToggle.id = 'reader-slide-wide'; slideToggle.setAttribute('aria-pressed', String(slideWideEnabled()));
   }
   function hidePopup() {
     const previous = popup; popup = undefined; previous?.remove();
+    try { previous?._cleanup?.(); } catch { /* Already released. */ }
     if (previous?._returnFocus?.isConnected && dialog.open) previous._returnFocus.focus({ preventScroll: true });
     applyAppearance(); syncGestureMode(); syncQuickNavigation();
   }
@@ -704,22 +749,116 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const row = document.createElement('div'); row.className = 'row';
     const numberLabel = document.createElement('label'); numberLabel.className = 'reader-navigator-number'; numberLabel.textContent = text().page;
     const number = document.createElement('input'); number.type = 'number'; number.min = '1'; number.max = String(book.pageCount); number.inputMode = 'numeric'; number.value = slider.value; number.setAttribute('aria-label', text().page); numberLabel.append(number);
-    const preview = value => {
+    // A strip of page thumbnails, like the Panels app. Thumbnails already made
+    // on this device show at once; the others are made one at a time, only for
+    // the pages scrolled into view (each needs that page from the comic).
+    menu.classList.add('reader-navigator'); menu.style.width = 'min(880px, calc(100% - 24px))';
+    const strip = document.createElement('div'); strip.className = 'reader-thumb-strip'; strip.id = 'reader-thumb-strip';
+    const comicKey = pageThumbnailComicKey(comic), activeBook = book, cells = [], urls = new Set(), wanted = new Set(), visible = new Set();
+    const thumbs = new AbortController(), shown = new Set(spreadPages.length > 1 ? spreadPages : [currentPage]);
+    for (let index = 0; index < book.pageCount; index++) {
+      const cell = document.createElement('button'); cell.type = 'button'; cell.className = 'reader-thumb'; cell.dataset.page = String(index);
+      cell.setAttribute('aria-label', text().pageOf(index + 1, book.pageCount));
+      const frame = document.createElement('span'); frame.className = 'reader-thumb-frame';
+      const placeholder = document.createElement('span'); placeholder.className = 'reader-thumb-placeholder'; placeholder.textContent = String(index + 1);
+      const picture = document.createElement('img'); picture.alt = ''; picture.draggable = false; picture.decoding = 'async';
+      const caption = document.createElement('span'); caption.className = 'reader-thumb-number'; caption.textContent = String(index + 1);
+      frame.append(placeholder, picture); cell.append(frame, caption);
+      if (shown.has(index)) { cell.classList.add('current'); cell.setAttribute('aria-current', 'page'); }
+      cell.addEventListener('click', () => {
+        if (mySession !== serial || book !== activeBook || loading || editing) return;
+        hidePopup(); void showPage(index);
+      });
+      cells.push(cell);
+    }
+    // Right-to-left comics run from the right, like their pages.
+    strip.append(...(rtl() ? [...cells].reverse() : cells));
+    const centre = (index, smooth = false) => {
+      const cell = cells[index]; if (!cell || !strip.clientWidth) return;
+      strip.scrollTo({ left: Math.max(0, cell.offsetLeft - (strip.clientWidth - cell.offsetWidth) / 2), behavior: smooth ? 'smooth' : 'auto' });
+    };
+    const display = (index, blob) => {
+      const cell = cells[index], picture = cell?.querySelector('img');
+      if (!picture || picture.getAttribute('src') || thumbs.signal.aborted) return;
+      const url = URL.createObjectURL(blob); urls.add(url);
+      picture.onload = () => cell.classList.add('loaded'); picture.onerror = () => cell.classList.add('failed');
+      picture.src = url;
+    };
+    const thumbnailFor = async index => {
+      const cached = await pageThumbs.get(comicKey, index); if (cached) return cached;
+      thumbs.signal.throwIfAborted();
+      const ready = decodedPages.get(index)?.candidate?.decodedImage;
+      if (ready?.naturalWidth) return pageThumbs.from(comicKey, index, ready, { signal: thumbs.signal });
+      const blob = await activeBook.page(index, { signal: thumbs.signal });
+      return pageThumbs.from(comicKey, index, blob, { signal: thumbs.signal });
+    };
+    let pumping = false;
+    const pump = async () => {
+      if (pumping || !comicKey) return;
+      pumping = true;
+      try {
+        while (!thumbs.signal.aborted && wanted.size) {
+          // Nearest to the middle of the visible pages first.
+          const seen = [...visible].sort((a, b) => a - b), middle = seen.length ? seen[Math.floor(seen.length / 2)] : currentPage;
+          const index = [...wanted].reduce((best, value) => Math.abs(value - middle) < Math.abs(best - middle) ? value : best);
+          wanted.delete(index);
+          const cell = cells[index];
+          if (!cell || cell.classList.contains('loaded') || cell.classList.contains('failed') || cell.querySelector('img').getAttribute('src')) continue;
+          cell.classList.add('loading');
+          try { const blob = await thumbnailFor(index); if (blob) display(index, blob); else cell.classList.add('failed'); }
+          catch (error) { if (thumbs.signal.aborted || error?.name === 'AbortError') return; cell.classList.add('failed'); }
+          finally { cell.classList.remove('loading'); }
+        }
+      } finally { pumping = false; }
+    };
+    const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const index = Number(entry.target.dataset.page);
+        if (entry.isIntersecting) { visible.add(index); wanted.add(index); } else { visible.delete(index); wanted.delete(index); }
+      }
+      void pump();
+    }, { root: strip, rootMargin: '0px 120px' }) : null;
+    if (observer) for (const cell of cells) observer.observe(cell);
+    else { for (let index = Math.max(0, currentPage - 3); index <= Math.min(book.pageCount - 1, currentPage + 3); index++) wanted.add(index); void pump(); }
+    menu._cleanup = () => { thumbs.abort(); observer?.disconnect(); for (const url of urls) URL.revokeObjectURL(url); urls.clear(); };
+    const preview = (value, { follow = false } = {}) => {
       const page = clamp(Math.floor(Number(value)) || 1, 1, book.pageCount);
       slider.value = String(page); number.value = String(page); output.textContent = text().pageOf(page, book.pageCount); slider.setAttribute('aria-valuetext', output.textContent);
+      cells.forEach((cell, index) => cell.classList.toggle('previewed', index === page - 1 && !shown.has(index)));
+      if (follow) centre(page - 1);
     };
     const go = () => {
       if (mySession !== serial || !book || loading || editing) return;
       const page = clamp(Math.floor(Number(number.value)) || 1, 1, book.pageCount) - 1;
       hidePopup(); void showPage(page);
     };
-    // Preview is metadata only. A selected page is fetched on release or Go;
-    // moving the slider never opens archives or requests hidden thumbnails.
-    slider.addEventListener('input', () => preview(slider.value)); slider.addEventListener('change', go);
-    number.addEventListener('input', () => { if (number.value) preview(number.value); });
+    // The slider shows where it points in the strip; letting go opens that page.
+    if (rtl()) slider.style.direction = 'rtl';
+    slider.addEventListener('input', () => preview(slider.value, { follow: true })); slider.addEventListener('change', go);
+    number.addEventListener('input', () => { if (number.value) preview(number.value, { follow: true }); });
     number.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); go(); } });
     row.append(numberLabel); popupButton(row, labels.go, go, true); popupButton(row, labels.cancel, hidePopup);
-    menu.append(output, slider, row); preview(slider.value); slider.focus({ preventScroll: true });
+    menu.append(output, strip, slider, row); preview(slider.value);
+    centre(currentPage); requestAnimationFrame(() => { if (popup === menu) centre(currentPage); });
+    slider.focus({ preventScroll: true });
+  }
+  // Keep a thumbnail of the page being read (made from the page already on
+  // screen, once the reader has settled on it), for the page navigator.
+  function scheduleThumbnailSeed(attempt = 0) {
+    clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined;
+    const comicKey = pageThumbnailComicKey(comic);
+    if (!comicKey || currentPage < 0 || spreadPages.length > 1 || attempt > 3) return;
+    const mySession = serial, page = currentPage, url = currentURL;
+    thumbSeedTimer = setTimeout(async () => {
+      thumbSeedTimer = undefined;
+      if (mySession !== serial || currentPage !== page || currentURL !== url || spreadPages.length > 1) return;
+      if (loading || turning || gesture || pinch || pager || motion || popup) { scheduleThumbnailSeed(attempt + 1); return; }
+      try {
+        if (await pageThumbs.get(comicKey, page)) return;
+        if (mySession !== serial || currentPage !== page || currentURL !== url || !image.complete || !image.naturalWidth) return;
+        await pageThumbs.from(comicKey, page, image);
+      } catch { /* Made again when the navigator needs it. */ }
+    }, 1200);
   }
   function bookmarkLocation(value) {
     const pageLabel = text().pageOf(value.page + 1, book?.pageCount || value.pageCount);
@@ -1077,11 +1216,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => { signal.removeEventListener('abort', abort); reject(error); });
     });
   }
-  async function showPage(index, targetPanel = 0, { prompt = true, targetOverview = false, animate = false, direction = 1, pager: fromPager = false } = {}) {
+  async function showPage(index, targetPanel = 0, { prompt = true, targetOverview = false, animate = false, direction = 1, pager: fromPager = false, spread = 'jump' } = {}) {
     if (!book || !comic || editing) return;
     index = clamp(Math.floor(index), 0, book.pageCount - 1);
     const spreading = spreadActive();
-    if (spreading) index = spreadStart(index);
     if (!fromPager) pagerAbort();
     const fromBottom = guidedFillFromBottom; guidedFillFromBottom = false;
     pageTransition.cancel(); if (!fromPager) turning = false; cancelAnalysis(); cancelCamera(); stopMotion(); clearStretch(); panMode = false; positionCommitted = false;
@@ -1105,16 +1243,21 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       candidate = await waitFor(entry.promise, request.signal);
       const blob = candidate.blob;
       let pairedPages = [index];
-      if (spreading && index > 0 && index + 1 < activeBook.pageCount && candidate.height > candidate.width) {
-        try {
-          const partnerEntry = decodedEntry(index + 1);
-          const partner = partnerEntry ? await waitFor(partnerEntry.promise, request.signal) : null;
-          if (partner && partner.height > partner.width) {
-            const combined = await composeSpread(candidate, partner, request.signal);
+      // Landscape two-page view: pair this upright page with an upright
+      // neighbour (see spreadPartners); the cover and double pages stand alone.
+      if (spreading && candidate.height > candidate.width) {
+        for (const other of spreadPartners({ index, pageCount: activeBook.pageCount, mode: spread })) {
+          try {
+            const partnerEntry = decodedEntry(other);
+            const partner = partnerEntry ? await waitFor(partnerEntry.promise, request.signal) : null;
+            if (!partner || partner.height <= partner.width) continue;
+            const first = Math.min(index, other);
+            const combined = await composeSpread(first === index ? candidate : partner, first === index ? partner : candidate, request.signal);
             candidate = await decodedURL(combined, request.signal);
-            pairedPages = [index, index + 1];
-          }
-        } catch (error) { if (request.signal.aborted) throw error; }
+            pairedPages = [first, first + 1]; index = first;
+            break;
+          } catch (error) { if (request.signal.aborted) throw error; }
+        }
       }
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) { release(candidate); return; }
       spreadPages = pairedPages;
@@ -1124,13 +1267,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       image.src = currentURL; showImage(true); image.alt = spreadPages.length > 1 ? `${text().pageOf(index + 1, activeBook.pageCount)} + ${index + 2}` : text().pageOf(index + 1, activeBook.pageCount);
       imageWidth = candidate.width; imageHeight = candidate.height;
       currentPage = index; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
-      layoutPage({ fromBottom });
+      layoutPage({ fromBottom, enter: direction });
       if (guided) {
         const rects = await obtainPagePanels({ signal: request.signal, imageElement: candidate.decodedImage });
         if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
         panel = resolvePanelIndex(targetPanel, rects.length); overview = Boolean(targetOverview && rects.length);
       }
-      loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom }); persist(); updateControls(); normalStatus();
+      loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom, enter: direction }); persist(); updateControls(); normalStatus();
       if (snapshot) await pageTransition.play({ snapshot, style: pageAnimation(), duration: pageDuration(), direction: direction * (rtl() ? -1 : 1) });
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
       if (!fromPager) turning = false;
@@ -1138,8 +1281,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       wakeRestore();
       if (index === 0 && onCoverFirstPage) void Promise.resolve().then(() => onCoverFirstPage(comic, blob)).catch(() => {});
       if (guided && guidedFallbackPage === currentPage) showHint(guidedLabels().fallback, 6500);
+      else if (!slideHintShown && slideable()) { slideHintShown = true; showHint(slideLabels().hint, 3200); }
       trimDecoded(around(index));
-      schedulePrefetch();
+      schedulePrefetch(); scheduleThumbnailSeed();
     } catch (error) {
       release(candidate);
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
@@ -1170,6 +1314,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   async function move(delta, { stepScroll = false } = {}) {
     if (!book || currentPage < 0 || loading || turning || editing || popup || analysisPending || !positionCommitted) return;
     stopMotion(); clearStretch();
+    // A page wider than the screen (a double page upright): taps, buttons and
+    // arrow keys first move across it and turn the page once its edge shows.
+    if (slideable()) {
+      const target = sideStep({ scrollLeft: stage.scrollLeft, maxLeft: scrollLimits().maxLeft, viewWidth: stage.clientWidth, delta, direction: rtl() ? 'rtl' : 'ltr' });
+      if (target !== null) { scrollToPosition(target, stage.scrollTop, true); return; }
+    }
     // In Panel view a filled landscape page is read top to bottom before
     // turning; elsewhere only the keyboard's Page Down/Space scrolls first.
     // Taps and swipes always turn the page, and the new page starts at its top.
@@ -1182,10 +1332,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     }
     if (spreadActive() && !guided && !isZoomed()) {
       const last = spreadPages.length ? spreadPages[spreadPages.length - 1] : currentPage;
-      const target = delta > 0 ? last + 1 : spreadStart(currentPage - 1);
+      const target = delta > 0 ? last + 1 : currentPage - 1;
       if (delta > 0 && target >= book.pageCount) return endOfBook();
       if (delta < 0 && currentPage <= 0) return;
-      return showPage(target, 0, { animate: true, direction: delta });
+      return showPage(target, 0, { animate: true, direction: delta, spread: delta > 0 ? 'forward' : 'backward' });
     }
     const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta, showOverview: store.state.settings.readerOverview !== false });
     if (step.kind === 'panel' || step.kind === 'overview') {
@@ -1270,10 +1420,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function pagerAllowed({ zoomed = false } = {}) {
     return Boolean(book && comic && currentPage >= 0 && !guided && !editing && !popup && !panMode && !loading && !turning && !analysisPending && positionCommitted && !spreadActive() && (zoomed || swipeAllowed()));
   }
-  function neighbourPlacement(candidate) {
+  // physical: +1 when the page comes in from the right, -1 from the left.
+  function neighbourPlacement(candidate, physical = 1) {
     const available = availableSize(), style = getComputedStyle(stage);
-    const fit = pageFit({ mode: fitMode(), imageWidth: candidate.width, imageHeight: candidate.height, availableWidth: available.width, availableHeight: available.height });
-    return neighbourGeometry({ fit, available, padding: { left: parseFloat(style.paddingLeft) || 0, top: parseFloat(style.paddingTop) || 0 } });
+    const fit = pageFit({ mode: layoutMode(candidate.width, candidate.height), imageWidth: candidate.width, imageHeight: candidate.height, availableWidth: available.width, availableHeight: available.height });
+    const slides = fit.width - available.width > slideThreshold(available.width);
+    return neighbourGeometry({ fit, available, padding: { left: parseFloat(style.paddingLeft) || 0, top: parseFloat(style.paddingTop) || 0 }, align: slides ? (physical > 0 ? 'left' : 'right') : 'center' });
   }
   function pagerBegin() {
     stopMotion(); clearStretch();
@@ -1297,7 +1449,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const entry = decodedEntry(index);
     const apply = candidate => {
       if (pager !== p || p.index !== index) return;
-      const place = neighbourPlacement(candidate); if (!place) return;
+      const place = neighbourPlacement(candidate, rtl() ? -delta : delta); if (!place) return;
       Object.assign(neighbourImage.style, { left: `${place.left}px`, top: `${place.top}px`, width: `${place.width}px`, height: `${place.height}px` });
       neighbourImage.src = candidate.url; neighbourLayer.classList.add('has-image'); p.ready = true;
     };
@@ -1364,7 +1516,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       return;
     }
     if (pager !== p) return;
-    await showPage(p.index, 0, { pager: true });
+    await showPage(p.index, 0, { pager: true, direction: p.delta });
     if (pager !== p) return;
     // The new page sits exactly where the sliding copy shows it; swap them
     // once it is painted so nothing flickers.
@@ -1396,12 +1548,23 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function resetGesture() {
     const g = gesture; gesture = undefined;
     if (g && stage.hasPointerCapture?.(g.id)) { try { stage.releasePointerCapture(g.id); } catch { /* Already released. */ } }
-    if (g?.turn === 'drag' && pager && !pager.animating) pagerFinish(pager);
+    if ((g?.turn === 'drag' || g?.axis === 'strip') && pager && !pager.animating) pagerFinish(pager);
   }
+  // A sideways drag on a page wider than the screen: the page slides until its
+  // edge shows, then the same movement pulls the neighbouring page in beside it.
+  function stripMove(g, dx) {
+    const { scroll, offset } = stripDrag({ startScroll: g.stripStart, dx, maxLeft: g.limits.maxLeft });
+    renderScroll(scroll, clamp(g.startY, 0, g.limits.maxTop), g.limits);
+    if (offset && !pager) pagerBegin();
+    if (pager) pagerDrag(offset);
+  }
+  // 'y' scrolls up and down, 'pan' slides sideways across a wide page, 'free'
+  // moves a zoomed page in any direction; past an edge the page stretches.
   function dragScroll(g, event) {
     const lim = g.limits, band = (value, max, size) => value < 0 ? rubberBand(value, size) : value > max ? max + rubberBand(value - max, size) : value;
-    const x = g.axis === 'free' ? band(g.startX - (event.clientX - g.x0), lim.maxLeft, stage.clientWidth) : clamp(g.startX, 0, lim.maxLeft);
-    renderScroll(x, band(g.startY - (event.clientY - g.y0), lim.maxTop, stage.clientHeight), lim);
+    const x = g.axis === 'free' || g.axis === 'pan' ? band(g.startX - (event.clientX - g.x0), lim.maxLeft, stage.clientWidth) : clamp(g.startX, 0, lim.maxLeft);
+    const y = g.axis === 'pan' ? clamp(g.startY, 0, lim.maxTop) : band(g.startY - (event.clientY - g.y0), lim.maxTop, stage.clientHeight);
+    renderScroll(x, y, lim);
   }
   function requestAppFullscreen() {
     // Installed app: if the system bars are still showing, ask once per app
@@ -1414,7 +1577,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   function beginPinch() {
     const g = gesture; gesture = undefined;
-    if (g?.turn === 'drag' && pager && !pager.animating) void pagerRelease(0, 0);
+    if ((g?.turn === 'drag' || g?.axis === 'strip') && pager && !pager.animating) void pagerRelease(0, 0);
     stopMotion(); clearStretch();
     if (!book || currentPage < 0 || loading || editing || popup || turning || touchPoints.size !== 2) { pinch = undefined; return; }
     const [a, b] = [...touchPoints.values()];
@@ -1438,10 +1601,16 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (pinch?.frame) cancelAnimationFrame(pinch.frame);
     pinch = undefined; suppressClicksUntil = performance.now() + 600;
     // Let go smaller than the fitted page: return to the fitted page.
-    if (book && currentPage >= 0 && !editing && !loading && pageWidth < baselineWidth() * .98) layoutPage();
+    if (book && currentPage >= 0 && !editing && !loading && pageWidth < baselineWidth() * .98) layoutPage({ keepCenter: true });
   }
   function settleGesture(g) {
-    if (g.turn === 'drag') void pagerRelease(0, 0); else glide(0, 0);
+    if (g.turn === 'drag' || (g.axis === 'strip' && pager)) void pagerRelease(0, 0); else glide(0, 0);
+  }
+  // Which way a sideways drag goes on a page wider than the screen.
+  function sideways(g, dx) {
+    if (pagerAllowed()) { g.axis = 'strip'; g.stripStart = clamp(g.startX, 0, g.limits.maxLeft); clearStretch(); return; }
+    if (sideDragAction({ dx, canPan: true, atLeft: g.atLeft, atRight: g.atRight }) === 'pan') g.axis = 'pan';
+    else { g.axis = 'x'; g.turn = 'release'; }
   }
   stage.addEventListener('pointerdown', event => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -1458,7 +1627,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     gesture = { id: event.pointerId, x0: event.clientX, y0: event.clientY, t0: now, samples: [{ t: now, x: event.clientX, y: event.clientY }], axis: null, turn: null, distance: 0,
       limits, startX: raw(caught.x, limits.maxLeft, stage.clientWidth), startY: raw(caught.y, limits.maxTop, stage.clientHeight), caught: caughtMoving,
       session: serial, page: pageSerial, panel, guided, overview, scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop,
-      atLeft: caught.x <= 1, atRight: caught.x >= limits.maxLeft - 1 };
+      atLeft: caught.x <= 6, atRight: caught.x >= limits.maxLeft - 6, canPanX: slideable() };
   });
   stage.addEventListener('pointermove', event => {
     if (touchPoints.has(event.pointerId)) touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -1472,15 +1641,18 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // if it soon becomes clearly sideways, undo the scroll and turn instead.
     if (g.axis === 'y' && !g.relocked && now - g.lockedAt < 260 && Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy) * 1.6 && !(isZoomed() || panMode)) {
       g.relocked = true; renderScroll(clamp(g.startX, 0, g.limits.maxLeft), clamp(g.startY, 0, g.limits.maxTop), g.limits); clearStretch();
-      g.axis = 'x'; g.turn = pagerAllowed() ? 'drag' : 'release';
-      if (g.turn === 'drag') pagerBegin();
+      if (g.canPanX) sideways(g, dx);
+      else { g.axis = 'x'; g.turn = pagerAllowed() ? 'drag' : 'release'; if (g.turn === 'drag') pagerBegin(); }
     }
     if (!g.axis) {
       const zoomed = isZoomed() || panMode;
       const axis = lockAxis({ dx, dy, canScrollY: g.limits.maxTop > 1, zoomed });
       if (!axis) return;
       g.axis = axis; g.lockedAt = now;
-      if (axis === 'x') g.turn = pagerAllowed() ? 'drag' : 'release';
+      // A page wider than the screen slides across first, then the same drag
+      // pulls the neighbouring page in (see stripMove).
+      if (axis === 'x' && g.canPanX) sideways(g, dx);
+      else if (axis === 'x') g.turn = pagerAllowed() ? 'drag' : 'release';
       // Zoomed in and already at a side: pulling further outwards turns the page.
       if (axis === 'free' && !panMode && Math.abs(dx) > Math.abs(dy) * 1.2 && ((dx > 0 && g.atLeft) || (dx < 0 && g.atRight)) && pagerAllowed({ zoomed: true })) { g.axis = 'x'; g.turn = 'drag'; }
       // Touch pointers already stay with the page (implicit capture). Capturing
@@ -1490,7 +1662,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (g.turn === 'drag') pagerBegin();
     }
     event.preventDefault();
-    if (g.axis === 'y' || g.axis === 'free') dragScroll(g, event);
+    if (g.axis === 'y' || g.axis === 'free' || g.axis === 'pan') dragScroll(g, event);
+    else if (g.axis === 'strip') stripMove(g, dx);
     else if (g.axis === 'x' && g.turn === 'drag') pagerDrag(dx);
   });
   function handleTap(g, event, now) {
@@ -1509,7 +1682,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       // tap still shows or hides the controls after a short wait.
       if (lastTap && now - lastTap.time < 300 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40) {
         clearTimeout(lastTap.timer); lastTap = undefined;
-        if (book && currentPage >= 0 && !loading) { if (isZoomed()) layoutPage(); else zoom(2.2, { x: event.clientX, y: event.clientY }); syncGestureMode(); }
+        if (book && currentPage >= 0 && !loading) { if (isZoomed()) layoutPage({ keepCenter: true }); else zoom(2.2, { x: event.clientX, y: event.clientY }); syncGestureMode(); }
         return;
       }
       if (lastTap) clearTimeout(lastTap.timer);
@@ -1526,7 +1699,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     gesture = undefined;
     try { if (stage.hasPointerCapture?.(event.pointerId)) stage.releasePointerCapture(event.pointerId); } catch { /* Already released. */ }
     const now = performance.now(), velocity = releaseVelocity(g.samples, now), dx = event.clientX - g.x0;
-    if (g.axis === 'y' || g.axis === 'free') { suppressClicksUntil = now + 450; glide(g.axis === 'free' ? -velocity.x : 0, -velocity.y); return; }
+    if (g.axis === 'y' || g.axis === 'free' || g.axis === 'pan') { suppressClicksUntil = now + 450; glide(g.axis === 'y' ? 0 : -velocity.x, g.axis === 'pan' ? 0 : -velocity.y); return; }
+    if (g.axis === 'strip') {
+      suppressClicksUntil = now + 600;
+      // Pulled past the page's edge: turn, or spring back to the edge.
+      if (pager?.offset) { void pagerRelease(pager.offset, velocity.x); return; }
+      if (pager) pagerFinish(pager);
+      glide(-velocity.x, 0); return;
+    }
     if (g.axis === 'x') {
       suppressClicksUntil = now + 600;
       if (g.turn === 'drag') { void pagerRelease(dx, velocity.x); return; }
@@ -1565,7 +1745,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (event.detail > 0 && performance.now() < suppressClicksUntil) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
   function teardown({ closeDialog = true, notifyChange = true } = {}) {
-    navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false;
+    navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false; slideHintShown = false;
     const wasReading = Boolean(comic);
     if (comic && book && currentPage >= 0) persist(false, { observe: false });
     clearTimeout(persistenceTimer); persistenceTimer = undefined;
@@ -1575,7 +1755,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
     comic = undefined; currentPage = -1; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
-    clearTimeout(restoreTimer); clearTimeout(hintTimer); fitHint.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
+    clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;
     wrap.style.removeProperty('width'); wrap.style.removeProperty('min-height'); wrap.style.removeProperty('margin-top');
