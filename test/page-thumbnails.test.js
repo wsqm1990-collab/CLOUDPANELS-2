@@ -61,3 +61,16 @@ test('memory keeps only the most recent thumbnails', async () => {
   assert.equal(thumbs.has('comic', 1), false);
   assert.equal(thumbs.has('comic', 4), true);
 });
+
+test('clearing thumbnails forgets them in memory and on the device', async () => {
+  const disk = fakeDisk(); disk.clear = async () => { disk.rows.clear(); };
+  const thumbs = new PageThumbnails({ disk, make: async () => ({ blob: jpeg('p') }) });
+  await thumbs.from('comic', 2, 'page');
+  await thumbs.clear();
+  assert.equal(thumbs.has('comic', 2), false);
+  assert.equal(await thumbs.get('comic', 2), null);
+  // A device storage without a clear still empties memory.
+  const plain = new PageThumbnails({ disk: null, make: async () => ({ blob: jpeg('p') }) });
+  await plain.from('comic', 1, 'page'); await plain.clear();
+  assert.equal(plain.has('comic', 1), false);
+});
