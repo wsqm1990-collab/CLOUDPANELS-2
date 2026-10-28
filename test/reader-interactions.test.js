@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { wholePageFit, pageFit, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation } from '../src/reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation } from '../src/reader-interactions.js';
 
 test('a portrait comic fits entirely inside a short landscape viewport', () => {
   const result = wholePageFit({ imageWidth: 1800, imageHeight: 2700, availableWidth: 1000, availableHeight: 600 });
@@ -259,4 +259,31 @@ test('Panel view leaves a little room around each panel so its border is never c
   const tight = guidedPanelFit({ imageWidth: 1988, imageHeight: 3056, availableWidth: 412, availableHeight: 915, panel: { x: .03, y: .1, width: .94, height: .6 } });
   assert.ok(Math.abs(tight.width * .94 - 412) < .001);
   assert.equal(guidedPanelMargin(0, 100), 0);
+});
+
+test('a double page with the iPad upright fills the screen height and reaches past the sides', () => {
+  const spread = { imageWidth: 3976, imageHeight: 3056, availableWidth: 810, availableHeight: 1080 };
+  assert.equal(slideFitMode({ ...spread, mode: 'whole' }), 'height');
+  assert.equal(slideFitMode({ ...spread, mode: 'width' }), 'height');
+  // Fill modes already fill the height; Panel view and the setting being off keep the mode.
+  assert.equal(slideFitMode({ ...spread, mode: 'fill' }), 'fill');
+  assert.equal(slideFitMode({ ...spread, mode: 'screen' }), 'screen');
+  assert.equal(slideFitMode({ ...spread, mode: 'whole', slideWide: false }), 'whole');
+  // Single pages, and any page on a landscape screen, are left alone.
+  assert.equal(slideFitMode({ ...spread, imageWidth: 1988, mode: 'whole' }), 'whole');
+  assert.equal(slideFitMode({ ...spread, availableWidth: 1080, availableHeight: 810, mode: 'whole' }), 'whole');
+  assert.equal(slideFitMode({ ...spread, imageHeight: NaN, mode: 'whole' }), 'whole');
+  const fit = pageFit({ ...spread, mode: 'height' });
+  assert.equal(fit.height, 1080);
+  assert.ok(Math.abs(fit.width - 3976 * 1080 / 3056) < 1e-9);
+  assert.ok(fit.width - spread.availableWidth > slideThreshold(spread.availableWidth));
+  // Fill gives the same size for this page.
+  assert.deepEqual(pageFit({ ...spread, mode: 'fill' }), fit);
+  assert.deepEqual(pageFit({ ...spread, mode: 'height', availableHeight: 0 }), { width: 0, height: 0 });
+});
+
+test('only a real overhang makes a page slide sideways', () => {
+  assert.equal(slideThreshold(810), 48.6);
+  assert.equal(slideThreshold(300), 24);
+  assert.equal(slideThreshold(NaN), 24);
 });

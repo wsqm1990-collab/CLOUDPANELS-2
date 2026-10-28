@@ -126,12 +126,73 @@ export function stepScroll({ pos, vel }, dt, { min = 0, max = 0, deceleration = 
   return { pos, vel, done: false };
 }
 
-/** Where to put a neighbouring page so it matches how the reader will lay it out. */
-export function neighbourGeometry({ fit, available, padding = { left: 0, top: 0 } } = {}) {
+/**
+ * Where to put a neighbouring page so it matches how the reader will lay it out.
+ * A page wider than the screen enters showing the edge that faces the current
+ * page ('left' when it comes in from the right, 'right' when from the left).
+ */
+export function neighbourGeometry({ fit, available, padding = { left: 0, top: 0 }, align = 'center' } = {}) {
   if (!fit || !available || !(fit.width > 0) || !(fit.height > 0)) return null;
+  const overflow = fit.width - available.width;
+  const left = overflow > 0 && align === 'left' ? 0 : overflow > 0 && align === 'right' ? -overflow : -overflow / 2;
   return {
     width: fit.width, height: fit.height,
-    left: padding.left + (available.width - fit.width) / 2,
+    left: padding.left + left,
     top: padding.top + Math.max(0, (available.height - fit.height) / 2),
   };
+}
+
+/**
+ * Which edge of a page that is wider than the screen to show when it opens.
+ * Pages sit side by side like a strip: reading forward (left to right) a page
+ * starts at its left edge, going back it starts at its right edge, the part
+ * that touches the page just left. Right-to-left reading mirrors this.
+ */
+export function entryEdge({ direction = 1, rtl = false } = {}) {
+  const physical = (direction < 0 ? -1 : 1) * (rtl ? -1 : 1);
+  return physical > 0 ? 'left' : 'right';
+}
+
+/**
+ * One sideways drag across a page wider than the screen and its neighbours, as
+ * if all pages lay side by side on a strip (the way the Panels app feels): the
+ * page slides under the finger until its edge shows, and the rest of the same
+ * movement pulls the neighbouring page in. Returns the page's scroll position
+ * and how far the page itself moves (`offset` > 0: to the right, showing the
+ * page on the left; < 0: to the left, showing the page on the right).
+ */
+export function stripDrag({ startScroll, dx, maxLeft } = {}) {
+  if (![startScroll, dx, maxLeft].every(finite)) return { scroll: finite(startScroll) ? startScroll : 0, offset: 0 };
+  maxLeft = Math.max(0, maxLeft);
+  const wanted = Math.max(0, Math.min(maxLeft, startScroll)) - dx;
+  if (wanted < 0) return { scroll: 0, offset: -wanted };
+  if (wanted > maxLeft) return { scroll: maxLeft, offset: maxLeft - wanted };
+  return { scroll: wanted, offset: 0 };
+}
+
+/**
+ * When the page cannot be pulled aside (no neighbour can slide in), a sideways
+ * drag on a wide page slides across it ('pan') while there is more of it in
+ * that direction, and otherwise asks for a page turn on release ('turn').
+ */
+export function sideDragAction({ dx, canPan = false, atLeft = true, atRight = true } = {}) {
+  if (!canPan || !finite(dx) || !dx) return 'turn';
+  return (dx < 0 && !atRight) || (dx > 0 && !atLeft) ? 'pan' : 'turn';
+}
+
+/**
+ * A tap, button or arrow key on a page wider than the screen first moves across
+ * the page in even steps of at most `ratio` of the screen; at the edge it returns
+ * null and the page turns. `delta` is the logical step (+1 next, -1 previous).
+ */
+export function sideStep({ scrollLeft, maxLeft, viewWidth, delta, direction = 'ltr', ratio = .85, tolerance = 4 } = {}) {
+  if (![scrollLeft, maxLeft, viewWidth, delta].every(finite) || !delta || !(viewWidth > 0) || maxLeft <= tolerance) return null;
+  const physical = (delta > 0 ? 1 : -1) * (direction === 'rtl' ? -1 : 1);
+  const steps = Math.max(1, Math.ceil((maxLeft - tolerance) / (viewWidth * ratio))), size = maxLeft / steps;
+  if (physical > 0) {
+    if (scrollLeft >= maxLeft - tolerance) return null;
+    return Math.min(maxLeft, (Math.floor((scrollLeft + tolerance) / size) + 1) * size);
+  }
+  if (scrollLeft <= tolerance) return null;
+  return Math.max(0, (Math.ceil((scrollLeft - tolerance) / size) - 1) * size);
 }

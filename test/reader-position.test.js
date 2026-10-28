@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stepReadingPosition } from '../src/reader-position.js';
+import { stepReadingPosition, spreadPartners } from '../src/reader-position.js';
 
 test('guided reading visits every panel, then the whole page, before advancing or finishing', () => {
   const counts = [2, 3], visits = [];
@@ -83,4 +83,20 @@ test('the whole-page view after the last panel can be turned off', () => {
   assert.deepEqual(stepReadingPosition({ page: 2, pageCount: 3, panel: 2, panelCount: 3, guided: true, delta: 1, showOverview: false }).kind, 'end');
   assert.deepEqual(stepReadingPosition({ page: 1, pageCount: 3, panel: 0, panelCount: 3, guided: true, delta: -1, showOverview: false }), { kind: 'page', page: 0, panel: -1, overview: false });
   assert.equal(stepReadingPosition({ page: 0, pageCount: 3, panel: 2, panelCount: 3, guided: true, delta: 1 }).kind, 'overview');
+});
+
+test('two-page view pairs pages around a double page without skipping or sticking', () => {
+  // Cover alone; forward pairs with the next page, backward with the previous one.
+  assert.deepEqual(spreadPartners({ index: 0, pageCount: 8 }), []);
+  assert.deepEqual(spreadPartners({ index: 3, pageCount: 8, mode: 'forward' }), [4]);
+  assert.deepEqual(spreadPartners({ index: 3, pageCount: 8, mode: 'backward' }), [2]);
+  // Going back from page index 2 never pairs with the cover.
+  assert.deepEqual(spreadPartners({ index: 1, pageCount: 8, mode: 'backward' }), []);
+  // Jumping: odd pages start a pair; even pages first try their left-hand partner.
+  assert.deepEqual(spreadPartners({ index: 1, pageCount: 8 }), [2]);
+  assert.deepEqual(spreadPartners({ index: 2, pageCount: 8 }), [1, 3]);
+  // The last page has nothing after it.
+  assert.deepEqual(spreadPartners({ index: 7, pageCount: 8, mode: 'forward' }), []);
+  assert.deepEqual(spreadPartners({ index: 8, pageCount: 8 }), []);
+  assert.deepEqual(spreadPartners({ index: NaN, pageCount: 8 }), []);
 });

@@ -17,6 +17,13 @@ export function wholePageFit({ imageWidth, imageHeight, availableWidth, availabl
  */
 export function pageFit({ mode = 'whole', imageWidth, imageHeight, availableWidth, availableHeight } = {}) {
   if (mode === 'screen') mode = 'fill'; // fills the area below the status bar
+  if (mode === 'height') {
+    // A double page with the tablet upright: as tall as the screen, and the
+    // reader slides sideways across it.
+    if (![imageWidth, imageHeight, availableHeight].every(value => Number.isFinite(value) && value > 0)) return { width: 0, height: 0 };
+    const width = imageWidth * (availableHeight / imageHeight);
+    return Number.isFinite(width) && width > 0 ? { width, height: availableHeight } : { width: 0, height: 0 };
+  }
   if (mode === 'width') {
     if (![imageWidth, imageHeight, availableWidth].every(value => Number.isFinite(value) && value > 0)) return { width: 0, height: 0 };
     const height = imageHeight * (availableWidth / imageWidth);
@@ -26,6 +33,23 @@ export function pageFit({ mode = 'whole', imageWidth, imageHeight, availableWidt
   if (![imageWidth, imageHeight, availableWidth, availableHeight].every(value => Number.isFinite(value) && value > 0)) return { width: 0, height: 0 };
   const scale = Math.max(availableWidth / imageWidth, availableHeight / imageHeight);
   return { width: Math.max(availableWidth, imageWidth * scale), height: Math.max(availableHeight, imageHeight * scale) };
+}
+
+/** A page wider than it is tall (usually a double page) shown on an upright
+ * screen fills the screen's height instead of shrinking to a thin strip, so it
+ * can be read by sliding sideways (like the Panels app). Fill modes already do
+ * this on their own; "Whole page" and "Fit width" switch to it for such pages.
+ */
+export function slideFitMode({ mode = 'whole', imageWidth, imageHeight, availableWidth, availableHeight, slideWide = true } = {}) {
+  if (!slideWide || (mode !== 'whole' && mode !== 'width')) return mode;
+  if (![imageWidth, imageHeight, availableWidth, availableHeight].every(value => Number.isFinite(value) && value > 0)) return mode;
+  return imageWidth > imageHeight && availableWidth < availableHeight ? 'height' : mode;
+}
+
+/** How far a page must reach past the sides before it slides sideways. Smaller
+ * overhangs stay centred: an extra swipe for a sliver of artwork is not worth it. */
+export function slideThreshold(availableWidth) {
+  return Number.isFinite(availableWidth) && availableWidth > 0 ? Math.max(24, availableWidth * .06) : 24;
 }
 
 /** Breathing room around a panel in Panel view: a panel found a few pixels
