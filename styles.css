@@ -615,3 +615,24 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .library-check-line:empty { display: none; }
 .folder-freshness { margin: 12px 0 0; font-size: 12.5px; line-height: 1.45; }
 .folder-freshness:empty { display: none; }
+
+/* Page navigator: a strip of page thumbnails (like the Panels app). */
+.reader-thumb-strip { position: relative; display: flex; gap: 10px; overflow-x: auto; overflow-y: hidden; margin: 8px -6px 4px; padding: 6px 6px 10px; touch-action: pan-x; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: #40516a transparent; }
+.reader-thumb { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 0; padding: 0; border: 0; background: none; color: #a9b8cc; font-size: 12px; line-height: 1; cursor: pointer; }
+.reader-popup .reader-thumb { min-height: 0; }
+.reader-thumb-frame { position: relative; display: block; width: 74px; height: 110px; overflow: hidden; border: 2px solid #26354a; border-radius: 6px; background: #0b1421; }
+.reader-thumb-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; transition: opacity .18s ease; }
+.reader-thumb-frame img:not([src]) { display: none; }
+.reader-thumb.loaded .reader-thumb-frame img { opacity: 1; }
+.reader-thumb-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #5f7088; font-size: 15px; font-weight: 650; }
+.reader-thumb.loaded .reader-thumb-placeholder { display: none; }
+.reader-thumb.loading .reader-thumb-frame { animation: reader-thumb-wait 1.1s ease-in-out infinite alternate; }
+@keyframes reader-thumb-wait { from { background: #0b1421; } to { background: #17243a; } }
+.reader-thumb.current .reader-thumb-frame { border-color: #c4ef76; box-shadow: 0 0 0 1px #c4ef76; }
+.reader-thumb.current .reader-thumb-number { color: #c4ef76; font-weight: 700; }
+.reader-thumb.previewed .reader-thumb-frame { border-color: #edf3fb; }
+.reader-thumb.previewed .reader-thumb-number { color: #edf3fb; font-weight: 700; }
+.reader-thumb:focus-visible { outline: none; }
+.reader-thumb:focus-visible .reader-thumb-frame { outline: 2px solid #c4ef76; outline-offset: 2px; }
+@media (max-width: 520px) { .reader-thumb-frame { width: 62px; height: 92px; } .reader-thumb-strip { gap: 8px; } }
+@media (prefers-reduced-motion: reduce) { .reader-thumb.loading .reader-thumb-frame { animation: none; } .reader-thumb-frame img { transition: none; } }
