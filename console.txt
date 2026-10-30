@@ -1,0 +1,4 @@
+2026-10-30 11:21:05.589 App[5874:23168] DiskCookieStorage changing policy from 2 to 0, cookie file: file:///Users/runner/Library/Developer/CoreSimulator/Devices/D798106A-0403-425E-8352-3E7056FA9F79/data/Containers/Data/Application/336F0162-C29C-4107-A4DD-64117947171E/Library/Cookies/com.wsqm1990.cloudpanels.binarycookies
+⚡️  Loading app at capacitor://localhost...
+⚡️  WebView loaded
+com.wsqm1990.cloudpanels: 5874
