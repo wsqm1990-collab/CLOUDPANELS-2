@@ -222,12 +222,14 @@ export class CoverService {
     for (const consumer of job.consumers) { consumer.signal?.removeEventListener('abort', consumer.abort); error ? consumer.reject(error) : consumer.resolve(blob); }
     job.consumers.clear(); this._drain();
   }
-  async seed(comic, pageBlob) {
+  // `thumbnail`: the cover already made from this page (by the reader's
+  // background worker), so nothing is decoded here.
+  async seed(comic, pageBlob, { thumbnail } = {}) {
     if (this.closed) return null;
     const key = this._key(comic); if (!key) return null;
     const epoch = this.epoch;
     try {
-      const blob = await this.thumbnail(pageBlob);
+      const blob = thumbnail instanceof Blob && thumbnail.size ? thumbnail : await this.thumbnail(pageBlob);
       if (this.closed || epoch !== this.epoch || !(blob instanceof Blob) || !blob.size || blob.type !== 'image/jpeg' || blob.size > MAX_THUMB_BYTES) return null;
       this._remember(key, blob); this.fresh.set(key, blob);
       await this._disk(() => epoch === this.epoch && !this.closed ? this.disk.put(key, blob) : null);

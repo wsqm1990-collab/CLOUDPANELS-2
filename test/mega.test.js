@@ -259,7 +259,9 @@ test('actual MEGAJS browser build decrypts aligned remote byte ranges through th
   const [comic] = await connection.listComics(roots[0].id); const source = connection.getSource(comic);
   assert.deepEqual(await source.read(17, 913), plaintext.subarray(17, 913));
   assert.deepEqual(await source.read(0, 1), plaintext.subarray(0, 1));
-  assert.deepEqual(network, [{ start: 16, end: 912 }, { start: 0, end: 1 }]);
+  // Web Crypto reads whole 16-byte blocks: the first byte comes from bytes 0-15.
+  assert.deepEqual(network, [{ start: 16, end: 912 }, { start: 0, end: 15 }]);
+  assert.equal(connection.lastReadPath, 'webcrypto');
   assert.ok(network.every(range => range.end - range.start + 1 < plaintext.length));
   await connection.disconnect();
 });

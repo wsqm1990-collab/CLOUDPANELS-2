@@ -116,7 +116,7 @@ const main = document.querySelector('#main');
 const modal = document.querySelector('#modal');
 const modalContent = document.querySelector('#modal-content');
 let view = 'library', selectedCollection = null, visibleCount = 60, searchTimer;
-let libraryMode='folders',folderPath=[],mainDirty=false,refreshQueued=false;
+let libraryMode='folders',folderPath=[],mainDirty=false,refreshQueued=false,refreshAfterReading=false;
 let selectionMode=false,selectionCandidates=[];
 const selectedComicIds=new Set();
 let filters = {status:'all',publisher:'',series:'',character:'',sort:'title',group:''};
@@ -137,11 +137,19 @@ const reader = createReaderController({
   onChange:()=>{mainDirty=true;queueMainRefresh();scheduleSync();},
   onActivity:({busy,open})=>{
     covers.setForegroundBusy(Boolean(busy||open));
+    // The library is fully covered by an open comic: it is not drawn meanwhile.
+    document.documentElement.classList.toggle('cp-reading',Boolean(open));
     if(open){mainDirty=true;pauseCoverRequests();}
-    else{queueMainRefresh();if(reloadForUpdate)reloadWithUpdate();}
+    else{
+      queueMainRefresh();
+      // Only once the reader is really closed (not while switching comics).
+      const closed=!document.querySelector('#reader').open;
+      if(reloadForUpdate&&closed)reloadWithUpdate();
+      else if(refreshAfterReading&&closed){refreshAfterReading=false;setTimeout(()=>{if(!document.querySelector('#reader').open)void refreshLibrary();},800);}
+    }
   },
-  onCoverFirstPage:(comic,pageBlob)=>{
-    void covers.seed(comic,pageBlob).then(blob=>{
+  onCoverFirstPage:(comic,pageBlob,thumbnail)=>{
+    void covers.seed(comic,pageBlob,{thumbnail}).then(blob=>{
       if(!blob||document.querySelector('#reader').open)return;
       for(const [cover,value]of coverTargets)if(value.id===comic.id&&cover.isConnected)paintCover(cover,value,blob);
     }).catch(()=>{});
@@ -1148,7 +1156,11 @@ let hiddenSince=0;
 function cameBack(){
   // Back from another app (for example after moving folders in the MEGA app):
   // check MEGA again, unless the library was checked just a moment ago.
-  if(mega.connected&&!restoringConnection&&hiddenSince&&Date.now()-hiddenSince>2000&&Date.now()-lastLibraryRefresh>8000)void refreshLibrary();
+  // While a comic is open this waits until it is closed: reloading MEGA's list
+  // keeps the iPad busy for a few seconds, which made reading stutter.
+  if(mega.connected&&!restoringConnection&&hiddenSince&&Date.now()-hiddenSince>2000&&Date.now()-lastLibraryRefresh>8000){
+    if(document.querySelector('#reader').open)refreshAfterReading=true;else void refreshLibrary();
+  }
   void checkForNewVersion();
 }
 document.addEventListener('visibilitychange',()=>{

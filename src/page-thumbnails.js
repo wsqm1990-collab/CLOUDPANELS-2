@@ -70,6 +70,76 @@ export async function makePageThumbnail(source, { signal, maxWidth = 340, maxHei
   }
 }
 
+/**
+ * Makes thumbnails from page Blobs in a background worker (thumb-worker.js),
+ * so decoding a large page never stalls the reader. One job at a time; the
+ * worker stops after `idleMs` without work. `make` resolves with
+ * { blob, width, height }, or null when the page could not be made there
+ * (`unsupported` then tells whether this device can use the worker at all).
+ */
+export function createThumbnailWorker({ factory = () => new Worker(new URL('thumb-worker.js', document.baseURI), { type: 'module' }), idleMs = 20000, timeoutMs = 15000 } = {}) {
+  let worker = null, unsupported = false, nextId = 1, idleTimer, chain = Promise.resolve(), timeouts = 0;
+  const jobs = new Map();
+  const finishAll = () => { for (const job of jobs.values()) job.finish(null); jobs.clear(); };
+  function stop() {
+    clearTimeout(idleTimer); idleTimer = undefined;
+    const current = worker; worker = null;
+    if (current) { current.onmessage = current.onerror = current.onmessageerror = null; try { current.terminate(); } catch { /* Already stopped. */ } }
+    finishAll();
+  }
+  function start() {
+    if (worker || unsupported) return worker;
+    try { worker = factory(); } catch { worker = null; }
+    if (!worker) { unsupported = true; return null; }
+    worker.onmessage = event => {
+      const { id, blob, width, height, unsupported: cannot } = event.data || {};
+      if (cannot) { unsupported = true; stop(); return; }
+      timeouts = 0;
+      jobs.get(id)?.finish(blob instanceof Blob && blob.size > 0 && blob.size <= MAX_BYTES ? { blob, width, height } : null);
+    };
+    worker.onerror = worker.onmessageerror = () => { unsupported = true; stop(); };
+    return worker;
+  }
+  function run(blob, { signal, maxWidth = 340, maxHeight = 224, quality = .72 } = {}) {
+    return new Promise(resolve => {
+      if (signal?.aborted || unsupported || !(blob instanceof Blob) || !blob.size || blob.size > 48 * MiB) { resolve(null); return; }
+      const current = start(); if (!current) { resolve(null); return; }
+      clearTimeout(idleTimer); idleTimer = undefined;
+      const id = nextId++;
+      let timer;
+      const finish = value => {
+        if (!jobs.has(id)) return; jobs.delete(id); clearTimeout(timer); signal?.removeEventListener('abort', cancel);
+        if (!jobs.size && worker) idleTimer = setTimeout(stop, idleMs);
+        resolve(value);
+      };
+      const cancel = () => finish(null);
+      jobs.set(id, { finish });
+      // A worker that stopped answering is replaced for the next page; one
+      // that never answers twice in a row is not used again.
+      timer = setTimeout(() => { finish(null); if (++timeouts >= 2) unsupported = true; stop(); }, timeoutMs);
+      signal?.addEventListener('abort', cancel, { once: true });
+      try { current.postMessage({ id, blob, maxWidth, maxHeight, quality }); } catch { finish(null); }
+    });
+  }
+  return {
+    get unsupported() { return unsupported; },
+    /** Thumbnail of a page Blob, made in the background (one at a time). */
+    make(blob, options = {}) {
+      const job = chain.then(() => run(blob, options)); chain = job.catch(() => null);
+      const signal = options.signal;
+      if (!signal) return job;
+      // A cancelled job waiting for its turn gives up at once.
+      return new Promise(resolve => {
+        const cancel = () => resolve(null);
+        if (signal.aborted) { resolve(null); return; }
+        signal.addEventListener('abort', cancel, { once: true });
+        job.then(value => { signal.removeEventListener('abort', cancel); resolve(value); }, () => { signal.removeEventListener('abort', cancel); resolve(null); });
+      });
+    },
+    stop,
+  };
+}
+
 /** Thumbnails on the device, oldest-used removed beyond `maxEntries`. */
 export class PageThumbnailDisk {
   constructor({ name = 'cloudpanels-page-thumbnails-v1', maxEntries = 3000 } = {}) {
