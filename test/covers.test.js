@@ -123,3 +123,13 @@ test('thumbnail encoding bounds decoded dimensions, uses JPEG quality, and relea
     assert.equal(drawn.length, 1); assert.equal(released, 1); assert.equal(canvas.width, 0); assert.equal(canvas.height, 0);
   } finally { globalThis.createImageBitmap = priorBitmap; globalThis.document = priorDocument; }
 });
+
+test('a cover already made by the reader\'s background worker is stored without decoding the page again', async () => {
+  let decoded = 0;
+  const { service } = setup({ thumbnail: async () => { decoded++; return jpeg(); } });
+  const ready = jpeg(321);
+  assert.equal(await service.seed(comic(7), jpeg(5000), { thumbnail: ready }), ready);
+  assert.equal(decoded, 0); assert.equal((await service.get(comic(7))).size, 321);
+  // Without one, the page is decoded here as before.
+  assert.equal((await service.seed(comic(8), jpeg(5000))).type, 'image/jpeg'); assert.equal(decoded, 1);
+});

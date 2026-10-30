@@ -636,3 +636,12 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .reader-thumb:focus-visible .reader-thumb-frame { outline: 2px solid #c4ef76; outline-offset: 2px; }
 @media (max-width: 520px) { .reader-thumb-frame { width: 62px; height: 92px; } .reader-thumb-strip { gap: 8px; } }
 @media (prefers-reduced-motion: reduce) { .reader-thumb.loading .reader-thumb-frame { animation: none; } .reader-thumb-frame img { transition: none; } }
+
+/* While a comic is open, the library behind it is completely covered: it is
+   not drawn at all, so the iPad spends nothing on it during reading. */
+/* (Only while the reader really is open, so the library can never stay hidden.) */
+.cp-reading:has(#reader[open]) .app-shell, .cp-reading:has(#reader[open]) .bottom-nav { visibility: hidden; }
+/* The page sits on its own layer: scrolling, the stretch at its edges and
+   sliding move that layer instead of repainting the whole picture. */
+.reader-image-wrap { will-change: transform; }
+.reader-guided-moving .reader-image-wrap { will-change: transform, width; }

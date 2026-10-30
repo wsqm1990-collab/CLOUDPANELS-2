@@ -11,7 +11,7 @@ const manifest = { project_id: 'android-local', static: { directory: 'dist' } };
 await mkdir(dist, {recursive: true});
 for (const name of await readdir(dist)) await rm(path.join(dist, name), {recursive: true, force: true});
 await mkdir(path.join(dist, 'vendor'), {recursive: true});
-await build({entryPoints: { app: 'src/app.js', 'panel-worker': 'src/panel-worker.js' }, bundle: true, splitting: true, format: 'esm', platform: 'browser', target: ['safari15.4'], outdir: dist, entryNames: '[name]', chunkNames: 'vendor/[name]-[hash]', minify: true, legalComments: 'eof', logLevel: 'warning', define: {'process.env.NODE_ENV': '"production"'}});
+await build({entryPoints: { app: 'src/app.js', 'panel-worker': 'src/panel-worker.js', 'thumb-worker': 'src/thumb-worker.js' }, bundle: true, splitting: true, format: 'esm', platform: 'browser', target: ['safari15.4'], outdir: dist, entryNames: '[name]', chunkNames: 'vendor/[name]-[hash]', minify: true, legalComments: 'eof', logLevel: 'warning', define: {'process.env.NODE_ENV': '"production"'}});
 for (const file of ['index.html', 'styles.css', 'apple-touch-icon.png', 'brand-emblem.png', 'favicon-32.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'manifest.webmanifest', 'THIRD_PARTY_NOTICES.txt']) await cp(path.join('src', file), path.join(dist, file));
 await cp('src/samples', path.join(dist, 'samples'), {recursive: true});
 await cp('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs', path.join(dist, 'vendor/pdf.worker.mjs'));
@@ -22,7 +22,7 @@ for (const file of ['worker-bundle.js', 'libarchive.wasm']) await cp(path.join('
 for (const folder of ['cmaps', 'standard_fonts', 'wasm', 'iccs']) await cp(path.join('node_modules/pdfjs-dist', folder), path.join(dist, 'vendor', folder), {recursive: true});
 const meta = await readFile('src/index.html', 'utf8');
 const policy = meta.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1];
-await writeFile(path.join(dist, '_headers'), '/*\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Content-Security-Policy: ' + policy + '\n/index.html\n  Cache-Control: no-store\n/app.js\n  Cache-Control: no-cache\n/styles.css\n  Cache-Control: no-cache\n/panel-worker.js\n  Cache-Control: no-cache\n/sw.js\n  Cache-Control: no-cache\n');
+await writeFile(path.join(dist, '_headers'), '/*\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Content-Security-Policy: ' + policy + '\n/index.html\n  Cache-Control: no-store\n/app.js\n  Cache-Control: no-cache\n/styles.css\n  Cache-Control: no-cache\n/panel-worker.js\n  Cache-Control: no-cache\n/thumb-worker.js\n  Cache-Control: no-cache\n/sw.js\n  Cache-Control: no-cache\n');
 async function list(dir, prefix = '') { const out = []; for (const e of await readdir(dir, {withFileTypes: true})) { const rel = prefix + e.name; if (e.isDirectory()) out.push(...await list(path.join(dir, e.name), rel + '/')); else out.push(rel); } return out; }
 // Everything needed to start and read offline is cached by the service
 // worker. PDF character maps are fetched on demand and cached as used.

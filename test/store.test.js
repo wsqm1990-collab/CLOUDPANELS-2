@@ -378,3 +378,23 @@ test('the page-turn choice is kept, and anything unknown falls back to swiping a
   const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
   assert.equal(restored.state.settings.readerTurnMode, 'swipe', 'backups carry it');
 });
+test('reading changes are written quickly, exactly as a full save would write them',async()=>{
+ let persisted=null,writes=0;
+ const backend={async read(){return persisted},async write(text){writes++;persisted=text}};
+ const s=await createBrowserLibraryStore({metadataStore:backend,fallbackStorage:memory()});
+ s.upsertComics([comic('a'),comic('b')]);await s.flush();writes=0;
+ s.setProgress('a',{page:4,panel:1,pageCount:20,status:'reading'});s.setPanels('b',2,[{x:0,y:0,width:1,height:.5}]);s.setSettings({readerTurnMode:'tap'});
+ assert.equal(writes,0,'nothing is written while reading');
+ assert.equal(await s.flush(),true);assert.equal(writes,1);
+ assert.equal(persisted,s.exportBackup());
+ const saved=JSON.parse(persisted);assert.equal(saved.progress.a.page,4);assert.equal(saved.panels.b['2'].length,1);assert.equal(saved.settings.readerTurnMode,'tap');
+});
+test('after a failed full check, reading changes are never written without it',async()=>{
+ let persisted=null;
+ const backend={async read(){return persisted},async write(text){persisted=text}};
+ const s=await createBrowserLibraryStore({metadataStore:backend,fallbackStorage:memory()});
+ s.upsertComics([comic('a')]);await s.flush();const good=persisted;
+ s.state.comics.push({id:'broken'});assert.equal(s.save(),false);
+ s.setProgress('a',{page:3,pageCount:20,status:'reading'});
+ assert.equal(await s.flush(),false);assert.equal(persisted,good);
+});

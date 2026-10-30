@@ -204,6 +204,18 @@ export class LibraryStore {
       this.storage.setItem(STORAGE_KEY, text); this.state = clean; this.lastError = null; return true;
     } catch (error) { this.lastError = 'Could not save your library. Export a backup before closing this page.'; return false; }
   }
+  // Writes the library as it is, without re-checking every comic (the slow part
+  // of a save on an iPad with a big library). Only for small reading changes
+  // (position, panel layouts, reader settings) made after a full save: their
+  // own methods already checked them.
+  saveTrusted() {
+    try {
+      const text = JSON.stringify(this.state);
+      if (text.length * 3 > MAX_BACKUP_BYTES && new TextEncoder().encode(text).byteLength > MAX_BACKUP_BYTES) throw new Error('Library metadata reached the storage limit.');
+      if (!this.storage?.setItem) throw new Error('Browser storage is unavailable.');
+      this.storage.setItem(STORAGE_KEY, text); this.lastError = null; return true;
+    } catch (error) { this.lastError = 'Could not save your library. Export a backup before closing this page.'; return false; }
+  }
   async flush() { return !this.lastError; }
   upsertComics(values) {
     if (!Array.isArray(values)) throw new Error('Comics must be a list.');
@@ -504,7 +516,7 @@ async function openMetadataDatabase(indexedDB) {
  * The normal app needs only onPersistenceError. LibraryStore's editing API stays synchronous;
  * await flush() at important boundaries and on visibilitychange as a best effort.
  */
-export async function createBrowserLibraryStore({onPersistenceError, metadataStore, strictPersistence = false, indexedDB = browserIndexedDB(), fallbackStorage} = {}) {
+export async function createBrowserLibraryStore({onPersistenceError, metadataStore, strictPersistence = false, indexedDB = browserIndexedDB(), fallbackStorage, progressDelayMs = 8000} = {}) {
   // A host's encrypted profile is an independent library. Never inspect or
   // import browser-global legacy data on its behalf, even when it is empty.
   const legacyStorage = metadataStore && strictPersistence ? undefined : fallbackStorage === undefined ? browserStorage() : fallbackStorage;
@@ -580,10 +592,16 @@ export async function createBrowserLibraryStore({onPersistenceError, metadataSto
   if (store.lastError) safeNotify(onPersistenceError, store.lastError);
   // Reader mutations must not traverse a potentially 64 MiB catalog during
   // image/panel animation. Keep exact small updates in memory, then coalesce
-  // them after the camera settles. Explicit flush/hide still commits promptly.
+  // them. Saving a large library takes a moment on an iPad, so the reader
+  // flushes while the reader is at rest (see observePersistence in reader-ui);
+  // this timer is only the safety net. Explicit flush/hide commits promptly.
   const saveSnapshot = store.save.bind(store);
   const readerMutations = Object.fromEntries(['setProgress', 'setPanels', 'setSettings'].map(name => [name, store[name].bind(store)]));
   let progressWrite = false, progressDirty = false, progressTimer = null, preparingProgress = null;
+  // True while everything in memory passed the full check (when loaded, or by
+  // the last full save): reading changes can then be written without it.
+  let catalogChecked = !store.lastError;
+  const fullSave = () => { const saved = saveSnapshot(); catalogChecked = saved; return saved; };
   const cancelProgressTimer = () => {
     if (progressTimer !== null) clearTimeout(progressTimer);
     progressTimer = null;
@@ -593,7 +611,7 @@ export async function createBrowserLibraryStore({onPersistenceError, metadataSto
     if (closed) return false;
     if (!progressDirty) return true;
     progressDirty = false;
-    const saved = saveSnapshot();
+    const saved = catalogChecked ? store.saveTrusted() : fullSave();
     if (!saved) { progressDirty = true; safeNotify(onPersistenceError, store.lastError); }
     return saved;
   };
@@ -602,11 +620,11 @@ export async function createBrowserLibraryStore({onPersistenceError, metadataSto
     if (progressWrite) {
       progressDirty = true;
       cancelProgressTimer();
-      progressTimer = setTimeout(commitProgress, 350);
+      progressTimer = setTimeout(commitProgress, progressDelayMs);
       return true;
     }
     cancelProgressTimer();
-    const saved = saveSnapshot();
+    const saved = fullSave();
     if (saved) progressDirty = false;
     return saved;
   };

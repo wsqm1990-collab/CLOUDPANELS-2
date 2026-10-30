@@ -1,4 +1,5 @@
 import { Storage, File as MEGAFile, API } from './megajs-browser.js';
+import { decryptMegaRange, megaFileCipher, webCryptoAvailable } from './mega-fast-read.js';
 
 export const MAX_MEGA_READ = 48 * 1024 * 1024;
 export const MAX_LIBRARY_FILES = 50000;
@@ -667,6 +668,8 @@ export class MegaConnection {
 
   async disconnect({ revoke = true } = {}) {
     this._generation++;
+    // A new connection tries the fast reads again (see _download).
+    this._fastReadsOff = false; this.fastReads = 0; this.fastFailures = 0;
     const storage = this._storage, isolatedAPI = this._isolatedAPI; this._storage = null;
     this._connectionController?.abort(); this._connectionController = null;
     for (const stream of [...this._streams]) { try { stream.emit('error', cancelled()); stream.destroy(); } catch {} }
@@ -809,8 +812,87 @@ export class MegaConnection {
       }, ...rest);
     };
   }
-  _download(node, start, end, signal) {
+  // Reads a range of a MEGA file. The browser's Web Crypto decrypts it natively,
+  // off the thread that draws the reader (see mega-fast-read.js); anything
+  // unusual falls back to the MEGA library's own download and decryption.
+  async _download(node, start, end, signal) {
     try { this._cacheDownloadAddress(node?.api); } catch {}
+    if (this._fastReadable(node)) {
+      let fastError;
+      try {
+        const bytes = await this._fastDownload(node, start, end, signal);
+        this.fastReads = (this.fastReads || 0) + 1; this.lastReadPath = 'webcrypto';
+        return bytes;
+      } catch (error) {
+        if (error?.name === 'AbortError' || signal?.aborted) throw cancelled();
+        if (error instanceof MegaConnectionError && error.code === 'QUOTA') throw error;
+        try { node?.api?.__cloudpanelsAddressCache?.clear(); } catch {}
+        fastError = error;
+      }
+      const bytes = await this._sdkDownload(node, start, end, signal);
+      this.lastReadPath = 'sdk';
+      // The library read it while the fast read could not: only that counts
+      // against the fast read (a dropped connection fails both). If it never
+      // worked here, stop trying until MEGA is connected again.
+      this.fastFailures = (this.fastFailures || 0) + 1; this.lastFastError = String(fastError?.message || fastError).slice(0, 160);
+      if (this.fastFailures >= 3 && !this.fastReads) this._fastReadsOff = true;
+      return bytes;
+    }
+    this.lastReadPath = 'sdk';
+    return this._sdkDownload(node, start, end, signal);
+  }
+  _fastReadable(node) {
+    return !this._fastReadsOff && webCryptoAvailable() && Boolean(megaFileCipher(node?.key)) && !node.directory && Number.isSafeInteger(node.size) && node.size > 0
+      && typeof node.api?.request === 'function' && typeof node.api?.fetch === 'function';
+  }
+  // The file's download address, asked the same way the MEGA library asks (and
+  // kept for a few minutes by _cacheDownloadAddress).
+  _downloadAddress(node) {
+    const request = { a: 'g', g: 1, ssl: 2 };
+    if (node.nodeId) request.n = node.nodeId;
+    else if (Array.isArray(node.downloadId)) { request._querystring = { n: node.downloadId[0] }; request.n = node.downloadId[1]; }
+    else request.p = node.downloadId;
+    return new Promise((resolve, reject) => {
+      try {
+        const pending = node.api.request(request, (error, response) => error ? reject(error) : resolve(response));
+        pending?.catch?.(() => {});
+      } catch (error) { reject(error); }
+    });
+  }
+  async _fastDownload(node, start, end, signal) {
+    checkSignal(signal);
+    // CTR decryption starts on a 16-byte boundary; read at least one whole
+    // block (never past the end of the file) and keep only what was asked.
+    const from = start - (start % 16), to = Math.min(node.size - 1, Math.max(end - 1, from + 15));
+    const controller = new AbortController(), stop = () => controller.abort();
+    const parents = [signal, this._connectionController?.signal].filter(Boolean);
+    for (const parent of parents) { if (parent.aborted) controller.abort(); else parent.addEventListener('abort', stop, { once: true }); }
+    try {
+      // MEGA's library cannot cancel this request: stop waiting on a cancel,
+      // a disconnect, or after half a minute without an answer.
+      const timer = setTimeout(stop, 30000);
+      let address;
+      try { address = await waitAbortable(this._downloadAddress(node), controller.signal); }
+      catch (error) { if (controller.signal.aborted && !parents.some(parent => parent.aborted)) throw new MegaConnectionError('MEGA did not answer in time.', 'NETWORK'); throw error; }
+      finally { clearTimeout(timer); }
+      checkSignal(controller.signal);
+      if (typeof address?.g !== 'string' || !address.g.startsWith('http')) throw new MegaConnectionError('MEGA returned an invalid download address.', 'ADDRESS');
+      const response = await node.api.fetch(`${address.g}/${from}-${to}`, { signal: controller.signal });
+      if (response?.status === 509) throw new MegaConnectionError('Your MEGA transfer quota has been reached. Try again later.', 'QUOTA');
+      if (response?.status !== 200) throw new MegaConnectionError(`MEGA returned a ${response?.status} status code.`, 'NETWORK');
+      const encrypted = await response.arrayBuffer();
+      checkSignal(controller.signal);
+      if (encrypted.byteLength !== to - from + 1) throw new MegaConnectionError('MEGA returned an incomplete page. Try reading it again.', 'READ_SIZE');
+      const plain = await decryptMegaRange(node.key, from, encrypted);
+      checkSignal(controller.signal);
+      if (plain?.byteLength !== encrypted.byteLength) throw new MegaConnectionError('The page could not be decrypted.', 'READ_SIZE');
+      const bytes = new Uint8Array(plain, start - from, end - start);
+      return bytes.byteOffset === 0 && bytes.byteLength === plain.byteLength ? bytes : bytes.slice();
+    } finally {
+      for (const parent of parents) parent.removeEventListener('abort', stop);
+    }
+  }
+  _sdkDownload(node, start, end, signal) {
     const wanted = end - start;
     const receivedLimit = start === 0 && end === 1 ? Math.min(node.size, 2) : wanted;
     return new Promise((resolve, reject) => {

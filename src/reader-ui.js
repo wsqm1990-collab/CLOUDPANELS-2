@@ -4,7 +4,7 @@ import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
 import { stepReadingPosition, spreadPartners } from './reader-position.js';
-import { PageThumbnails, pageThumbnailComicKey } from './page-thumbnails.js';
+import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker } from './page-thumbnails.js';
 import { createKeepAwake } from './keep-awake.js';
 import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry, entryEdge, stripDrag, sideDragAction, sideStep } from './reader-gestures.js';
 
@@ -191,6 +191,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
   // Small pictures of the pages for the page navigator (kept on this device).
   const pageThumbs = new PageThumbnails();
+  // They are made in a background worker, so a large page never stalls reading.
+  const thumbWorker = createThumbnailWorker();
   let thumbSeedTimer;
   // The screen stays on while a comic is open (iPadOS turns it off after 30
   // seconds in Low Power Mode); 15 minutes without a touch lets it sleep again.
@@ -339,8 +341,19 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     storageWarning = store.lastError ? text().storage : '';
     return !storageWarning;
   }
+  // Saving the reading position writes the whole library, which takes a
+  // moment on an iPad with a big library. It waits until the reader is at rest
+  // (a little after the last touch or page turn, never during a swipe, scroll
+  // or animation), so it never interrupts the finger. Closing the comic or
+  // leaving the app still saves at once.
+  const SAVE_AT_REST_MS = 1500;
+  let persistencePending;
+  function postponePersistence() {
+    if (!persistenceTimer || !persistencePending) return;
+    clearTimeout(persistenceTimer); persistenceTimer = setTimeout(persistencePending, SAVE_AT_REST_MS);
+  }
   function observePersistence({ immediate = false } = {}) {
-    clearTimeout(persistenceTimer); persistenceTimer = undefined;
+    clearTimeout(persistenceTimer); persistenceTimer = undefined; persistencePending = undefined;
     if (typeof store.flush !== 'function') return;
     const mySession = serial, generation = ++persistenceGeneration;
     const flush = () => {
@@ -360,9 +373,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         statusMessage(lastStatus.replace(` · ${text().readHint}`, ''), true, retryPage);
       });
     };
-    // Let the 240ms panel camera settle before preparing a large catalog
-    // snapshot. A later save replaces this trailing observation.
-    if (immediate || document.hidden) flush(); else persistenceTimer = setTimeout(flush, 320);
+    // A later save replaces this trailing observation.
+    const flushAtRest = () => {
+      persistenceTimer = undefined;
+      if (serial !== mySession || generation !== persistenceGeneration) return;
+      if (gesture || pinch || pager || motion || turning || loading || cameraFrame || activePointers.size) { persistenceTimer = setTimeout(flushAtRest, SAVE_AT_REST_MS); return; }
+      persistencePending = undefined; flush();
+    };
+    if (immediate || document.hidden) flush(); else { persistencePending = flushAtRest; persistenceTimer = setTimeout(flushAtRest, SAVE_AT_REST_MS); }
   }
   function persist(finished = false, { observe = true } = {}) {
     // Decoded image presentation can precede local panel analysis. Preserve the
@@ -809,9 +827,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const thumbnailFor = async index => {
       const cached = await pageThumbs.get(comicKey, index); if (cached) return cached;
       thumbs.signal.throwIfAborted();
-      const ready = decodedPages.get(index)?.candidate?.decodedImage;
-      if (ready?.naturalWidth) return pageThumbs.from(comicKey, index, ready, { signal: thumbs.signal });
-      const blob = await activeBook.page(index, { signal: thumbs.signal });
+      const blob = decodedPages.get(index)?.candidate?.blob || await activeBook.page(index, { signal: thumbs.signal });
+      thumbs.signal.throwIfAborted();
+      // In the background worker first; on this thread only if it cannot.
+      const made = await thumbWorker.make(blob, { signal: thumbs.signal });
+      thumbs.signal.throwIfAborted();
+      if (made?.blob) { await pageThumbs.save(comicKey, index, made.blob); return made.blob; }
       return pageThumbs.from(comicKey, index, blob, { signal: thumbs.signal });
     };
     let pumping = false;
@@ -864,21 +885,37 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     centre(currentPage); requestAnimationFrame(() => { if (popup === menu) centre(currentPage); });
     slider.focus({ preventScroll: true });
   }
-  // Keep a thumbnail of the page being read (made from the page already on
-  // screen, once the reader has settled on it), for the page navigator.
+  // The library cover is made from the first page once per opened comic, in
+  // the background worker (the library makes it itself if the worker cannot).
+  let coverSeeded;
+  async function coverFromFirstPage(value, blob) {
+    if (!value || coverSeeded === value) return;
+    coverSeeded = value;
+    try {
+      const made = await thumbWorker.make(blob, { maxWidth: 360, maxHeight: 540, quality: .68, signal: sessionController?.signal });
+      if (comic !== value) return;
+      await onCoverFirstPage(value, blob, made?.blob || null);
+    } catch { /* The library makes the cover later. */ }
+  }
+  // Keep a thumbnail of the page being read (made from that page's file in the
+  // background worker, once the reader has settled on it), for the page
+  // navigator. Nothing is drawn on the reader's thread: if the worker is not
+  // available, the navigator makes the thumbnail when it is opened.
   function scheduleThumbnailSeed(attempt = 0) {
     clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined;
     const comicKey = pageThumbnailComicKey(comic);
-    if (!comicKey || currentPage < 0 || spreadPages.length > 1 || attempt > 3) return;
-    const mySession = serial, page = currentPage, url = currentURL;
+    if (!comicKey || currentPage < 0 || spreadPages.length > 1 || attempt > 3 || thumbWorker.unsupported) return;
+    const mySession = serial, page = currentPage, url = currentURL, signal = sessionController?.signal;
     thumbSeedTimer = setTimeout(async () => {
       thumbSeedTimer = undefined;
       if (mySession !== serial || currentPage !== page || currentURL !== url || spreadPages.length > 1) return;
       if (loading || turning || gesture || pinch || pager || motion || popup) { scheduleThumbnailSeed(attempt + 1); return; }
       try {
         if (await pageThumbs.get(comicKey, page)) return;
-        if (mySession !== serial || currentPage !== page || currentURL !== url || !image.complete || !image.naturalWidth) return;
-        await pageThumbs.from(comicKey, page, image);
+        const candidate = decodedPages.get(page)?.candidate;
+        if (mySession !== serial || currentPage !== page || currentURL !== url || candidate?.url !== url || !candidate.blob) return;
+        const made = await thumbWorker.make(candidate.blob, { signal });
+        if (made?.blob && mySession === serial) await pageThumbs.save(comicKey, page, made.blob);
       } catch { /* Made again when the navigator needs it. */ }
     }, 1200);
   }
@@ -1315,7 +1352,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (!fromPager) turning = false;
       paintPanels(); updateControls(); activity(false);
       wakeRestore();
-      if (index === 0 && onCoverFirstPage) void Promise.resolve().then(() => onCoverFirstPage(comic, blob)).catch(() => {});
+      if (index === 0 && onCoverFirstPage) void coverFromFirstPage(comic, blob);
       if (guided && guidedFallbackPage === currentPage) showHint(guidedLabels().fallback, 6500);
       else if (!slideHintShown && slideable()) { slideHintShown = true; showHint(slideLabels().hint, 3200); }
       trimDecoded(around(index));
@@ -1778,7 +1815,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   window.addEventListener('blur', () => { touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; if (pinch?.frame) cancelAnimationFrame(pinch.frame); pinch = undefined; resetGesture(); });
   dialog.addEventListener('keydown', () => keepAwake.activity(), true);
   dialog.addEventListener('pointerdown', event => {
-    keepAwake.activity();
+    keepAwake.activity(); postponePersistence();
     if (event.isPrimary !== false) suppressClicksUntil = 0;
     if (event.target.closest?.('#reader-close') && event.isPrimary !== false && (event.pointerType !== 'mouse' || event.button === 0)) closeIntent = { id: event.pointerId, x: event.clientX, y: event.clientY, time: performance.now() };
     else closeIntent = undefined;
@@ -1787,7 +1824,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (event.detail > 0 && performance.now() < suppressClicksUntil) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
   function teardown({ closeDialog = true, notifyChange = true } = {}) {
-    navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false; slideHintShown = false; keepAwake.stop();
+    navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false; slideHintShown = false; keepAwake.stop(); thumbWorker.stop();
     const wasReading = Boolean(comic);
     if (comic && book && currentPage >= 0) persist(false, { observe: false });
     clearTimeout(persistenceTimer); persistenceTimer = undefined;
