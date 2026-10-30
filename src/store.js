@@ -101,6 +101,7 @@ function settings(value, previous = defaultState().settings) {
     readerSpread: typeof value.readerSpread === 'boolean' ? value.readerSpread : previous.readerSpread !== false,
     readerSlideWide: typeof value.readerSlideWide === 'boolean' ? value.readerSlideWide : previous.readerSlideWide !== false,
     readerKeepAwake: typeof value.readerKeepAwake === 'boolean' ? value.readerKeepAwake : previous.readerKeepAwake !== false,
+    readerTurnMode: ['both', 'swipe', 'tap'].includes(value.readerTurnMode) ? value.readerTurnMode : (['both', 'swipe', 'tap'].includes(previous.readerTurnMode) ? previous.readerTurnMode : 'both'),
     spoilers: typeof value.spoilers === 'boolean' ? value.spoilers : previous.spoilers};
 }
 

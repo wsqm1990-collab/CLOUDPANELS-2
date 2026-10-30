@@ -367,3 +367,14 @@ test('reconciling all indexed folders together keeps history across folders and 
   assert.equal(reopened.state.progress['mega:x1'].page, 7);
   assert.ok(!reopened.state.retired['mega:x1']);
 });
+
+test('the page-turn choice is kept, and anything unknown falls back to swiping and tapping', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerTurnMode ?? 'both', 'both');
+  s.setSettings({readerTurnMode: 'tap'}); assert.equal(s.state.settings.readerTurnMode, 'tap');
+  s.setSettings({language: 'pt-BR'}); assert.equal(s.state.settings.readerTurnMode, 'tap', 'other settings keep it');
+  s.setSettings({readerTurnMode: 'swipe'}); assert.equal(s.state.settings.readerTurnMode, 'swipe');
+  s.setSettings({readerTurnMode: 'curl'}); assert.equal(s.state.settings.readerTurnMode, 'swipe');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerTurnMode, 'swipe', 'backups carry it');
+});

@@ -1,5 +1,5 @@
 import { openComic } from './reader.js';
-import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideTapNavigation } from './reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
@@ -206,7 +206,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   neighbourLayer.append(neighbourImage, neighbourNote); shell.append(neighbourLayer);
   const pageAnimation = () => store.state.settings.readerPageAnimation || 'slide';
   const pageDuration = () => store.state.settings.readerPageDuration || 420;
-  const turnLabels = () => language() === 'pt-BR'
+  const baseTurnLabels = () => language() === 'pt-BR'
     ? { animation: 'Animação da página', slide: 'Deslizar', fade: 'Dissolver', none: 'Sem animação', speed: 'Velocidade da animação', speeds: ['Rápida', 'Suave', 'Lenta'], overview: 'Página inteira · Deslize para continuar', next: 'Abrindo a próxima revista da pasta…', nextFailed: 'Não foi possível abrir a próxima revista. Confira a conexão com o MEGA ou selecione novamente o arquivo local.', end: 'Fim desta pasta. Esta revista foi marcada como lida.' }
     : language() === 'es'
       ? { animation: 'Animación de página', slide: 'Deslizar', fade: 'Disolver', none: 'Sin animación', speed: 'Velocidad de animación', speeds: ['Rápida', 'Suave', 'Lenta'], overview: 'Página completa · Desliza para continuar', next: 'Abriendo el siguiente cómic de la carpeta…', nextFailed: 'No se pudo abrir el siguiente cómic. Comprueba MEGA o vuelve a seleccionar el archivo local.', end: 'Fin de esta carpeta. El cómic está marcado como leído.' }
@@ -230,9 +230,26 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   } });
   const navigationSeconds = () => [0, 3, 5, 8].includes(store.state.settings.readerNavigationSeconds) ? store.state.settings.readerNavigationSeconds : 3;
   const swipeResistance = () => [1, 2, 3, 4, 5].includes(store.state.settings.readerSwipeResistance) ? store.state.settings.readerSwipeResistance : 3;
+  // How pages turn: swiping and tapping the sides (default), only swiping,
+  // or only tapping the sides (see turnInputs).
+  const turnBy = () => turnInputs(store.state.settings.readerTurnMode);
+  const tapWords = () => language() === 'pt-BR'
+    ? { overview: 'Página inteira · Toque para continuar', hint: 'Toque nos cantos para trocar de página · Mover página permite explorar as bordas', detected: n => `${n} quadros encontrados · Toque nos cantos para avançar`, widthHint: 'Role na vertical para ler a página · Toque nos cantos para trocar de página' }
+    : language() === 'es'
+      ? { overview: 'Página completa · Toca para continuar', hint: 'Toca los lados para pasar páginas · Mover página permite explorar los bordes', detected: n => `${n} viñetas encontradas · Toca los lados para avanzar`, widthHint: 'Desplázate verticalmente para leer · Toca los lados para pasar páginas' }
+      : { overview: 'Whole page · Tap to continue', hint: 'Tap the sides to turn pages · Use Move page to explore the edges', detected: n => `${n} panels found · Tap the sides to advance`, widthHint: 'Scroll vertically to read the page · Tap the sides to turn pages' };
+  const turnLabels = () => turnBy().swipe ? baseTurnLabels() : { ...baseTurnLabels(), overview: tapWords().overview };
+  const featureText = () => turnBy().swipe ? baseFeatureText() : { ...baseFeatureText(), widthHint: tapWords().widthHint };
+  const panLabels = () => turnBy().swipe ? basePanLabels() : { ...basePanLabels(), hint: tapWords().hint };
+  const guidedLabels = () => turnBy().swipe ? baseGuidedLabels() : { ...baseGuidedLabels(), detected: tapWords().detected };
+  const turnModeLabels = () => language() === 'pt-BR'
+    ? { title: 'Virar a página com', both: 'Deslizar e tocar', swipe: 'Só deslizar', tap: 'Só tocar (cantos)' }
+    : language() === 'es'
+      ? { title: 'Pasar la página con', both: 'Deslizar y tocar', swipe: 'Solo deslizar', tap: 'Solo tocar (lados)' }
+      : { title: 'Turn pages by', both: 'Swipe and tap', swipe: 'Swipe only', tap: 'Tap the sides only' };
   const language = () => store.state.settings.language || 'en';
   const text = () => STRINGS[language()] || STRINGS.en;
-  const featureText = () => FEATURE_STRINGS[language()] || FEATURE_STRINGS.en;
+  const baseFeatureText = () => FEATURE_STRINGS[language()] || FEATURE_STRINGS.en;
   const rtl = () => store.state.settings.readingDirection === 'rtl';
   const notify = () => onChange?.();
   const storedPanels = () => comic && currentPage >= 0 ? store.getPanels(comic.id, currentPage) : [];
@@ -247,10 +264,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     : language() === 'es'
       ? { title: 'Ajuste de página', whole: 'Página completa', fill: 'Llenar pantalla', screen: 'Pantalla completa (bajo el reloj)', width: 'Ajustar al ancho', note: 'Página completa muestra todos los bordes. Ajustar al ancho permite desplazarse verticalmente. Llenar pantalla deja algunos bordes fuera de la vista; usa Mover página para explorarlos. Desliza a los lados para pasar páginas.', cancel: 'Cancelar' }
       : { title: 'Page fit', whole: 'Whole page', fill: 'Fill screen', screen: 'Full screen (below the clock)', width: 'Fit width', note: 'Whole page shows every edge. Fit width lets you scroll vertically. Fill screen leaves some edges outside the view; use Move page to explore them. Swipe sideways to turn pages.', cancel: 'Cancel' };
-  const panLabels = () => language() === 'pt-BR' ? { move: 'Mover página', resume: 'Voltar à leitura', hint: 'Deslize para trocar de página · Mover página permite explorar as bordas', panHint: 'Arraste para explorar as bordas · Toque em Voltar à leitura para trocar páginas' }
+  const basePanLabels = () => language() === 'pt-BR' ? { move: 'Mover página', resume: 'Voltar à leitura', hint: 'Deslize para trocar de página · Mover página permite explorar as bordas', panHint: 'Arraste para explorar as bordas · Toque em Voltar à leitura para trocar páginas' }
     : language() === 'es' ? { move: 'Mover página', resume: 'Volver a leer', hint: 'Desliza para pasar páginas · Mover página permite explorar los bordes', panHint: 'Arrastra para explorar los bordes · Toca Volver a leer para pasar páginas' }
       : { move: 'Move page', resume: 'Resume reading', hint: 'Swipe to turn pages · Use Move page to explore the edges', panHint: 'Drag to explore the edges · Tap Resume reading to turn pages' };
-  const guidedLabels = () => language() === 'pt-BR'
+  const baseGuidedLabels = () => language() === 'pt-BR'
     ? { button: 'Leitura guiada', analyzing: 'Analisando os quadros desta página no aparelho…', fallback: 'Não foi possível identificar os quadros com segurança. Página inteira exibida; a leitura guiada será tentada novamente na próxima página.', options: 'Opções dos quadros', edit: 'Editar quadros', detect: 'Detectar novamente', detectNote: 'Detectar novamente substitui a disposição salva desta página somente se encontrar quadros com confiança.', retry: 'Tentar novamente', whole: 'Ver página inteira', cancel: 'Cancelar', detected: n => `${n} quadros encontrados · Deslize para avançar` }
     : language() === 'es'
       ? { button: 'Lectura guiada', analyzing: 'Analizando las viñetas de esta página en el dispositivo…', fallback: 'No se identificaron las viñetas con seguridad. Se muestra la página completa; la lectura guiada se intentará en la siguiente página.', options: 'Opciones de viñetas', edit: 'Editar viñetas', detect: 'Detectar de nuevo', detectNote: 'Detectar de nuevo reemplaza la disposición guardada de esta página solo si encuentra viñetas con confianza.', retry: 'Reintentar', whole: 'Ver página completa', cancel: 'Cancelar', detected: n => `${n} viñetas encontradas · Desliza para avanzar` }
@@ -1009,7 +1026,15 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     for (const [value, label] of [['on', language() === 'pt-BR' ? 'Sim (apaga após 15 min sem toque)' : language() === 'es' ? 'Sí (se apaga tras 15 min sin tocar)' : 'On (sleeps after 15 min without a touch)'], ['off', language() === 'pt-BR' ? 'Não' : 'Off']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; awakeSelect.append(option); }
     awakeSelect.value = keepAwakeEnabled() ? 'on' : 'off'; awakeField.append(awakeSelect);
     awakeSelect.addEventListener('change', () => { saveAppearance({ readerKeepAwake: awakeSelect.value === 'on' }); if (keepAwakeEnabled() && comic) keepAwake.start(); else keepAwake.stop(); });
-    menu.append(backgrounds, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
+    const turnField = document.createElement('label'); turnField.className = 'reader-navigation-setting'; turnField.textContent = turnModeLabels().title;
+    const turnSelect = document.createElement('select'); turnSelect.id = 'reader-turn-mode';
+    for (const value of ['both', 'swipe', 'tap']) { const option = document.createElement('option'); option.value = value; option.textContent = turnModeLabels()[value]; turnSelect.append(option); }
+    turnSelect.value = turnBy().mode; turnField.append(turnSelect);
+    turnSelect.addEventListener('change', () => {
+      try { store.setSettings({ readerTurnMode: turnSelect.value }); checkSaved(); observePersistence(); notify(); }
+      catch (error) { statusMessage(error?.message || text().storage, true); }
+    });
+    menu.append(backgrounds, turnField, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
   }
   function savePanelLayout(rects) {
     try { store.setPanels(comic.id, currentPage, rects); checkSaved(); observePersistence(); notify(); if (storageWarning) statusMessage('', true); return !storageWarning; }
@@ -1619,6 +1644,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   // Which way a sideways drag goes on a page wider than the screen.
   function sideways(g, dx) {
+    if (!turnBy().swipe) { g.axis = 'pan'; return; } // tapping only: slide, never turn
     if (pagerAllowed()) { g.axis = 'strip'; g.stripStart = clamp(g.startX, 0, g.limits.maxLeft); clearStretch(); return; }
     if (sideDragAction({ dx, canPan: true, atLeft: g.atLeft, atRight: g.atRight }) === 'pan') g.axis = 'pan';
     else { g.axis = 'x'; g.turn = 'release'; }
@@ -1650,7 +1676,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     g.distance = Math.max(g.distance, Math.hypot(dx, dy));
     // A swipe that began with a small vertical wobble is still a page turn:
     // if it soon becomes clearly sideways, undo the scroll and turn instead.
-    if (g.axis === 'y' && !g.relocked && now - g.lockedAt < 260 && Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy) * 1.6 && !(isZoomed() || panMode)) {
+    if (g.axis === 'y' && !g.relocked && now - g.lockedAt < 260 && Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy) * 1.6 && !(isZoomed() || panMode) && (turnBy().swipe || g.canPanX)) {
       g.relocked = true; renderScroll(clamp(g.startX, 0, g.limits.maxLeft), clamp(g.startY, 0, g.limits.maxTop), g.limits); clearStretch();
       if (g.canPanX) sideways(g, dx);
       else { g.axis = 'x'; g.turn = pagerAllowed() ? 'drag' : 'release'; if (g.turn === 'drag') pagerBegin(); }
@@ -1663,9 +1689,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       // A page wider than the screen slides across first, then the same drag
       // pulls the neighbouring page in (see stripMove).
       if (axis === 'x' && g.canPanX) sideways(g, dx);
+      else if (axis === 'x' && !turnBy().swipe) g.axis = 'none'; // tapping only: a swipe does nothing
       else if (axis === 'x') g.turn = pagerAllowed() ? 'drag' : 'release';
       // Zoomed in and already at a side: pulling further outwards turns the page.
-      if (axis === 'free' && !panMode && Math.abs(dx) > Math.abs(dy) * 1.2 && ((dx > 0 && g.atLeft) || (dx < 0 && g.atRight)) && pagerAllowed({ zoomed: true })) { g.axis = 'x'; g.turn = 'drag'; }
+      if (axis === 'free' && turnBy().swipe && !panMode && Math.abs(dx) > Math.abs(dy) * 1.2 && ((dx > 0 && g.atLeft) || (dx < 0 && g.atRight)) && pagerAllowed({ zoomed: true })) { g.axis = 'x'; g.turn = 'drag'; }
       // Touch pointers already stay with the page (implicit capture). Capturing
       // them again makes the browser report a lost capture, which used to cancel
       // every swipe: the page trembled and sprang back instead of turning.
@@ -1684,10 +1711,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const style = getComputedStyle(stage);
     const inset = edge => Math.max(0, parseFloat(style.getPropertyValue(`--reader-safe-${edge}`)) || 0);
     const insideSafeArea = event.clientX >= box.left + inset('left') && event.clientX <= box.right - inset('right') && event.clientY >= box.top + inset('top') && event.clientY <= box.bottom - inset('bottom');
-    const tapDelta = decideTapNavigation({ x, y, dx, dy, distance: g.distance, duration, unchanged: unchanged && Math.abs(stage.scrollLeft - g.scrollLeft) < 3, insideSafeArea,
-      zoomed: !swipeAllowed(), panning: panMode, editing, popup: Boolean(popup), loading, analysisPending, multiTouch: activePointers.size > 0, dragging: false });
+    const sidesTurn = turnBy().tap;
+    const tapDelta = sidesTurn ? decideTapNavigation({ x, y, dx, dy, distance: g.distance, duration, unchanged: unchanged && Math.abs(stage.scrollLeft - g.scrollLeft) < 3, insideSafeArea,
+      zoomed: !swipeAllowed(), panning: panMode, editing, popup: Boolean(popup), loading, analysisPending, multiTouch: activePointers.size > 0, dragging: false }) : 0;
     if (tapDelta) { event.preventDefault(); suppressClicksUntil = now + 450; void move(tapDelta); return; }
-    if (unchanged && !activePointers.size && g.distance < 9 && Math.abs(stage.scrollLeft - g.scrollLeft) < 3 && duration < 400 && !editing && !popup && (x > .25 && x < .75 || (isZoomed() && !guided))) {
+    const middle = x > .25 && x < .75 || !sidesTurn;
+    if (unchanged && !activePointers.size && g.distance < 9 && Math.abs(stage.scrollLeft - g.scrollLeft) < 3 && duration < 400 && !editing && !popup && (middle || (isZoomed() && !guided))) {
       suppressClicksUntil = now + 450;
       // Double tap zooms into that spot (or back to the fitted page); a single
       // tap still shows or hides the controls after a short wait.
@@ -1697,7 +1726,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         return;
       }
       if (lastTap) clearTimeout(lastTap.timer);
-      const centred = y > .15 && y < .85 && x > .25 && x < .75;
+      const centred = y > .15 && y < .85 && middle;
       lastTap = { time: now, x: event.clientX, y: event.clientY, timer: setTimeout(() => { lastTap = undefined; if (centred) setImmersive(!immersive); }, 300) };
     }
   }
