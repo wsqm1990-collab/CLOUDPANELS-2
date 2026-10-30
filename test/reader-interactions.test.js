@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation } from '../src/reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation, turnInputs } from '../src/reader-interactions.js';
 
 test('a portrait comic fits entirely inside a short landscape viewport', () => {
   const result = wholePageFit({ imageWidth: 1800, imageHeight: 2700, availableWidth: 1000, availableHeight: 600 });
@@ -286,4 +286,11 @@ test('only a real overhang makes a page slide sideways', () => {
   assert.equal(slideThreshold(810), 48.6);
   assert.equal(slideThreshold(300), 24);
   assert.equal(slideThreshold(NaN), 24);
+});
+
+test('pages turn by swiping and tapping, by swiping only, or by tapping only', () => {
+  assert.deepEqual(turnInputs('both'), { mode: 'both', swipe: true, tap: true });
+  assert.deepEqual(turnInputs('swipe'), { mode: 'swipe', swipe: true, tap: false });
+  assert.deepEqual(turnInputs('tap'), { mode: 'tap', swipe: false, tap: true });
+  for (const unknown of [undefined, null, '', 'curl', 3]) assert.deepEqual(turnInputs(unknown), { mode: 'both', swipe: true, tap: true });
 });

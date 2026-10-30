@@ -86,6 +86,17 @@ export function resolvePanelIndex(target, count) {
   return Math.max(0, Math.min(count - 1, Number.isFinite(requested) ? Math.floor(requested) : 0));
 }
 
+/**
+ * How the reader turns pages, chosen in Reading appearance / Settings:
+ * 'both' (swipe and tap the sides; the default), 'swipe' (taps on the sides
+ * only show or hide the controls) or 'tap' (sideways drags never turn a page
+ * or panel; they still slide across a wide or zoomed page).
+ */
+export function turnInputs(mode) {
+  const value = mode === 'swipe' || mode === 'tap' ? mode : 'both';
+  return { mode: value, swipe: value !== 'tap', tap: value !== 'swipe' };
+}
+
 /** Intrinsic fill scaling is the reading baseline, not a manual zoom gesture. */
 export function canSwipePages({ pageWidth, baselineWidth, browserScale = 1, panning = false, guided = false, guidedReady = false, editing = false, popup = false, loading = false } = {}) {
   if (panning || (guided && !guidedReady) || editing || popup || loading || ![pageWidth, baselineWidth, browserScale].every(Number.isFinite) || pageWidth <= 0 || baselineWidth <= 0 || browserScale <= 0 || browserScale > 1.035) return false;
