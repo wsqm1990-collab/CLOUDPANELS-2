@@ -4,6 +4,7 @@ import {openAccountGate, showAccountSettings} from './account-gate.js';
 import {MegaConnection} from './mega.js';
 import {createReaderController} from './reader-ui.js';
 import {CoverService} from './covers.js';
+import {createCloudSync, syncReadingPositions} from './cloud-sync.js';
 import {OfflineLibrary} from './offline.js';
 import {streamToCbz,verifyCbz} from './convert.js';
 import {clearArchiveListings} from './reader.js';
@@ -109,6 +110,10 @@ const offline = await new OfflineLibrary().init();
 // confirmed to work reliably on real accounts. Reading comics is unaffected.
 const MEGA_WRITES_ENABLED=false;
 const sync={busy:false,lastText:null,lastAt:0,lastPull:0,failed:false,timer:null};
+// Sync between devices through the CloudPanels sync account (see cloud-sync.js).
+const cloud=createCloudSync();
+const cloudState={busy:false,lastAt:0,failed:'',dirty:false,timer:null};
+let readingComicId=null;
 const localFiles = new Map();
 const demoFiles = new Map();
 const readable = new Set(['cbz','zip','pdf','jpg','jpeg','png','webp','cbr','rar','cb7','7z','cbt','tar']);
@@ -135,7 +140,7 @@ const reader = createReaderController({
     const source=await resolveSource(comic);
     return {comic,source};
   },
-  onChange:()=>{mainDirty=true;queueMainRefresh();scheduleSync();},
+  onChange:()=>{mainDirty=true;queueMainRefresh();scheduleSync();cloudState.dirty=true;scheduleCloudSync();},
   onActivity:({busy,open})=>{
     covers.setForegroundBusy(Boolean(busy||open));
     // The library is fully covered by an open comic: it is not drawn meanwhile.
@@ -145,6 +150,7 @@ const reader = createReaderController({
       queueMainRefresh();
       // Only once the reader is really closed (not while switching comics).
       const closed=!document.querySelector('#reader').open;
+      if(closed){readingComicId=null;scheduleCloudSync(1500);}
       if(reloadForUpdate&&closed)reloadWithUpdate();
       else if(refreshAfterReading&&closed){refreshAfterReading=false;setTimeout(()=>{if(!document.querySelector('#reader').open)void refreshLibrary();},800);}
     }
@@ -608,6 +614,7 @@ async function openComic(comic) {
     if(comic.source==='local'&&!localFiles.has(comic.id)&&!offline.has(comic.id)){pendingLocalId=comic.id;toast(t('selectAgain'));document.querySelector('#file-input').click();return;}
     const source=await resolveSource(comic);
     if(modal.open)closeModal();
+    readingComicId=comic.id;
     await reader.open(store.state.comics.find(c=>c.id===comic.id)||comic,source);
   }catch(error){diag('open-comic',error,{format:comic?.format,size:comic?.size});const message=publicError(error,t('connectionError'));if(message)toast(message);}
   finally{opening=false;refreshHeader();if(!document.querySelector('#reader').open){covers.setForegroundBusy(false);mainDirty=true;queueMainRefresh();}}
@@ -848,7 +855,7 @@ function renderSettings() {
     settingRow(t('appVersion'),(document.querySelector('.sidebar-version span')?.textContent||'').replace(/^IPAD · /,'CloudPanels '),null),
     settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();clearArchiveListings();toast(t('bufferCleared'));render();},'button secondary compact')),
     settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();await reader.clearThumbnails?.();toast(t('coversCleared'));render();},'button secondary compact')),
-    element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
+    cloud.configured?cloudSyncRow():element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
     settingRow(t('diagTitle'),diagnosticsReport()?t('diagDetail'):t('diagEmpty'),action(t('diagCopy'),async()=>{const report=diagnosticsReport()||t('diagEmpty');try{await navigator.clipboard.writeText(report);toast(t('diagCopied'));}catch{const {body}=openModal(t('diagTitle'));const area=element('textarea',{class:'input',rows:12,readonly:true});area.value=report;body.append(area);area.select();}},'button secondary compact')),
     offline.available?settingRow(t('offlineStorage'),t('offlineStorageDetail',{count:offline.ids.size,size:formatBytes(offline.totalBytes)}),action(t('clearOffline'),async()=>{for(const id of [...offline.ids.keys()])await offline.remove(id).catch(()=>{});toast(t('offlineCleared'));render();},'button secondary compact',{disabled:!offline.ids.size})):'');
   main.append(settings,element('section',{class:'card section'},element('h3',{text:t('backup')}),text(t('backupDetail')),element('div',{class:'row',style:'margin-top:17px'},action(t('exportBackup'),exportBackup),action(t('importBackup'),importBackup))),
@@ -1014,6 +1021,87 @@ if('serviceWorker' in navigator && location.protocol==='https:'){ // Lets the in
 appReady=true;
 render();
 startupNotice?.remove();document.body.classList.remove('account-starting');
+// ---- Sync between devices through the CloudPanels sync account ----------------
+// Only reading positions (read / in progress / unread, page and panel) travel.
+// Nothing happens until the reader signs in on this device.
+const CLOUD_TEXT={
+  en:{detail:'Read, in-progress and unread comics and the page where you stopped show on all your devices signed in to your sync account. Comics themselves are never uploaded.',signIn:'Sign in',signOut:'Sign out',syncNow:'Sync now',title:'Sign in to sync',email:'E-mail',password:'Password',passwordNote:'Type the password only here, never in a chat message. Only a session is kept on this device.',signedOutStatus:'Not signed in on this device.',signedIn:'Signed in as {email}',syncing:'Syncing…',syncedAt:'Synced at {time}',notYet:'Not synced yet',failed:'Could not sync: {reason}',wrong:'E-mail or password is not right.',offline:'No connection to the sync service. Try again in a moment.',busy:'The sync service is busy. Try again in a moment.',signedOut:'Signed out on this device. Your reading stays saved here.',done:'Synced. {count} comics updated from your other devices.',doneNone:'Synced.',expired:'Sign in again to keep syncing.',connecting:'Signing in…'},
+  'pt-BR':{detail:'Revistas lidas, em andamento e não lidas, e a página onde você parou aparecem em todos os seus aparelhos conectados à sua conta de sincronização. As revistas em si nunca são enviadas.',signIn:'Entrar',signOut:'Sair',syncNow:'Sincronizar agora',title:'Entrar para sincronizar',email:'E-mail',password:'Senha',passwordNote:'Digite a senha só aqui, nunca numa mensagem de chat. Só uma sessão fica guardada neste aparelho.',signedOutStatus:'Não conectado neste aparelho.',signedIn:'Conectado como {email}',syncing:'Sincronizando…',syncedAt:'Sincronizado às {time}',notYet:'Ainda não sincronizado',failed:'Não foi possível sincronizar: {reason}',wrong:'E-mail ou senha incorretos.',offline:'Sem conexão com o serviço de sincronização. Tente de novo daqui a pouco.',busy:'O serviço de sincronização está ocupado. Tente de novo daqui a pouco.',signedOut:'Desconectado neste aparelho. Sua leitura continua salva aqui.',done:'Sincronizado. {count} revistas atualizadas pelos seus outros aparelhos.',doneNone:'Sincronizado.',expired:'Entre de novo para continuar sincronizando.',connecting:'Entrando…'},
+  es:{detail:'Los cómics leídos, en curso y sin leer, y la página donde te quedaste aparecen en todos tus dispositivos conectados a tu cuenta de sincronización. Los cómics nunca se suben.',signIn:'Entrar',signOut:'Salir',syncNow:'Sincronizar ahora',title:'Entrar para sincronizar',email:'Correo',password:'Contraseña',passwordNote:'Escribe la contraseña solo aquí, nunca en un mensaje de chat. Solo se guarda una sesión en este dispositivo.',signedOutStatus:'No conectado en este dispositivo.',signedIn:'Conectado como {email}',syncing:'Sincronizando…',syncedAt:'Sincronizado a las {time}',notYet:'Aún no sincronizado',failed:'No se pudo sincronizar: {reason}',wrong:'Correo o contraseña incorrectos.',offline:'Sin conexión con el servicio de sincronización. Inténtalo de nuevo en un momento.',busy:'El servicio de sincronización está ocupado. Inténtalo de nuevo en un momento.',signedOut:'Desconectado en este dispositivo. Tu lectura sigue guardada aquí.',done:'Sincronizado. {count} cómics actualizados desde tus otros dispositivos.',doneNone:'Sincronizado.',expired:'Entra de nuevo para seguir sincronizando.',connecting:'Entrando…'},
+};
+function ct(key,values={}){const table=CLOUD_TEXT[store.state.settings.language]||CLOUD_TEXT.en;return String(table[key]??CLOUD_TEXT.en[key]??key).replace(/\{(\w+)\}/g,(_,name)=>values[name]??'');}
+function cloudReason(error){return error?.code==='LOGIN'?ct('wrong'):error?.code==='BUSY'?ct('busy'):error?.code==='SIGNED_OUT'?ct('expired'):ct('offline');}
+function cloudStatusText(){
+  if(!cloud.signedIn)return ct('signedOutStatus');
+  const when=cloudState.busy?ct('syncing'):cloudState.failed?ct('failed',{reason:cloudState.failed}):cloudState.lastAt?ct('syncedAt',{time:new Date(cloudState.lastAt).toLocaleTimeString(store.state.settings.language==='en'?'en-US':store.state.settings.language,{hour:'2-digit',minute:'2-digit'})}):ct('notYet');
+  return ct('signedIn',{email:cloud.email})+' · '+when;
+}
+async function cloudSyncNow({announce=false}={}){
+  if(!cloud.configured||!cloud.signedIn)return false;
+  if(cloudState.busy){scheduleCloudSync(5000);return false;}
+  clearTimeout(cloudState.timer);cloudState.timer=null;
+  cloudState.busy=true;const dirty=cloudState.dirty;cloudState.dirty=false;refreshSyncStatus();
+  try{
+    // The comic open in the reader keeps the place it is at on this device.
+    const {applied}=await syncReadingPositions({cloud,store,skip:document.querySelector('#reader').open?readingComicId:null});
+    if(applied){mainDirty=true;queueMainRefresh();void store.flush?.();}
+    cloudState.lastAt=Date.now();cloudState.failed='';
+    if(announce)toast(applied?ct('done',{count:applied}):ct('doneNone'));
+    return true;
+  }catch(error){
+    cloudState.dirty=cloudState.dirty||dirty;cloudState.failed=cloudReason(error);diag('cloud-sync',error);
+    if(announce||error?.code==='SIGNED_OUT')toast(cloudState.failed);
+    if(error?.code==='SIGNED_OUT'&&view==='settings')render();
+    return false;
+  }finally{cloudState.busy=false;refreshSyncStatus();}
+}
+// Reading changes are sent while the reader is at rest: 20 seconds after the
+// last one, when a comic is closed, and when the app goes to the background.
+function scheduleCloudSync(delay=20000){
+  if(!cloud.configured||!cloud.signedIn)return;
+  // A sync already due sooner (a comic was just closed) is never put off.
+  const due=Date.now()+delay;
+  if(cloudState.timer&&cloudState.due<=due)return;
+  clearTimeout(cloudState.timer);cloudState.due=due;cloudState.timer=setTimeout(()=>{cloudState.timer=null;void cloudSyncNow();},delay);
+}
+function cloudSyncRow(){
+  const status=element('p',{class:'muted','data-sync-status':'1',text:cloudStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'});
+  const controls=cloud.signedIn
+    ?element('div',{class:'row'},action(ct('syncNow'),()=>void cloudSyncNow({announce:true}),'button secondary compact'),action(ct('signOut'),async()=>{await cloud.signOut();cloudState.lastAt=0;cloudState.failed='';toast(ct('signedOut'));render();},'button ghost compact'))
+    :action(ct('signIn'),openCloudSignIn,'button primary compact');
+  return element('div',{class:'settings-row',id:'cloud-sync-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(ct('detail')),status),controls);
+}
+function openCloudSignIn(){
+  const {body,current}=openModal(ct('title'));
+  const form=element('form'),status=text('','form-error');status.setAttribute('role','status');
+  const email=inputField(ct('email'),{type:'email',autocomplete:'username',attrs:{required:true,maxlength:254,inputmode:'email',autocapitalize:'none',spellcheck:'false'}});
+  const password=inputField(ct('password'),{type:'password',autocomplete:'current-password',attrs:{required:true,maxlength:1024}});
+  const submit=element('button',{type:'submit',class:'button primary',text:ct('signIn')});
+  form.append(element('div',{class:'stack',style:'gap:15px'},email.node,password.node),text(ct('passwordNote'),'subtle'),status,element('div',{class:'form-actions'},action(t('cancel'),closeModal,'button ghost'),submit));
+  body.append(form);
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();if(!current())return;
+    const address=email.control.value,secret=password.control.value;password.control.value='';
+    submit.disabled=true;status.className='loading';status.textContent=ct('connecting');
+    try{
+      await cloud.signIn(address,secret);
+      if(!current())return;
+      closeModal();cloudState.dirty=true;if(view==='settings')render();
+      await cloudSyncNow({announce:true});
+    }catch(error){if(!current())return;status.className='form-error';status.textContent=cloudReason(error);submit.disabled=false;}
+  });
+  setTimeout(()=>email.control.focus(),50);
+}
+if(cloud.configured){
+  if(cloud.signedIn)setTimeout(()=>void cloudSyncNow(),4000);
+  setInterval(()=>{if(document.visibilityState==='visible'&&cloudState.dirty&&!document.querySelector('#reader').open)void cloudSyncNow();},120000);
+  let cloudHiddenAt=0;
+  document.addEventListener('visibilitychange',()=>{
+    if(!cloud.signedIn)return;
+    if(document.visibilityState==='hidden'){cloudHiddenAt=Date.now();if(cloudState.dirty)void cloudSyncNow();}
+    else if(Date.now()-Math.max(cloudState.lastAt,cloudHiddenAt)>60000||Date.now()-cloudState.lastAt>10*60000)void cloudSyncNow();
+  });
+}
 // ---- Sync through the user's MEGA --------------------------------------------
 function syncPayload(){
   const state=JSON.parse(store.exportBackup());
@@ -1171,6 +1259,7 @@ document.addEventListener('visibilitychange',()=>{
 window.addEventListener('pagehide',()=>{hiddenSince=Date.now();});
 window.addEventListener('pageshow',event=>{if(event.persisted)cameBack();});
 function syncStatusText(){
+  if(cloud.configured)return cloudStatusText();
   if(!MEGA_WRITES_ENABLED)return t('syncPaused');
   if(!mega.connected||!mega.canSync)return t('syncNeedsAccount');
   if(sync.busy)return t('syncBusy');

@@ -362,6 +362,23 @@ export class LibraryStore {
     this.save();
     return updates.length;
   }
+  // Reading positions from another device (see cloud-sync.js): each one is
+  // taken only when it is newer than this device's. Returns how many changed.
+  applySyncedProgress(entries) {
+    if (!Array.isArray(entries)) return 0;
+    const known = new Set(this.state.comics.map(c => c.id));
+    let changed = 0;
+    for (const entry of entries.slice(0, MAX_COMICS)) {
+      if (!Array.isArray(entry)) continue;
+      const [id, value] = entry, current = this.state.progress[id];
+      if (!known.has(id) || !value || typeof value.updatedAt !== 'string') continue;
+      const valid = progress(value, current || {}); if (!valid) continue;
+      if (current && !(valid.updatedAt > current.updatedAt)) continue;
+      this.state.progress[id] = valid; changed++;
+    }
+    if (changed) this.save();
+    return changed;
+  }
   markUnread(id) {
     const previous = this.state.progress[id];
     return this.setProgress(id, { page: 0, panel: 0, pageCount: previous?.pageCount || 1, status: 'unread' });
