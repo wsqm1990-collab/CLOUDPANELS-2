@@ -112,7 +112,7 @@ const MEGA_WRITES_ENABLED=false;
 const sync={busy:false,lastText:null,lastAt:0,lastPull:0,failed:false,timer:null};
 // Sync between devices through the CloudPanels sync account (see cloud-sync.js).
 const cloud=createCloudSync();
-const cloudState={busy:false,lastAt:0,failed:'',dirty:false,timer:null};
+const cloudState={busy:false,lastAt:0,failed:'',dirty:false,timer:null,seen:{revision:null,data:null,skipped:null}};
 let readingComicId=null;
 const localFiles = new Map();
 const demoFiles = new Map();
@@ -1043,7 +1043,7 @@ async function cloudSyncNow({announce=false}={}){
   cloudState.busy=true;const dirty=cloudState.dirty;cloudState.dirty=false;refreshSyncStatus();
   try{
     // The comic open in the reader keeps the place it is at on this device.
-    const {applied}=await syncReadingPositions({cloud,store,skip:document.querySelector('#reader').open?readingComicId:null});
+    const {applied}=await syncReadingPositions({cloud,store,skip:document.querySelector('#reader').open?readingComicId:null,seen:cloudState.seen,changes:dirty});
     if(applied){mainDirty=true;queueMainRefresh();void store.flush?.();}
     cloudState.lastAt=Date.now();cloudState.failed='';
     if(announce)toast(applied===1?ct('doneOne'):applied?ct('done',{count:applied}):ct('doneNone'));
@@ -1055,19 +1055,21 @@ async function cloudSyncNow({announce=false}={}){
     return false;
   }finally{cloudState.busy=false;refreshSyncStatus();}
 }
-// Reading changes are sent while the reader is at rest: 20 seconds after the
-// last one, when a comic is closed, and when the app goes to the background.
+// Changes are sent 20 seconds after one is made (never while a comic is open),
+// when a comic is closed, and when the app goes to the background.
 function scheduleCloudSync(delay=20000){
   if(!cloud.configured||!cloud.signedIn)return;
   // A sync already due sooner (a comic was just closed) is never put off.
   const due=Date.now()+delay;
   if(cloudState.timer&&cloudState.due<=due)return;
-  clearTimeout(cloudState.timer);cloudState.due=due;cloudState.timer=setTimeout(()=>{cloudState.timer=null;void cloudSyncNow();},delay);
+  clearTimeout(cloudState.timer);cloudState.due=due;
+  // Not while a comic is open: closing it (or leaving the app) sends the place.
+  cloudState.timer=setTimeout(()=>{cloudState.timer=null;if(!document.querySelector('#reader').open)void cloudSyncNow();},delay);
 }
 function cloudSyncRow(){
   const status=element('p',{class:'muted','data-sync-status':'1',text:cloudStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'});
   const controls=cloud.signedIn
-    ?element('div',{class:'row'},action(ct('syncNow'),()=>void cloudSyncNow({announce:true}),'button secondary compact'),action(ct('signOut'),async()=>{await cloud.signOut();cloudState.lastAt=0;cloudState.failed='';toast(ct('signedOut'));render();},'button ghost compact'))
+    ?element('div',{class:'row'},action(ct('syncNow'),()=>void cloudSyncNow({announce:true}),'button secondary compact'),action(ct('signOut'),async()=>{await cloud.signOut();cloudState.lastAt=0;cloudState.failed='';cloudState.seen={revision:null,data:null,skipped:null};toast(ct('signedOut'));render();},'button ghost compact'))
     :action(ct('signIn'),openCloudSignIn,'button primary compact');
   return element('div',{class:'settings-row',id:'cloud-sync-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(ct('detail')),status),controls);
 }
@@ -1086,7 +1088,7 @@ function openCloudSignIn(){
     try{
       await cloud.signIn(address,secret);
       if(!current())return;
-      closeModal();cloudState.dirty=true;if(view==='settings')render();
+      closeModal();cloudState.dirty=true;cloudState.seen={revision:null,data:null,skipped:null};if(view==='settings')render();
       await cloudSyncNow({announce:true});
     }catch(error){if(!current())return;status.className='form-error';status.textContent=cloudReason(error);submit.disabled=false;}
   });
