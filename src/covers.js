@@ -133,6 +133,7 @@ class IndexedCoverDisk {
   // A read only looks; its last use is noted a few seconds later, together
   // with the others (without touching the pictures themselves).
   async get(key) {
+    const started = performance.now();
     const blob = await this._transaction('thumbnails', 'readonly', (tx, result) => {
       const request = tx.objectStore('thumbnails').get(key);
       request.onsuccess = () => {
@@ -142,6 +143,7 @@ class IndexedCoverDisk {
         result(row.blob);
       };
     }, this.readTimeoutMs);
+    globalThis.__cpPerf?.total(blob && blob !== 'broken' ? 'coverSaved' : 'coverMissing', performance.now() - started);
     if (blob === 'broken') { void this._forget(key).catch(() => {}); return null; }
     if (blob) this._touch(key);
     return blob;
@@ -176,6 +178,7 @@ class IndexedCoverDisk {
   // Keep the most recently used covers within the space; only the small
   // access records are read for this.
   trim() {
+    const started = performance.now();
     return this._transaction(['thumbnails', 'access'], 'readwrite', tx => {
       const pictures = tx.objectStore('thumbnails'), cursor = tx.objectStore('access').index('accessedAt').openCursor(null, 'prev');
       let used = 0, count = 0;
@@ -186,7 +189,7 @@ class IndexedCoverDisk {
         else { used += size; count++; }
         at.continue();
       };
-    }, this.writeTimeoutMs * 2);
+    }, this.writeTimeoutMs * 2).finally(() => globalThis.__cpPerf?.total('coverTrim', performance.now() - started));
   }
   clear() { this.touched.clear(); return this._transaction(['thumbnails', 'access'], 'readwrite', tx => { tx.objectStore('thumbnails').clear(); tx.objectStore('access').clear(); }, this.writeTimeoutMs); }
   async close() { clearTimeout(this.touchTimer); this.touchTimer = null; try { await this._flushTouches(); } catch {} try { (await this.opening)?.close(); } catch {} }
@@ -275,7 +278,7 @@ export class CoverService {
     }
   }
   async _load(job) {
-    const signal = job.controller.signal; let book;
+    const signal = job.controller.signal; let book; const started = performance.now();
     try {
       check(signal);
       const source = await this.getSource(job.comic, { signal }); check(signal);
@@ -294,6 +297,7 @@ export class CoverService {
       const blob = await this.thumbnail(page, { signal }); check(signal);
       if (!(blob instanceof Blob) || !blob.size || blob.type !== 'image/jpeg' || blob.size > MAX_THUMB_BYTES || job.epoch !== this.epoch || this.closed) return null;
       this._remember(job.key, blob); this.fresh.set(job.key, blob);
+      globalThis.__cpPerf?.total('coverMade', performance.now() - started);
       await this._disk(() => job.epoch === this.epoch && !this.closed ? this.disk.put(job.key, blob) : null);
       check(signal); return blob;
     } catch (error) { if (signal.aborted || error?.name === 'AbortError') throw abortError(); return null; }

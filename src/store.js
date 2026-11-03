@@ -613,7 +613,8 @@ export async function createBrowserLibraryStore({onPersistenceError, metadataSto
   // flushes while the reader is at rest (see observePersistence in reader-ui);
   // this timer is only the safety net. Explicit flush/hide commits promptly.
   const saveSnapshot = store.save.bind(store);
-  const readerMutations = Object.fromEntries(['setProgress', 'setPanels', 'setSettings'].map(name => [name, store[name].bind(store)]));
+  // Reading places from another device (cloud sync) are such small changes too.
+  const readerMutations = Object.fromEntries(['setProgress', 'setPanels', 'setSettings', 'applySyncedProgress'].map(name => [name, store[name].bind(store)]));
   let progressWrite = false, progressDirty = false, progressTimer = null, preparingProgress = null;
   // True while everything in memory passed the full check (when loaded, or by
   // the last full save): reading changes can then be written without it.
