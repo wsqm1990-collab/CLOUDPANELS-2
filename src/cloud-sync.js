@@ -7,8 +7,8 @@
 // The project's address and its publishable key are public by design: the
 // table only lets each signed-in user read and write their own row (see the
 // SQL in the release notes), and new sign-ups are turned off in the project.
-export const SYNC_URL = '';
-export const SYNC_KEY = '';
+export const SYNC_URL = 'https://vtjjibsllcwfamixdfnk.supabase.co';
+export const SYNC_KEY = 'sb_publishable_RdM8yKZDH2syfddg2rTrVA_2WkaIRVy';
 const SESSION_KEY = 'cloudpanels-cloud-sync-v1';
 const TABLE = 'cloudpanels_sync';
 
