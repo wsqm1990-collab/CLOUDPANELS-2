@@ -103,3 +103,59 @@ test('next issue normalizes separators but never leaves the root or enters anoth
  assert.equal(nextComicInFolder([],first),null);
  assert.equal(nextComicInFolder(catalog,null),null);
 });
+
+// The way "Up next" was chosen before it was made fast: kept here to check
+// that the fast version chooses exactly the same comics.
+function previousUpNext(comics,progress={},limit=6,readLaterIds=[]) {
+  const fold = value => String(value ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase();
+  const statusOf = (comic, progress) => progress[comic.id]?.status || 'unread';
+  const sort = (list, kind) => list.slice().sort((a, b) => {
+    if (kind === 'recent') return (progress[b.id]?.updatedAt || b.addedAt || '').localeCompare(progress[a.id]?.updatedAt || a.addedAt || '');
+    const series = (a.metadata?.series || '').localeCompare(b.metadata?.series || '', undefined, {numeric: true}); if (series) return series;
+    const volume = (a.metadata?.volume || '').localeCompare(b.metadata?.volume || '', undefined, {numeric: true}); if (volume) return volume;
+    const av = Number(a.metadata?.issue), bv = Number(b.metadata?.issue);
+    if (a.metadata?.issue !== '' && b.metadata?.issue !== '' && Number.isFinite(av) && Number.isFinite(bv) && av !== bv) return av - bv;
+    return (a.metadata?.title || a.name).localeCompare(b.metadata?.title || b.name, undefined, {numeric: true});
+  });
+  const chosen=[],seen=new Set(),add=comic=>{if(comic&&!seen.has(comic.id)&&statusOf(comic,progress)!=='finished'){chosen.push(comic);seen.add(comic.id);}};
+  sort(comics.filter(c=>statusOf(c,progress)==='reading'),'recent').forEach(add);
+  const byId=new Map(comics.map(comic=>[comic.id,comic]));
+  for(const id of readLaterIds)add(byId.get(id));
+  for(const previous of sort(comics.filter(c=>statusOf(c,progress)==='finished'),'recent')) {
+    const m=previous.metadata||{},issue=Number(m.issue);
+    if(!m.series||m.issue===''||!Number.isFinite(issue))continue;
+    add(comics.filter(c=>{const n=c.metadata||{};return n.series&&fold(n.series)===fold(m.series)&&String(n.volume||'')===String(m.volume||'')&&n.issue!==''&&Number.isFinite(Number(n.issue))&&Number(n.issue)>issue&&statusOf(c,progress)!=='finished';}).sort((a,b)=>Number(a.metadata.issue)-Number(b.metadata.issue))[0]);
+    if(chosen.length>=limit)break;
+  }
+  sort(comics,'issue').forEach(add);
+  return chosen.slice(0,Math.max(0,limit));
+}
+
+test('Up next chooses the same comics as before, only much faster', () => {
+  let seed = 7; const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const pick = list => list[Math.floor(random() * list.length)];
+  const seriesNames = ['Saga', 'saga', 'Sága', 'Batman', 'Monstress', 'Paper Girls', 'Y The Last Man', ''];
+  for (let round = 0; round < 400; round++) {
+    const comics = [], progress = {};
+    const count = 1 + Math.floor(random() * 60);
+    for (let i = 0; i < count; i++) {
+      const series = pick(seriesNames), issue = pick(['1', '2', '3', '4', '5', '10', '12', '', '2', '3']), volume = pick(['', '', '1', '2']);
+      comics.push({ id: `c${i}`, name: `${series} #${issue} v${volume}.cbz`, addedAt: `2026-0${1 + Math.floor(random() * 9)}-01T00:00:00.000Z`, metadata: { series, issue, volume, title: `${series} #${issue}` } });
+      const status = pick(['finished', 'finished', 'reading', 'unread', 'none']);
+      if (status !== 'none') progress[`c${i}`] = { status, updatedAt: `2026-10-${String(1 + Math.floor(random() * 28)).padStart(2, '0')}T10:00:00.000Z` };
+    }
+    const readLater = Array.from({ length: Math.floor(random() * 4) }, () => `c${Math.floor(random() * (count + 3))}`);
+    const limit = pick([0, 1, 3, 6, 6, 20, -1]);
+    assert.deepEqual(upNextComics(comics, progress, limit, readLater).map(c => c.id), previousUpNext(comics, progress, limit, readLater).map(c => c.id), `round ${round}`);
+  }
+});
+
+test('Up next stays quick with thousands of comics read, in series read to the end', () => {
+  const comics = [], progress = {};
+  for (let s = 0; s < 410; s++) for (let i = 1; i <= 15; i++) comics.push({ id: `${s}-${i}`, name: `Team ${s} #${i}.cbr`, metadata: { series: `Team ${s}`, issue: String(i), volume: '', title: `Team ${s} #${i}` } });
+  comics.slice(0, 5100).forEach((c, i) => { progress[c.id] = { status: 'finished', updatedAt: new Date(Date.UTC(2026, 0, 1) + i * 60000).toISOString() }; });
+  const started = performance.now();
+  const result = upNextComics(comics, progress, 6, []);
+  assert.equal(result.length, 6);
+  assert.ok(performance.now() - started < 1000, `took ${Math.round(performance.now() - started)} ms`);
+});

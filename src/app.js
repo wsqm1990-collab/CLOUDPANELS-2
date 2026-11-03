@@ -57,13 +57,45 @@ function diag(where,error,extra){
     list.push({at:new Date().toISOString(),where,message:scrub(error?.message||error),code:error?.code||error?.status||'',name:error?.name||'',stack:scrub(String(error?.stack||'').split('\n').slice(0,4).join(' | ')),extra:extra?scrub(JSON.stringify(extra),2400):undefined,version:document.querySelector('.sidebar-version span')?.textContent||''});
     localStorage.setItem(DIAG_KEY,JSON.stringify(list.slice(-80)));}catch{}
 }
+// ---- Speed report (Settings → Diagnostics → Copy report): what kept this
+// device busy and for how long. Only timings and counts: no comic names,
+// e-mail addresses, passwords or keys.
+const perf=globalThis.__cpPerf={marks:[],work:[],long:[],stalls:[],counts:{},active:new Set(),extra:()=>[],
+  count(name){this.counts[name]=(this.counts[name]||0)+1;},
+  total(name,ms){this.counts[name]=(this.counts[name]||0)+1;this.counts[name+'Ms']=Math.round((this.counts[name+'Ms']||0)+ms);this.counts[name+'MaxMs']=Math.max(this.counts[name+'MaxMs']||0,Math.round(ms));},
+  mark(name){if(this.marks.length<160)this.marks.push([name,Math.round(performance.now())]);},
+  begin(name){if(!this.active.has(name)){this.active.add(name);this.mark(name+'>');}},
+  end(name){if(this.active.delete(name))this.mark(name+'<');},
+  done(name,start){const ms=performance.now()-start;if(ms>=40){if(this.work.length>=300)this.work.shift();this.work.push([name,Math.round(start),Math.round(ms)]);}},
+  labels(){try{return [...this.active,...this.extra()].join('+');}catch{return [...this.active].join('+');}}};
+try{new PerformanceObserver(list=>{for(const entry of list.getEntries()){if(perf.long.length>=300)perf.long.shift();perf.long.push([Math.round(entry.startTime),Math.round(entry.duration),perf.labels()]);}}).observe({type:'longtask',buffered:true});}catch{}
+// Where long tasks are not reported (iPad), a late timer shows the same stall.
+(()=>{let last=performance.now(),until=last+180000,timer=null;
+  const tick=()=>{const now=performance.now(),late=now-last-100;if(late>150){if(perf.stalls.length>=300)perf.stalls.shift();perf.stalls.push([Math.round(last+100),Math.round(late),perf.labels()]);}last=now;timer=now<until&&document.visibilityState!=='hidden'?setTimeout(tick,100):null;};
+  timer=setTimeout(tick,100);
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible')return;perf.mark('back');last=performance.now();until=last+120000;if(!timer)timer=setTimeout(tick,100);});})();
+perf.mark('app-start');
 window.addEventListener('error',event=>diag('window',event.error||event.message));
 window.addEventListener('unhandledrejection',event=>diag('promise',event.reason));
 window.addEventListener('cloudpanels-error',event=>diag(event.detail?.where||'reader',event.detail?.error,event.detail?.extra));
-function diagnosticsReport(){try{const list=JSON.parse(localStorage.getItem(DIAG_KEY)||'[]');return list.length?JSON.stringify({app:'CloudPanels',ua:navigator.userAgent,entries:list},null,1):'';}catch{return '';}}
+function diagnosticsEntries(){try{const list=JSON.parse(localStorage.getItem(DIAG_KEY)||'[]');return Array.isArray(list)?list:[];}catch{return [];}}
+// Problems recorded, plus the speed report of this session (timings and counts only).
+function diagnosticsReport(){
+  const speed={};
+  try{
+    const nav=performance.getEntriesByType?.('navigation')?.[0],state=store?.state||{},connection=navigator.connection;
+    Object.assign(speed,{uptime:Math.round(performance.now()),cpu:navigator.hardwareConcurrency||null,memoryGB:navigator.deviceMemory||null,
+      network:connection?{type:connection.effectiveType||'',rtt:connection.rtt??null,mbps:connection.downlink??null}:null,
+      page:nav?{responseStart:Math.round(nav.responseStart),responseEnd:Math.round(nav.responseEnd),interactive:Math.round(nav.domInteractive),loaded:Math.round(nav.domContentLoadedEventEnd),fromWorker:nav.workerStart>0}:null,
+      files:(performance.getEntriesByType?.('resource')||[]).filter(entry=>/\/(app\.js|styles\.css|thumb-worker\.js|chunk-[\w-]+\.js)$/.test(entry.name)).map(entry=>[entry.name.split('/').pop(),Math.round(entry.startTime),Math.round(entry.duration),entry.transferSize??null]),
+      library:{comics:state.comics?.length||0,positions:Object.keys(state.progress||{}).length,panels:Object.keys(state.panels||{}).length,bookmarks:state.bookmarks?.length||0,retired:Object.keys(state.retired||{}).length,offline:offline?.ids?.size||0,mega:mega?.connected||false,sync:cloud?.signedIn||false},
+      counts:perf.counts,marks:perf.marks,work:perf.work,long:perf.long,stalls:perf.stalls});
+  }catch(error){speed.error=String(error?.message||error).slice(0,200);}
+  return JSON.stringify({app:'CloudPanels',version:document.querySelector('.sidebar-version span')?.textContent||'',ua:navigator.userAgent,speed,entries:diagnosticsEntries()});
+}
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
-let accountProfile = await openAccountGate({client:accounts});
+let accountProfile = await openAccountGate({client:accounts});perf.mark('gate');
 let store;
 let startupNotice;
 if (accounts) {
@@ -71,6 +103,7 @@ if (accounts) {
   const card = document.createElement('section'); card.className = 'account-card';
   const title = document.createElement('h2'); title.textContent = 'Opening your library…'; card.append(title); startupNotice.append(card); document.body.append(startupNotice);
 }
+perf.begin('store-load');
 try {
   store = await createBrowserLibraryStore({
     ...(accounts ? {metadataStore:accounts.createMetadataStore(),strictPersistence:true,fallbackStorage:null} : {}),
@@ -96,6 +129,7 @@ try {
   card.append(message,retry); startupNotice.append(card);
   throw new Error('Library startup could not complete.');
 }
+perf.end('store-load');
 const mega = new MegaConnection();
 // Remember the MEGA session on this iPad (never the password), so reopening the
 // app does not ask for a new login. "Disconnect" forgets it.
@@ -105,7 +139,7 @@ const sessionVault = accounts || {
   async loadSession(){try{return JSON.parse(localStorage.getItem(SESSION_KEY)||'null');}catch{return null;}},
   async clearSession(){try{localStorage.removeItem(SESSION_KEY);}catch{}},
 };
-const offline = await new OfflineLibrary().init();
+perf.begin('offline');const offline = await new OfflineLibrary().init();perf.end('offline');
 // Writing to MEGA (sync, shared covers, CBZ conversion) is paused until it is
 // confirmed to work reliably on real accounts. Reading comics is unaffected.
 const MEGA_WRITES_ENABLED=false;
@@ -129,6 +163,7 @@ let modalGeneration = 0, modalAbort = null, toastTimer, opening = false, pending
 const conversation = [];
 // Room for several thousand covers on the device (each about 30-60 KB).
 const covers = new CoverService({getSource:comic=>resolveSource(comic), maxConcurrent:2, maxMemoryBytes:24*1024*1024, maxDiskBytes:192*1024*1024, allowFull:comic=>offline.has(comic.id)&&['cbr','rar','cb7','7z','cbt','tar'].includes(String(comic.format).toLowerCase()), ...(accounts ? {disk:null} : {})});
+perf.extra=()=>[covers.running?'covers':null,document.querySelector('#reader')?.open?'reader':null].filter(Boolean);
 let rememberedConnection = null, restoringConnection = null;
 let coverObserver=null,coverEpoch=0;
 const coverRequests=new Map(),coverTargets=new Map(),coverURLs=new Set();
@@ -274,11 +309,13 @@ function refreshHeader() {
   const connectLabel=document.querySelector('#connect-button span');if(connectLabel)connectLabel.textContent=mega.connected?t('manageMega'):t('connectMega');
 }
 function render() {
+  const started=performance.now();
   releaseCoverView();refreshHeader();main.replaceChildren();
   if(view==='collections')renderCollections();
   else if(view==='assistant')renderAssistant();
   else if(view==='settings')renderSettings();
   else renderLibrary();
+  perf.done('render:'+view,started);
 }
 function hero() {
   const art=element('div',{class:'hero-illustration','aria-hidden':'true'},
@@ -293,15 +330,27 @@ function hero() {
     element('div',{class:'format-list',style:'margin-top:17px'},['CBZ','CBR','PDF','JPG'].map(format=>element('span',{text:format})))),art);
 }
 function empty(title, description, buttons = []) { return element('div',{class:'empty-state'},element('div',{class:'empty-icon','aria-hidden':'true',text:'＋'}),element('h3',{text:title}),text(description),element('div',{class:'row'},buttons)); }
+// A long list (thousands of series) is filled in when it is opened: laying out
+// every entry each time the library was drawn took seconds on a phone.
+const LONG_SELECT=150;
 function selectControl(label, options, current, callback, className='') {
   const select=element('select',{'aria-label':label,class:className});
-  options.forEach(([value,name])=>select.append(element('option',{value,text:name})));select.value=current;
+  const fill=list=>list.forEach(([value,name])=>select.append(element('option',{value,text:name})));
+  if(options.length>LONG_SELECT){
+    fill(options.filter(([value],index)=>index===0||value===current));
+    select.dataset.longest=String(options.reduce((longest,[,name])=>Math.max(longest,String(name).length),0));
+    let filled=false;
+    const all=()=>{if(filled)return;filled=true;const keep=select.value;select.replaceChildren();fill(options);select.value=keep;};
+    for(const type of ['pointerdown','mousedown','touchstart','focus','keydown'])select.addEventListener(type,all,{once:true,passive:true});
+  }else fill(options);
+  select.value=current;
   select.addEventListener('change',()=>callback(select.value));
   return select;
 }
+const facetOrder=new Intl.Collator(undefined,{numeric:true}); // the order of localeCompare, set up once
 function facetOptions(comics, key, first) {
   const values=new Set();comics.forEach(c=>{const value=c.metadata[key];if(Array.isArray(value))value.forEach(v=>values.add(v));else if(value)values.add(value);});
-  return [['',first],...[...values].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(value=>[value,value])];
+  return [['',first],...[...values].sort(facetOrder.compare).map(value=>[value,value])];
 }
 function filterToolbar(comics) {
   const changes=(key,value)=>{clearComicSelection();filters[key]=value;visibleCount=60;render();};
@@ -313,7 +362,8 @@ function filterToolbar(comics) {
     selectControl(t('character'),facetOptions(comics,'characters',t('allCharacters')),filters.character,v=>changes('character',v),'input'),
     selectControl(t('sort'),[['title',t('title')],['issue',t('issue')],['recent',t('recent')],['added',t('added')]],filters.sort,v=>changes('sort',v),'input'),
     selectControl(t('group'),[['',t('noGrouping')],['publisher',t('publisher')],['series',t('series')],['characters',t('character')]],filters.group,v=>changes('group',v),'input'));
-  fields.querySelectorAll('select').forEach(node=>{node.style.width='auto';node.style.maxWidth='100%';node.style.minHeight='36px';node.style.fontSize='10px';node.style.padding='8px 10px';});
+  // A long list shows only its first entry until opened: give it the width its longest entry would.
+  fields.querySelectorAll('select').forEach(node=>{node.style.width=node.dataset.longest?`calc(${(Math.min(Number(node.dataset.longest),110)*.85).toFixed(1)}ch + 34px)`:'auto';node.style.maxWidth='100%';node.style.minHeight='36px';node.style.fontSize='10px';node.style.padding='8px 10px';});
   return [chips,fields];
 }
 function renderLibrary() {
@@ -856,7 +906,7 @@ function renderSettings() {
     settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();clearArchiveListings();toast(t('bufferCleared'));render();},'button secondary compact')),
     settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();await reader.clearThumbnails?.();toast(t('coversCleared'));render();},'button secondary compact')),
     cloud.configured?cloudSyncRow():element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
-    settingRow(t('diagTitle'),diagnosticsReport()?t('diagDetail'):t('diagEmpty'),action(t('diagCopy'),async()=>{const report=diagnosticsReport()||t('diagEmpty');try{await navigator.clipboard.writeText(report);toast(t('diagCopied'));}catch{const {body}=openModal(t('diagTitle'));const area=element('textarea',{class:'input',rows:12,readonly:true});area.value=report;body.append(area);area.select();}},'button secondary compact')),
+    settingRow(t('diagTitle'),diagnosticsEntries().length?t('diagDetail'):t('diagEmpty'),action(t('diagCopy'),async()=>{const report=diagnosticsReport();try{await navigator.clipboard.writeText(report);toast(t('diagCopied'));}catch{const {body}=openModal(t('diagTitle'));const area=element('textarea',{class:'input',rows:12,readonly:true});area.value=report;body.append(area);area.select();}},'button secondary compact')),
     offline.available?settingRow(t('offlineStorage'),t('offlineStorageDetail',{count:offline.ids.size,size:formatBytes(offline.totalBytes)}),action(t('clearOffline'),async()=>{for(const id of [...offline.ids.keys()])await offline.remove(id).catch(()=>{});toast(t('offlineCleared'));render();},'button secondary compact',{disabled:!offline.ids.size})):'');
   main.append(settings,element('section',{class:'card section'},element('h3',{text:t('backup')}),text(t('backupDetail')),element('div',{class:'row',style:'margin-top:17px'},action(t('exportBackup'),exportBackup),action(t('importBackup'),importBackup))),
     element('section',{class:'card section'},element('h3',{text:t('cloudConnection')}),text(t('cloudConnectionDetail')),element('div',{class:'row',style:'margin-top:17px'},action(mega.connected?t('manageMega'):t('connectMega'),openConnection,'button primary'),mega.connected?action(t('disconnect'),disconnect,'button secondary'):null)),
@@ -884,6 +934,7 @@ async function restoreRememberedConnection() {
       const saved=await sessionVault.loadSession();
       if(!saved?.connection)return;
       rememberedConnection=saved;
+      perf.begin('mega-restore');
       await mega.restoreRememberedSession(saved.connection);
       if(saved.folder?.id){try{await mega.children(saved.folder.id);}catch{rememberedConnection.folder=null;}}
       if(Array.isArray(saved.browsePath)&&saved.browsePath.length<=64&&saved.browsePath.every(part=>typeof part==='string'&&part.length<=512))folderPath=saved.browsePath.slice();
@@ -895,7 +946,7 @@ async function restoreRememberedConnection() {
       diag('mega-restore',error);
       if(['LOGIN','ACCESS','SESSION_INPUT'].includes(error?.code)){try{await sessionVault.clearSession();}catch{}rememberedConnection=null;}
       toast(t('reconnect'));
-    }finally{restoringConnection=null;}
+    }finally{restoringConnection=null;perf.end('mega-restore');}
   })();
   return restoringConnection;
 }
@@ -1019,7 +1070,7 @@ if('serviceWorker' in navigator && location.protocol==='https:'){ // Lets the in
   if(document.readyState==='complete')registerWorker();else window.addEventListener('load',registerWorker,{once:true});
 }
 appReady=true;
-render();
+render();perf.mark('first-render');
 startupNotice?.remove();document.body.classList.remove('account-starting');
 // ---- Sync between devices through the CloudPanels sync account ----------------
 // Only reading positions (read / in progress / unread, page and panel) travel.
@@ -1040,7 +1091,7 @@ async function cloudSyncNow({announce=false}={}){
   if(!cloud.configured||!cloud.signedIn)return false;
   if(cloudState.busy){scheduleCloudSync(5000);return false;}
   clearTimeout(cloudState.timer);cloudState.timer=null;
-  cloudState.busy=true;const dirty=cloudState.dirty;cloudState.dirty=false;refreshSyncStatus();
+  cloudState.busy=true;const dirty=cloudState.dirty;cloudState.dirty=false;refreshSyncStatus();perf.begin('sync');
   try{
     // The comic open in the reader keeps the place it is at on this device.
     const {applied}=await syncReadingPositions({cloud,store,skip:document.querySelector('#reader').open?readingComicId:null,seen:cloudState.seen,changes:dirty});
@@ -1053,7 +1104,7 @@ async function cloudSyncNow({announce=false}={}){
     if(announce||error?.code==='SIGNED_OUT')toast(cloudState.failed);
     if(error?.code==='SIGNED_OUT'&&view==='settings')render();
     return false;
-  }finally{cloudState.busy=false;refreshSyncStatus();}
+  }finally{cloudState.busy=false;refreshSyncStatus();perf.end('sync');}
 }
 // Changes are sent 20 seconds after one is made (never while a comic is open),
 // when a comic is closed, and when the app goes to the background.
@@ -1215,9 +1266,10 @@ function refreshLibrary({announce=false,reloadTree=true}={}){
     // Start on the next tick: a check with nothing to wait for must still
     // finish after it is marked as running, or it would look busy forever.
     await null;
+    perf.begin('mega-check');
     try{
       if(announce)toast(t('refreshingLibrary'));
-      if(reloadTree)await mega.refreshTree();
+      if(reloadTree){const treeAt=performance.now();await mega.refreshTree();perf.done('mega-tree',treeAt);}
       // List every indexed folder first, then update the library in one go, so
       // a folder moved from one indexed folder to another keeps its history.
       const roots=libraryRoots(),listings=[],found=[];
@@ -1228,7 +1280,9 @@ function refreshLibrary({announce=false,reloadTree=true}={}){
         const comics=await mega.listComics(folderId);
         listings.push({prefix:root.name,comics});found.push(`${root.name} → ${mega.folderPath(folderId)} (${comics.length})`);
       }
+      const reconcileAt=performance.now();
       const {added,moved,removed}=store.reconcileLibrary(listings);
+      perf.done('reconcile',reconcileAt);
       lastLibraryRefresh=Date.now();
       libraryCheck={at:lastLibraryRefresh,added,moved,removed,folders:listings.length,of:roots.length};
       diag('library-check',`ok: ${listings.length}/${roots.length} folders found in MEGA; ${added} new, ${moved} moved, ${removed} removed; MEGA list from ${clockTime(mega.treeLoadedAt,true)} (${mega.treeSize} items, ${mega.lastCatchUp?.changes??'?'} recent changes from MEGA${mega.lastCatchUp&&!mega.lastCatchUp.upToDate?`, not up to date: ${mega.lastCatchUp.error}`:''}); ${found.join('; ')}`);
@@ -1236,7 +1290,7 @@ function refreshLibrary({announce=false,reloadTree=true}={}){
       else if(announce)toast(t('libraryUpToDate'));
       return true;
     }catch(error){libraryCheck={at:Date.now(),error:publicError(error,t('connectionError'))};diag('library-refresh',error);if(announce)toast(publicError(error,t('connectionError')));return false;}
-    finally{if(libraryRefresh===run)libraryRefresh=null;busyButtons();renderSettingsCheck();}
+    finally{perf.end('mega-check');if(libraryRefresh===run)libraryRefresh=null;busyButtons();renderSettingsCheck();}
   })();
   libraryRefresh=run;
   busyButtons();renderSettingsCheck();

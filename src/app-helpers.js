@@ -16,19 +16,22 @@ export function filterComics(comics, progress, options = {}) {
     (!options.series || fold(c.metadata?.series) === fold(options.series)) &&
     (!options.character || c.metadata?.characters?.some(v => fold(v) === fold(options.character))));
 }
+// The same order as localeCompare, without setting it up again for every
+// comparison (sorting thousands of comics that way took seconds on a phone).
+const plainOrder = new Intl.Collator(), numericOrder = new Intl.Collator(undefined, {numeric: true});
 export function sortComics(comics, progress, sort = 'title') {
   return comics.slice().sort((a, b) => {
-    if (sort === 'recent') return (progress[b.id]?.updatedAt || b.addedAt || '').localeCompare(progress[a.id]?.updatedAt || a.addedAt || '');
-    if (sort === 'added') return (b.addedAt || '').localeCompare(a.addedAt || '');
+    if (sort === 'recent') return plainOrder.compare(progress[b.id]?.updatedAt || b.addedAt || '', progress[a.id]?.updatedAt || a.addedAt || '');
+    if (sort === 'added') return plainOrder.compare(b.addedAt || '', a.addedAt || '');
     if (sort === 'issue') {
-      const series = (a.metadata?.series || '').localeCompare(b.metadata?.series || '', undefined, {numeric: true});
+      const series = numericOrder.compare(a.metadata?.series || '', b.metadata?.series || '');
       if (series) return series;
-      const volume = (a.metadata?.volume || '').localeCompare(b.metadata?.volume || '', undefined, {numeric: true});
+      const volume = numericOrder.compare(a.metadata?.volume || '', b.metadata?.volume || '');
       if (volume) return volume;
       const av = Number(a.metadata?.issue), bv = Number(b.metadata?.issue);
       if (a.metadata?.issue !== '' && b.metadata?.issue !== '' && Number.isFinite(av) && Number.isFinite(bv) && av !== bv) return av - bv;
     }
-    return (a.metadata?.title || a.name).localeCompare(b.metadata?.title || b.name, undefined, {numeric: true});
+    return numericOrder.compare(a.metadata?.title || a.name, b.metadata?.title || b.name);
   });
 }
 export function formatBytes(bytes) {
@@ -89,21 +92,42 @@ export function nextComicInFolder(comics, current) {
   const index = siblings.findIndex(candidate => candidate.id === current.id);
   return index >= 0 ? siblings[index + 1] || null : null;
 }
+// "Up next": comics being read (latest first), "read later", the next issue of
+// the series read most recently, then the rest in series order. The library is
+// gone through once; looking through every comic again for each finished one
+// took many seconds with thousands of comics read.
 export function upNextComics(comics,progress={},limit=6,readLaterIds=[]) {
+  const wanted=Math.max(0,limit);
   const chosen=[],seen=new Set(),add=comic=>{if(comic&&!seen.has(comic.id)&&statusOf(comic,progress)!=='finished'){chosen.push(comic);seen.add(comic.id);}};
-  sortComics(comics.filter(c=>statusOf(c,progress)==='reading'),progress,'recent').forEach(add);
+  const reading=[],finished=[],open=[];
+  for(const comic of comics){const status=statusOf(comic,progress);if(status==='finished')finished.push(comic);else{open.push(comic);if(status==='reading')reading.push(comic);}}
+  sortComics(reading,progress,'recent').forEach(add);
   const byId=new Map(comics.map(comic=>[comic.id,comic]));
   for(const id of readLaterIds)add(byId.get(id));
-  const finished=sortComics(comics.filter(c=>statusOf(c,progress)==='finished'),progress,'recent');
-  for(const previous of finished) {
+  if(!(chosen.length<wanted))return chosen.slice(0,wanted);
+  // Comics not finished yet, by series and volume, in issue order.
+  const seriesKey=m=>fold(m.series)+'\u0000'+String(m.volume||''),issues=new Map();
+  for(const comic of open){
+    const n=comic.metadata||{};
+    if(!n.series||n.issue===''||!Number.isFinite(Number(n.issue)))continue;
+    const key=seriesKey(n);let list=issues.get(key);if(!list)issues.set(key,list=[]);list.push(comic);
+  }
+  for(const list of issues.values())list.sort((a,b)=>Number(a.metadata.issue)-Number(b.metadata.issue));
+  for(const previous of sortComics(finished,progress,'recent')) {
     const m=previous.metadata||{},issue=Number(m.issue);
     if(!m.series||m.issue===''||!Number.isFinite(issue))continue;
-    const next=comics.filter(c=>{const n=c.metadata||{};return n.series&&fold(n.series)===fold(m.series)&&String(n.volume||'')===String(m.volume||'')&&n.issue!==''&&Number.isFinite(Number(n.issue))&&Number(n.issue)>issue&&statusOf(c,progress)!=='finished';}).sort((a,b)=>Number(a.metadata.issue)-Number(b.metadata.issue))[0];
-    add(next);
+    add(firstIssueAfter(issues.get(seriesKey(m)),issue));
     if(chosen.length>=limit)break;
   }
-  sortComics(comics,progress,'issue').forEach(add);
-  return chosen.slice(0,Math.max(0,limit));
+  if(!(chosen.length<wanted))return chosen.slice(0,wanted);
+  sortComics(open.filter(comic=>!seen.has(comic.id)),progress,'issue').forEach(add);
+  return chosen.slice(0,wanted);
+}
+function firstIssueAfter(list,issue){
+  if(!list)return undefined;
+  let low=0,high=list.length;
+  while(low<high){const middle=(low+high)>>1;if(Number(list[middle].metadata.issue)>issue)high=middle;else low=middle+1;}
+  return list[low];
 }
 export function publicError(error, fallback = 'Something went wrong. Please try again.') {
   if (error?.name === 'AbortError') return '';

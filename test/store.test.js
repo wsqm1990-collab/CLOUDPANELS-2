@@ -398,3 +398,16 @@ test('after a failed full check, reading changes are never written without it',a
  s.setProgress('a',{page:3,pageCount:20,status:'reading'});
  assert.equal(await s.flush(),false);assert.equal(persisted,good);
 });
+
+test('reading places from another device are kept without checking the whole library at once',async()=>{
+ let persisted=null,writes=0,visits=0;
+ const backend={async read(){return persisted},async write(text){writes++;persisted=text}};
+ const s=await createBrowserLibraryStore({metadataStore:backend,fallbackStorage:memory()});s.upsertComics([comic('a'),comic('b')]);await s.flush();writes=0;
+ const title=s.state.comics[0].metadata.title;
+ Object.defineProperty(s.state.comics[0].metadata,'title',{enumerable:true,configurable:true,get(){visits++;return title;}});
+ assert.equal(s.applySyncedProgress([['a',{page:3,panel:0,pageCount:20,status:'reading',updatedAt:'2026-11-03T10:00:00.000Z'}],['unknown',{page:1,pageCount:2,status:'reading',updatedAt:'2026-11-03T10:00:00.000Z'}]]),1);
+ assert.equal(visits,0,'a synced place must not check every comic inline');
+ assert.equal(s.state.progress.a.page,3);
+ assert.equal(await s.flush(),true);assert.equal(writes,1);
+ assert.equal(JSON.parse(persisted).progress.a.page,3);
+});
