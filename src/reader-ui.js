@@ -1,10 +1,10 @@
-import { openComic } from './reader.js';
+import { openComic, pageImageSize, DISPLAY_PIXELS } from './reader.js';
 import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
 import { stepReadingPosition, spreadPartners } from './reader-position.js';
-import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker } from './page-thumbnails.js';
+import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker, shrinkPage, fitInside } from './page-thumbnails.js';
 import { createKeepAwake } from './keep-awake.js';
 import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry, entryEdge, stripDrag, sideDragAction, sideStep } from './reader-gestures.js';
 
@@ -827,10 +827,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const thumbnailFor = async index => {
       const cached = await pageThumbs.get(comicKey, index); if (cached) return cached;
       thumbs.signal.throwIfAborted();
-      const blob = decodedPages.get(index)?.candidate?.blob || await activeBook.page(index, { signal: thumbs.signal });
+      const ready = decodedPages.get(index)?.candidate;
+      const blob = ready?.blob || await activeBook.page(index, { signal: thumbs.signal });
       thumbs.signal.throwIfAborted();
       // In the background worker first; on this thread only if it cannot.
-      const made = await thumbWorker.make(blob, { signal: thumbs.signal });
+      const made = await thumbWorker.make(blob, { signal: thumbs.signal, resize: thumbnailSize(ready, blob) });
       thumbs.signal.throwIfAborted();
       if (made?.blob) { await pageThumbs.save(comicKey, index, made.blob); return made.blob; }
       return pageThumbs.from(comicKey, index, blob, { signal: thumbs.signal });
@@ -892,7 +893,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!value || coverSeeded === value) return;
     coverSeeded = value;
     try {
-      const made = await thumbWorker.make(blob, { maxWidth: 360, maxHeight: 540, quality: .68, signal: sessionController?.signal });
+      const made = await thumbWorker.make(blob, { maxWidth: 360, maxHeight: 540, quality: .68, signal: sessionController?.signal, resize: thumbnailSize(decodedPages.get(0)?.candidate, blob, 360, 540) });
       if (comic !== value) return;
       await onCoverFirstPage(value, blob, made?.blob || null);
     } catch { /* The library makes the cover later. */ }
@@ -914,7 +915,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         if (await pageThumbs.get(comicKey, page)) return;
         const candidate = decodedPages.get(page)?.candidate;
         if (mySession !== serial || currentPage !== page || currentURL !== url || candidate?.url !== url || !candidate.blob) return;
-        const made = await thumbWorker.make(candidate.blob, { signal });
+        const made = await thumbWorker.make(candidate.blob, { signal, resize: thumbnailSize(candidate, candidate.blob) });
         if (made?.blob && mySession === serial) await pageThumbs.save(comicKey, page, made.blob);
       } catch { /* Made again when the navigator needs it. */ }
     }, 1200);
@@ -1245,7 +1246,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const entry = { index, controller, candidate: undefined, promise: undefined };
     const cancel = () => controller.abort(); activeSession.signal.addEventListener('abort', cancel, { once: true });
     entry.promise = (async () => {
-      const blob = await activeBook.page(index, { signal: controller.signal });
+      const original = await activeBook.page(index, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      const blob = await readablePage(original, controller.signal);
       controller.signal.throwIfAborted();
       const candidate = await decodedURL(blob, controller.signal);
       if (mySession !== serial || controller.signal.aborted) { disposeCandidate(candidate); throw abortError(); }
@@ -1255,6 +1258,19 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     decodedPages.set(index, entry);
     return entry;
   }
+  // A page bigger than the browser can show directly (above 24 megapixels,
+  // like some very high resolution scans) is shown as a sharp, smaller copy
+  // made in the background worker.
+  async function readablePage(blob, signal) {
+    const size = pageImageSize(blob);
+    if (!size || size.width * size.height <= DISPLAY_PIXELS) return blob;
+    const smaller = await shrinkPage(blob, size, { worker: thumbWorker, signal });
+    signal?.throwIfAborted();
+    if (smaller instanceof Blob && smaller.size) return smaller;
+    throw new Error('This page image exceeds the 24-megapixel browser reading limit.');
+  }
+  // The output size for a small copy, so the browser can decode straight to it.
+  const thumbnailSize = (candidate, blob, width = 340, height = 224) => fitInside(candidate?.width ? candidate : pageImageSize(blob), width, height) || undefined;
   const cachedURL = url => Boolean(url) && [...decodedPages.values()].some(entry => entry.candidate?.url === url);
   function releaseDecoded(entry) { entry.controller.abort(); if (entry.candidate) disposeCandidate(entry.candidate); }
   function trimDecoded(keep) {

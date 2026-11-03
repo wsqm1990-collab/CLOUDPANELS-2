@@ -5,7 +5,7 @@ import { Inflate } from 'fflate';
 const MiB = 1024 * 1024;
 const LIMITS = Object.freeze({ entry: 48 * MiB, directory: 16 * MiB,
   entries: 10000, xml: MiB, pdf: 128 * MiB, archive: 300 * MiB, request: 4 * MiB,
-  imagePixels: 24_000_000, imageDimension: 16384 });
+  imagePixels: 24_000_000, imageDimension: 16384, maxImagePixels: 100_000_000, maxImageDimension: 30000 });
 const IMAGE = /\.(?:jpe?g|png|webp)$/i;
 const decoder = new TextDecoder('utf-8');
 const natural = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
@@ -93,14 +93,45 @@ function inflateBounded(compressed, expected, signal) {
   return output;
 }
 
+// Pages larger than the reader can show directly (above 24 megapixels) are
+// still read: their size is noted (see pageImageSize) and the reader shows a
+// smaller copy. Only absurdly large images are refused.
 function imageSize(width, height) {
-  if (!width || !height || width > LIMITS.imageDimension || height > LIMITS.imageDimension || width * height > LIMITS.imagePixels) throw problem('This page image exceeds the 24-megapixel browser reading limit.');
+  if (!width || !height) throw problem('The page image dimensions could not be read.');
+  if (width > LIMITS.maxImageDimension || height > LIMITS.maxImageDimension || width * height > LIMITS.maxImagePixels) throw problem('This page image is too large to open on this device (over 100 megapixels).');
+  return { width, height };
+}
+// The EXIF orientation of a JPEG (1 = upright; 5-8 turn it sideways).
+function exifOrientation(bytes, start, end) {
+  if (end - start < 14 || bytes[start] !== 0x45 || bytes[start + 1] !== 0x78 || bytes[start + 2] !== 0x69 || bytes[start + 3] !== 0x66 || bytes[start + 4] || bytes[start + 5]) return 1;
+  const tiff = start + 6, little = bytes[tiff] === 0x49 && bytes[tiff + 1] === 0x49;
+  if (!little && !(bytes[tiff] === 0x4d && bytes[tiff + 1] === 0x4d)) return 1;
+  const read16 = at => at + 2 <= end ? (little ? bytes[at] | bytes[at + 1] << 8 : bytes[at] << 8 | bytes[at + 1]) : 0;
+  const read32 = at => at + 4 <= end ? (little ? (bytes[at] | bytes[at + 1] << 8 | bytes[at + 2] << 16 | bytes[at + 3] << 24) >>> 0 : ((bytes[at] << 24) | bytes[at + 1] << 16 | bytes[at + 2] << 8 | bytes[at + 3]) >>> 0) : 0;
+  const directory = tiff + read32(tiff + 4), count = read16(directory);
+  for (let i = 0; i < count && i < 512; i++) {
+    const entry = directory + 2 + i * 12;
+    if (entry + 12 > end) break;
+    if (read16(entry) === 0x0112) { const value = read16(entry + 8); return value >= 1 && value <= 8 ? value : 1; }
+  }
+  return 1;
+}
+const pageSizes = new WeakMap();
+/** The pixel size (as displayed) of a page image Blob made by this reader, or null. */
+export function pageImageSize(blob) { return (blob && pageSizes.get(blob)) || null; }
+/** Pages above this many pixels are shown as a smaller copy. */
+export const DISPLAY_PIXELS = LIMITS.imagePixels;
+function pageBlob(bytes) {
+  const { type, width, height } = sniffImage(bytes);
+  const blob = new Blob([bytes], { type });
+  pageSizes.set(blob, { width, height });
+  return blob;
 }
 function sniffImage(bytes) {
   if (bytes.length >= 24 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10) {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (decoder.decode(bytes.subarray(12, 16)) !== 'IHDR') throw problem('The PNG page header is damaged.');
-    imageSize(view.getUint32(16), view.getUint32(20));
+    const size = imageSize(view.getUint32(16), view.getUint32(20));
     // Comic pages are static. Reject APNG rather than allowing animation to
     // allocate multiple decoded frames while the app promises bounded memory.
     for (let offset = 8, chunks = 0; offset + 12 <= bytes.length && chunks++ < 10000;) {
@@ -108,10 +139,10 @@ function sniffImage(bytes) {
       const length = view.getUint32(offset); offset += 12 + length;
       if (offset > bytes.length) throw problem('The PNG page is incomplete.');
     }
-    return 'image/png';
+    return { type: 'image/png', ...size };
   }
   if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) {
-    let offset = 2;
+    let offset = 2, orientation = 1;
     for (let segments = 0; offset + 1 < bytes.length && segments < 10000; segments++) {
       if (bytes[offset++] !== 255) throw problem('The JPEG page header is damaged.');
       while (bytes[offset] === 255) offset++;
@@ -123,22 +154,25 @@ function sniffImage(bytes) {
       if (length < 2 || offset + length > bytes.length) break;
       if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
         if (length < 8) break;
-        imageSize(bytes[offset + 5] << 8 | bytes[offset + 6], bytes[offset + 3] << 8 | bytes[offset + 4]);
-        return 'image/jpeg';
+        const { width, height } = imageSize(bytes[offset + 5] << 8 | bytes[offset + 6], bytes[offset + 3] << 8 | bytes[offset + 4]);
+        // A sideways EXIF orientation is shown turned: its width and height swap.
+        return orientation >= 5 ? { type: 'image/jpeg', width: height, height: width } : { type: 'image/jpeg', width, height };
       }
+      if (marker === 0xe1 && orientation === 1) orientation = exifOrientation(bytes, offset + 2, offset + length);
       offset += length;
     }
     throw problem('The JPEG page dimensions could not be read.');
   }
   if (bytes.length >= 30 && decoder.decode(bytes.subarray(0, 4)) === 'RIFF' && decoder.decode(bytes.subarray(8, 12)) === 'WEBP') {
     const kind = decoder.decode(bytes.subarray(12, 16));
+    let size;
     if (kind === 'VP8X') {
       if (bytes[20] & 2) throw problem('Animated image pages are not supported.');
-      imageSize(1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16), 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16));
-    } else if (kind === 'VP8 ') imageSize(u16(bytes, 26) & 0x3fff, u16(bytes, 28) & 0x3fff);
-    else if (kind === 'VP8L' && bytes[20] === 0x2f) imageSize(1 + bytes[21] + ((bytes[22] & 0x3f) << 8), 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 15) << 10));
+      size = imageSize(1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16), 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16));
+    } else if (kind === 'VP8 ') size = imageSize(u16(bytes, 26) & 0x3fff, u16(bytes, 28) & 0x3fff);
+    else if (kind === 'VP8L' && bytes[20] === 0x2f) size = imageSize(1 + bytes[21] + ((bytes[22] & 0x3f) << 8), 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 15) << 10));
     else throw problem('The WebP page dimensions could not be read.');
-    return 'image/webp';
+    return { type: 'image/webp', ...size };
   }
   throw problem('This page is not a supported JPEG, PNG or WebP image.');
 }
@@ -241,7 +275,7 @@ async function zipComic(source, read, signal, closed) {
         aborted(combined.signal);
         if (cache.has(index)) { const value = cache.get(index); cache.delete(index); cache.set(index, value); return value; }
         const bytes = await extract(pages[index], combined.signal);
-        const blob = new Blob([bytes], { type: sniffImage(bytes) });
+        const blob = pageBlob(bytes);
         cache.set(index, blob);
         while (cache.size > 2) cache.delete(cache.keys().next().value);
         return blob;
@@ -478,7 +512,7 @@ async function streamedArchiveComic(source, read, signal, closed, { kind, loadAr
           error.details = { index, name: entry.name, stored: entry.stored, start: entry.start, dataStart: entry.dataStart, end: entry.end, expected, received: bytes.length, kind, solid: listing.solid };
           throw error;
         }
-        const blob = new Blob([bytes], { type: sniffImage(bytes) });
+        const blob = pageBlob(bytes);
         cache.set(index, blob); while (cache.size > 3) cache.delete(cache.keys().next().value);
         return blob;
       } finally { combined.dispose(); }
@@ -529,7 +563,7 @@ async function archiveComic(source, read, signal, closed, { extract = libarchive
       if (cache.has(index)) return cache.get(index);
       const data = new Uint8Array(await files[index].file.arrayBuffer());
       aborted(requestSignal);
-      const blob = new Blob([data], { type: sniffImage(data) });
+      const blob = pageBlob(data);
       cache.set(index, blob); while (cache.size > 3) cache.delete(cache.keys().next().value);
       return blob;
     },
@@ -644,7 +678,7 @@ export async function openComic(source, { signal, onProgress, extractArchive, lo
       async page(index, { signal: requestSignal } = {}) {
         aborted(session.signal); aborted(requestSignal);
         if (index !== 0) throw problem('This page does not exist.');
-        if (!picture) { const bytes = await read(0, source.size, requestSignal); picture = new Blob([bytes], { type: sniffImage(bytes) }); }
+        if (!picture) { const bytes = await read(0, source.size, requestSignal); picture = pageBlob(bytes); }
         return picture;
       }, close() { closed.abort(); picture = undefined; } };
   };
@@ -818,7 +852,7 @@ export async function archiveCover(source, { signal, loadArchive = browserArchiv
   }
   aborted(signal);
   if (kind === 'rar' && !list.solid) {
-    try { const bytes = await decodeRarEntry(archiveBytes, cover, { loadArchive, signal }); return new Blob([bytes], { type: sniffImage(bytes) }); }
+    try { const bytes = await decodeRarEntry(archiveBytes, cover, { loadArchive, signal }); return pageBlob(bytes); }
     catch (error) { if (signal?.aborted) throw error; return null; }
   }
   const Archive = await loadArchive();
@@ -828,7 +862,7 @@ export async function archiveCover(source, { signal, loadArchive = browserArchiv
     const file = await archive.extractSingleFile(cover.name);
     if (!(file instanceof Blob) || !file.size) return null;
     const bytes = new Uint8Array(await file.arrayBuffer());
-    return new Blob([bytes], { type: sniffImage(bytes) });
+    return pageBlob(bytes);
   } catch (error) { if (signal?.aborted) throw error; return null; }
   finally { try { archive?.close(); } catch {} }
 }

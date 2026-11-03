@@ -313,6 +313,10 @@ async function readReply(response, { onText, onSearch, signal, idleMs = 90000 })
         if (event.type === 'content_block_start') {
           const block = { ...event.content_block };
           if (block.type === 'text') { block.text = block.text || ''; if (!block.citations) delete block.citations; }
+          // Newer models think before answering. Their thinking blocks (often
+          // with the text left out) must go back exactly as received,
+          // signature included, when a tool call or a paused search continues.
+          if (block.type === 'thinking') { block.thinking = block.thinking || ''; block.signature = block.signature || ''; }
           if (block.type === 'tool_use' || block.type === 'server_tool_use') block.partialJson = '';
           blocks[event.index] = block;
           if (block.type === 'server_tool_use') onSearch?.();
@@ -320,6 +324,8 @@ async function readReply(response, { onText, onSearch, signal, idleMs = 90000 })
           const block = blocks[event.index]; if (!block) continue;
           if (event.delta?.type === 'text_delta') { block.text += event.delta.text; onText?.(blocks); }
           else if (event.delta?.type === 'input_json_delta') block.partialJson += event.delta.partial_json || '';
+          else if (event.delta?.type === 'thinking_delta') block.thinking = (block.thinking || '') + (event.delta.thinking || '');
+          else if (event.delta?.type === 'signature_delta') block.signature = (block.signature || '') + (event.delta.signature || '');
           else if (event.delta?.type === 'citations_delta' && event.delta.citation) (block.citations ||= []).push(event.delta.citation);
         } else if (event.type === 'content_block_stop') {
           const block = blocks[event.index];

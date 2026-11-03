@@ -1,4 +1,5 @@
-import { openComic, archiveCover } from './reader.js';
+import { openComic, archiveCover, pageImageSize } from './reader.js';
+import { createThumbnailWorker, fitInside } from './page-thumbnails.js';
 
 const MiB = 1024 * 1024;
 const ALLOWED = new Set(['cbz', 'zip', 'jpg', 'jpeg', 'png', 'webp', 'cbr', 'rar', 'cbt', 'tar']);
@@ -18,13 +19,36 @@ export function coverCacheId(comic) {
   return JSON.stringify([version, comic.source, comic.id, comic.size, comic.name]);
 }
 
-/** Thumbnail pixels remain local. No edition or full-resolution page is persisted. */
-export async function thumbnailCover(blob, { signal } = {}) {
+/** Thumbnail pixels remain local. No edition or full-resolution page is persisted.
+ * Made in a background worker when the device has one (so scrolling the
+ * library never stalls on a large page); otherwise here. A page bigger than 24
+ * megapixels is decoded straight to the cover size where the browser can. */
+let sharedWorker;
+const coverWorker = () => {
+  if (sharedWorker === undefined) sharedWorker = typeof Worker === 'function' && typeof document !== 'undefined' ? createThumbnailWorker() : null;
+  return sharedWorker;
+};
+export async function thumbnailCover(blob, { signal, worker = coverWorker() } = {}) {
   check(signal);
   if (!(blob instanceof Blob) || blob.size > 48 * MiB || !['image/jpeg', 'image/png', 'image/webp'].includes(blob.type)) return null;
+  const size = pageImageSize(blob), target = fitInside(size, 360, 540);
+  if (worker && !worker.unsupported) {
+    const made = await worker.make(blob, { signal, maxWidth: 360, maxHeight: 540, quality: .68, maxBytes: MAX_THUMB_BYTES, ...(target ? { resize: target } : {}) });
+    check(signal);
+    if (made?.blob?.type === 'image/jpeg') return made.blob;
+    if (!worker.unsupported && !(size && size.width * size.height > 24_000_000)) return null;
+  }
   let image, objectURL, canvas;
   try {
-    if (typeof globalThis.createImageBitmap === 'function') image = await globalThis.createImageBitmap(blob);
+    if (typeof globalThis.createImageBitmap === 'function') {
+      if (target && size.width * size.height > 24_000_000) {
+        try {
+          image = await globalThis.createImageBitmap(blob, { resizeWidth: target.width, resizeHeight: target.height, resizeQuality: 'high' });
+          if (Math.abs(image.width / image.height - target.width / target.height) > .02 * target.width / target.height) { image.close?.(); image = undefined; }
+        } catch { image = undefined; }
+        if (!image) return null; // never a full decode of a huge page on this thread
+      } else image = await globalThis.createImageBitmap(blob);
+    }
     else if (typeof globalThis.Image === 'function') {
       objectURL = URL.createObjectURL(blob);
       image = await new Promise((resolve, reject) => {
@@ -56,59 +80,116 @@ export async function thumbnailCover(blob, { signal } = {}) {
   }
 }
 
+// Covers on the device. Version 2 keeps a small "access" record per cover
+// (size and last use) apart from the picture, so that reading a cover never
+// rewrites it and saving one never reads back every saved picture. Version 1
+// did both, which on an iPad with a big library got so slow that saves were
+// given up half-way and covers had to be made again from MEGA at each start.
+const COVER_DB = 'cloudpanels-thumbnails-v1';
 class IndexedCoverDisk {
-  constructor(maxBytes) { this.maxBytes = maxBytes; this.opening = null; }
+  constructor(maxBytes, { maxEntries = 20000, readTimeoutMs = 6000, writeTimeoutMs = 15000, trimEvery = 25, touchDelayMs = 4000 } = {}) {
+    this.maxBytes = maxBytes; this.maxEntries = maxEntries; this.readTimeoutMs = readTimeoutMs; this.writeTimeoutMs = writeTimeoutMs;
+    this.trimEvery = trimEvery; this.touchDelayMs = touchDelayMs; this.opening = null; this.puts = 0; this.touched = new Map(); this.touchTimer = null;
+  }
   _open() {
     if (!globalThis.indexedDB) return Promise.resolve(null);
     if (this.opening) return this.opening;
     this.opening = new Promise((resolve, reject) => {
-      const request = indexedDB.open('cloudpanels-thumbnails-v1', 1);
+      const request = indexedDB.open(COVER_DB, 2);
       let done = false;
-      const timer = setTimeout(() => { if (!done) { done = true; reject(new Error('Cover storage is unavailable.')); } }, 1800);
-      request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains('thumbnails')) request.result.createObjectStore('thumbnails', { keyPath: 'key' }); };
+      const timer = setTimeout(() => { if (!done) { done = true; reject(new Error('Cover storage is unavailable.')); } }, 10000);
+      request.onupgradeneeded = () => {
+        const db = request.result, tx = request.transaction;
+        const pictures = db.objectStoreNames.contains('thumbnails') ? tx.objectStore('thumbnails') : db.createObjectStore('thumbnails', { keyPath: 'key' });
+        if (!db.objectStoreNames.contains('access')) {
+          const access = db.createObjectStore('access', { keyPath: 'key' });
+          access.createIndex('accessedAt', 'accessedAt');
+          // Covers saved by the earlier version keep counting towards the space.
+          const cursor = pictures.openCursor();
+          cursor.onsuccess = () => {
+            const at = cursor.result; if (!at) return;
+            const row = at.value;
+            if (row && typeof row.key === 'string' && Number.isSafeInteger(row.size) && row.size > 0) access.put({ key: row.key, size: row.size, accessedAt: Number(row.accessedAt) || 0 });
+            at.continue();
+          };
+        }
+      };
       request.onsuccess = () => { clearTimeout(timer); if (done) { request.result.close(); return; } done = true; request.result.onversionchange = () => request.result.close(); resolve(request.result); };
       request.onerror = () => { clearTimeout(timer); if (!done) { done = true; reject(request.error); } };
-    });
+      request.onblocked = () => { /* Another tab still has the old version open; it closes on versionchange. */ };
+    }).catch(error => { this.opening = null; throw error; });
     return this.opening;
   }
-  async _transaction(action) {
+  async _transaction(stores, mode, action, timeoutMs) {
     const db = await this._open(); if (!db) return null;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction('thumbnails', 'readwrite'); let result = null;
-      const timer = setTimeout(() => { try { tx.abort(); } catch {} reject(new Error('Cover storage timed out.')); }, 1800);
+      const tx = db.transaction(stores, mode); let result = null;
+      const timer = setTimeout(() => { try { tx.abort(); } catch {} reject(new Error('Cover storage timed out.')); }, timeoutMs);
       tx.oncomplete = () => { clearTimeout(timer); resolve(result); };
       tx.onerror = tx.onabort = () => { clearTimeout(timer); reject(tx.error || new Error('Cover storage is unavailable.')); };
-      action(tx.objectStore('thumbnails'), value => { result = value; });
+      action(tx, value => { result = value; });
     });
   }
-  get(key) {
-    return this._transaction((store, result) => {
-      const request = store.get(key);
+  // A read only looks; its last use is noted a few seconds later, together
+  // with the others (without touching the pictures themselves).
+  async get(key) {
+    const blob = await this._transaction('thumbnails', 'readonly', (tx, result) => {
+      const request = tx.objectStore('thumbnails').get(key);
       request.onsuccess = () => {
         const row = request.result;
-        if (!row || !(row.blob instanceof Blob) || row.blob.type !== 'image/jpeg' || row.blob.size > MAX_THUMB_BYTES || row.size !== row.blob.size) { if (row) store.delete(key); return; }
-        store.put({ ...row, accessedAt: Date.now() }); result(row.blob);
+        if (!row) return;
+        if (!(row.blob instanceof Blob) || row.blob.type !== 'image/jpeg' || row.blob.size > MAX_THUMB_BYTES || row.size !== row.blob.size) { result('broken'); return; }
+        result(row.blob);
       };
-    });
+    }, this.readTimeoutMs);
+    if (blob === 'broken') { void this._forget(key).catch(() => {}); return null; }
+    if (blob) this._touch(key);
+    return blob;
   }
-  put(key, blob) {
-    if (!this.maxBytes || blob.size > this.maxBytes) return Promise.resolve();
-    return this._transaction(store => {
-      const request = store.getAll();
-      request.onsuccess = () => {
-        let used = blob.size, count = 1;
-        const records = request.result.filter(row => row.key !== key).sort((a, b) => b.accessedAt - a.accessedAt);
-        for (const row of records) {
-          const valid = Number.isSafeInteger(row.size) && row.size > 0 && row.size <= MAX_THUMB_BYTES;
-          if (!valid || used + row.size > this.maxBytes || count >= 2048) store.delete(row.key);
-          else { used += row.size; count++; }
-        }
-        store.put({ key, blob, size: blob.size, accessedAt: Date.now() });
+  _touch(key) {
+    this.touched.set(key, Date.now());
+    if (this.touchTimer) return;
+    this.touchTimer = setTimeout(() => { this.touchTimer = null; void this._flushTouches().catch(() => {}); }, this.touchDelayMs);
+  }
+  async _flushTouches() {
+    if (!this.touched.size) return;
+    const touched = [...this.touched]; this.touched.clear();
+    await this._transaction('access', 'readwrite', tx => {
+      const access = tx.objectStore('access');
+      for (const [key, at] of touched) {
+        const request = access.get(key);
+        request.onsuccess = () => { if (request.result) access.put({ ...request.result, accessedAt: at }); };
+      }
+    }, this.writeTimeoutMs);
+  }
+  _forget(key) {
+    return this._transaction(['thumbnails', 'access'], 'readwrite', tx => { tx.objectStore('thumbnails').delete(key); tx.objectStore('access').delete(key); }, this.writeTimeoutMs);
+  }
+  async put(key, blob) {
+    if (!this.maxBytes || blob.size > this.maxBytes) return;
+    await this._transaction(['thumbnails', 'access'], 'readwrite', tx => {
+      tx.objectStore('thumbnails').put({ key, blob, size: blob.size, accessedAt: Date.now() });
+      tx.objectStore('access').put({ key, size: blob.size, accessedAt: Date.now() });
+    }, this.writeTimeoutMs);
+    if (this.puts++ % this.trimEvery === 0) await this.trim();
+  }
+  // Keep the most recently used covers within the space; only the small
+  // access records are read for this.
+  trim() {
+    return this._transaction(['thumbnails', 'access'], 'readwrite', tx => {
+      const pictures = tx.objectStore('thumbnails'), cursor = tx.objectStore('access').index('accessedAt').openCursor(null, 'prev');
+      let used = 0, count = 0;
+      cursor.onsuccess = () => {
+        const at = cursor.result; if (!at) return;
+        const row = at.value, size = Number.isSafeInteger(row?.size) && row.size > 0 && row.size <= MAX_THUMB_BYTES ? row.size : 0;
+        if (!size || used + size > this.maxBytes || count >= this.maxEntries) { pictures.delete(row?.key ?? at.primaryKey); at.delete(); }
+        else { used += size; count++; }
+        at.continue();
       };
-    });
+    }, this.writeTimeoutMs * 2);
   }
-  clear() { return this._transaction(store => store.clear()); }
-  async close() { try { (await this.opening)?.close(); } catch {} }
+  clear() { this.touched.clear(); return this._transaction(['thumbnails', 'access'], 'readwrite', tx => { tx.objectStore('thumbnails').clear(); tx.objectStore('access').clear(); }, this.writeTimeoutMs); }
+  async close() { clearTimeout(this.touchTimer); this.touchTimer = null; try { await this._flushTouches(); } catch {} try { (await this.opening)?.close(); } catch {} }
 }
 
 async function isZip(source, signal) {
@@ -125,7 +206,7 @@ export class CoverService {
     this.allowFull = typeof allowFull === 'function' ? allowFull : () => false;
     this.maxConcurrent = Math.max(1, Math.min(2, Math.floor(maxConcurrent) || 1));
     this.maxMemoryBytes = budget(maxMemoryBytes, 12 * MiB, 24 * MiB);
-    this.maxDiskBytes = budget(maxDiskBytes, 24 * MiB, 48 * MiB);
+    this.maxDiskBytes = budget(maxDiskBytes, 24 * MiB, 512 * MiB);
     this.disk = disk === null ? null : disk || new IndexedCoverDisk(this.maxDiskBytes);
     this.memory = new Map(); this.memoryBytes = 0; this.jobs = new Map(); this.queue = [];
     this.running = 0; this.busy = false; this.closed = false; this.epoch = 0; this.diskQueue = Promise.resolve();
@@ -153,7 +234,8 @@ export class CoverService {
     const key = this._key(comic); if (!key) return null;
     const hit = this._memoryGet(key); if (hit) return hit;
     const epoch = this.epoch;
-    const blob = await this._disk(() => this.disk.get(key));
+    // Reads run side by side (they never change anything); saves stay in order.
+    const blob = this.disk && this.maxDiskBytes ? await this.disk.get(key).catch(() => null) : null;
     if (this.closed || epoch !== this.epoch || !(blob instanceof Blob) || !blob.size || blob.type !== 'image/jpeg' || blob.size > MAX_THUMB_BYTES) return null;
     this._remember(key, blob); return blob;
   }
