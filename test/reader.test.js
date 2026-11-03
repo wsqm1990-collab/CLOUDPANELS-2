@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { zipSync } from 'fflate';
-import { openComic, readerLimits } from '../src/reader.js';
+import { openComic, readerLimits, pageImageSize, DISPLAY_PIXELS } from '../src/reader.js';
 
 // Valid 8 × 12 RGB PNG (decoded with Pillow before using this fixture).
 // Padding files make the footer substantially smaller than
@@ -142,9 +142,26 @@ test('individual image reading validates magic bytes and page indices', async ()
   await assert.rejects(wrong.page(0), /not a supported/); wrong.close();
 });
 
-test('compressed image pixel dimensions are capped before browser decoding', async () => {
-  const huge = png.slice(); const view = new DataView(huge.buffer);
+test('very large pages are read with their size noted; absurd sizes are refused before decoding', async () => {
+  const big = png.slice(); const view = new DataView(big.buffer);
   view.setUint32(16, 10000); view.setUint32(20, 10000);
-  const comic = await openComic(sourceFor(zipSync({ '1.png': huge })));
-  await assert.rejects(comic.page(0), /24-megapixel/); comic.close();
+  const comic = await openComic(sourceFor(zipSync({ '1.png': big })));
+  const page = await comic.page(0);
+  assert.deepEqual(pageImageSize(page), { width: 10000, height: 10000 });
+  assert.ok(10000 * 10000 > DISPLAY_PIXELS, 'shown as a smaller copy by the reader'); comic.close();
+  const absurd = png.slice(); const absurdView = new DataView(absurd.buffer);
+  absurdView.setUint32(16, 12000); absurdView.setUint32(20, 10000);
+  const tooBig = await openComic(sourceFor(zipSync({ '1.png': absurd })));
+  await assert.rejects(tooBig.page(0), /over 100 megapixels/); tooBig.close();
+});
+
+test('a JPEG turned sideways by its EXIF orientation reports its size as shown', async () => {
+  const exif = [0x45, 0x78, 0x69, 0x66, 0, 0, 0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0];
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe1, 0, exif.length + 2, ...exif,
+    0xff, 0xc0, 0, 17, 8, 0x0b, 0xb8, 0x07, 0xd0, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xda, 0, 2, 0xff, 0xd9]);
+  const comic = await openComic(sourceFor(zipSync({ '1.jpg': jpeg })));
+  assert.deepEqual(pageImageSize(await comic.page(0)), { width: 3000, height: 2000 }); comic.close();
+  const upright = Uint8Array.from([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 0x0b, 0xb8, 0x07, 0xd0, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xda, 0, 2, 0xff, 0xd9]);
+  const plain = await openComic(sourceFor(zipSync({ '1.jpg': upright })));
+  assert.deepEqual(pageImageSize(await plain.page(0)), { width: 2000, height: 3000 }); plain.close();
 });

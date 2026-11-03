@@ -115,3 +115,32 @@ test('an empty answer or an API refusal becomes a clear message', async () => {
   assert.match(friendlyError(error, 'pt-BR'), /recusou o pedido: messages: roles must alternate/);
   assert.match(friendlyError({ type: 'empty_answer' }, 'pt-BR'), /não mandou resposta/);
 });
+
+test('thinking blocks (text left out, signature kept) go back exactly as received when a tool call continues', async () => {
+  const requests = [];
+  const replies = [
+    sse([{ type: 'message_start', message: {} },
+      // Newer models think first; with the thinking text omitted only the signature arrives.
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'EosnCkYICxIMsig' } }, { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_9', name: 'search_library', input: {} } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"query":"series 7"}' } }, { type: 'content_block_stop', index: 1 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' } }]),
+    sse([{ type: 'message_start', message: {} },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Short summary.' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig2' } }, { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Leia [[c1]].' } }, { type: 'content_block_stop', index: 1 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } }]),
+  ];
+  const fetchImpl = async (url, options) => { requests.push(JSON.parse(options.body)); return replies.shift(); };
+  const index = buildLibraryIndex(bigLibrary(), { folderOf });
+  const answer = await askAssistant({ key: 'sk-ant-test', system: 'x', web: false, tools: libraryTools(index), fetchImpl, messages: [{ role: 'user', text: 'Be my lucky roulette.' }] });
+  assert.equal(answer, 'Leia [[c1]].');
+  const sentBack = requests[1].messages[1];
+  assert.equal(sentBack.role, 'assistant');
+  assert.deepEqual(sentBack.content[0], { type: 'thinking', thinking: '', signature: 'EosnCkYICxIMsig' });
+  assert.equal(sentBack.content[1].type, 'tool_use');
+});

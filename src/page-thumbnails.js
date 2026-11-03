@@ -95,12 +95,15 @@ export function createThumbnailWorker({ factory = () => new Worker(new URL('thum
       const { id, blob, width, height, unsupported: cannot } = event.data || {};
       if (cannot) { unsupported = true; stop(); return; }
       timeouts = 0;
-      jobs.get(id)?.finish(blob instanceof Blob && blob.size > 0 && blob.size <= MAX_BYTES ? { blob, width, height } : null);
+      const job = jobs.get(id);
+      job?.finish(blob instanceof Blob && blob.size > 0 && blob.size <= job.maxBytes ? { blob, width, height } : null);
     };
     worker.onerror = worker.onmessageerror = () => { unsupported = true; stop(); };
     return worker;
   }
-  function run(blob, { signal, maxWidth = 340, maxHeight = 224, quality = .72 } = {}) {
+  // maxBytes/jobTimeoutMs: larger for a readable copy of a big page than for a
+  // thumbnail. resize: the output size, which the browser may decode at directly.
+  function run(blob, { signal, maxWidth = 340, maxHeight = 224, quality = .72, maxBytes = MAX_BYTES, timeoutMs: jobTimeoutMs = timeoutMs, resize } = {}) {
     return new Promise(resolve => {
       if (signal?.aborted || unsupported || !(blob instanceof Blob) || !blob.size || blob.size > 48 * MiB) { resolve(null); return; }
       const current = start(); if (!current) { resolve(null); return; }
@@ -113,12 +116,12 @@ export function createThumbnailWorker({ factory = () => new Worker(new URL('thum
         resolve(value);
       };
       const cancel = () => finish(null);
-      jobs.set(id, { finish });
+      jobs.set(id, { finish, maxBytes });
       // A worker that stopped answering is replaced for the next page; one
       // that never answers twice in a row is not used again.
-      timer = setTimeout(() => { finish(null); if (++timeouts >= 2) unsupported = true; stop(); }, timeoutMs);
+      timer = setTimeout(() => { finish(null); if (++timeouts >= 2) unsupported = true; stop(); }, jobTimeoutMs);
       signal?.addEventListener('abort', cancel, { once: true });
-      try { current.postMessage({ id, blob, maxWidth, maxHeight, quality }); } catch { finish(null); }
+      try { current.postMessage({ id, blob, maxWidth, maxHeight, quality, ...(resize ? { resize } : {}) }); } catch { finish(null); }
     });
   }
   return {
@@ -138,6 +141,52 @@ export function createThumbnailWorker({ factory = () => new Worker(new URL('thum
     },
     stop,
   };
+}
+
+/** The size of `size` scaled down (never up) to fit inside maxWidth x maxHeight. */
+export function fitInside(size, maxWidth, maxHeight) {
+  if (!(size?.width > 0) || !(size?.height > 0)) return null;
+  const scale = Math.min(1, maxWidth / size.width, maxHeight / size.height);
+  return { width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) };
+}
+
+/** A readable copy of a page too big to show directly: at most 16 megapixels
+ * (under the 16.7-megapixel canvas limit of iPads), still sharper than the
+ * screen. Made in the background worker; on this thread only if it cannot. */
+export const SHRUNK_PAGE_PIXELS = 16_000_000;
+export async function shrinkPage(blob, size, { worker, signal, maxPixels = SHRUNK_PAGE_PIXELS, quality = .9, onThisThread = shrinkOnThisThread } = {}) {
+  if (!(blob instanceof Blob) || !(size?.width > 0) || !(size?.height > 0)) return null;
+  const scale = Math.min(1, Math.sqrt(maxPixels / (size.width * size.height)));
+  const width = Math.max(1, Math.floor(size.width * scale)), height = Math.max(1, Math.floor(size.height * scale));
+  if (worker && !worker.unsupported) {
+    const made = await worker.make(blob, { signal, maxWidth: width, maxHeight: height, quality, maxBytes: 48 * MiB, timeoutMs: 90000, resize: { width, height } });
+    if (made?.blob) return made.blob;
+    check(signal);
+  }
+  return onThisThread(blob, { width, height }, { quality, signal });
+}
+async function shrinkOnThisThread(blob, target, { quality = .9, signal } = {}) {
+  if (typeof globalThis.createImageBitmap !== 'function' || typeof document === 'undefined') return null;
+  let bitmap, canvas;
+  try {
+    try {
+      bitmap = await globalThis.createImageBitmap(blob, { resizeWidth: target.width, resizeHeight: target.height, resizeQuality: 'high' });
+      const wanted = target.width / target.height;
+      if (Math.abs(bitmap.width / bitmap.height - wanted) > wanted * .02) { bitmap.close?.(); bitmap = undefined; }
+    } catch { bitmap = undefined; }
+    bitmap ||= await globalThis.createImageBitmap(blob);
+    check(signal);
+    const scale = Math.min(1, target.width / bitmap.width, target.height / bitmap.height);
+    canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) return null;
+    context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
+    context.imageSmoothingQuality = 'high'; context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.(); bitmap = undefined;
+    return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+  } catch (error) { if (error?.name === 'AbortError') throw error; return null; }
+  finally { bitmap?.close?.(); if (canvas) { canvas.width = 0; canvas.height = 0; } }
 }
 
 /** Thumbnails on the device, oldest-used removed beyond `maxEntries`. */
