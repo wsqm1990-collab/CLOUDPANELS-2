@@ -85,6 +85,12 @@ export function createCloudSync({ url = SYNC_URL, key = SYNC_KEY, fetchImpl = gl
       const row = Array.isArray(rows) ? rows[0] : null;
       return row ? { data: row.data && typeof row.data === 'object' ? row.data : {}, revision: Number(row.revision) || 1 } : null;
     },
+    /** Only the revision of this account's shared list (null: none yet). */
+    async revision({ signal } = {}) {
+      const rows = await call(`/rest/v1/${TABLE}?select=revision`, { token: await token(signal), signal });
+      const row = Array.isArray(rows) ? rows[0] : null;
+      return row ? Number(row.revision) || 1 : null;
+    },
     /** Save `data` over `revision` (null: the first save). A newer save from
      * another device in between is reported as a CONFLICT (pull and merge again). */
     async push(data, revision, { signal } = {}) {
@@ -113,9 +119,23 @@ function libraryIndex(state) {
   }
   return { byId, byFile };
 }
-function remoteKey(document, comic) {
+// The shared document's keys by file (name and size), for comics whose id
+// differs on this device. Built once per sync: looking through the whole
+// document again for every comic froze the screen for many seconds with a
+// library of thousands of comics.
+const fileOf = item => typeof item?.name === 'string' && typeof item?.size === 'number' ? identity(item) : null;
+function documentFiles(document) {
+  const files = new Map();
+  for (const [key, entry] of Object.entries(document.progress)) { const file = fileOf(entry); if (file !== null && !files.has(file)) files.set(file, key); }
+  return files;
+}
+function remoteKey(document, files, comic) {
   if (document.progress[comic.id]) return comic.id;
-  for (const [key, entry] of Object.entries(document.progress)) if (entry?.name === comic.name && entry?.size === comic.size) return key;
+  const file = fileOf(comic), key = file === null ? undefined : files.get(file), entry = key === undefined ? null : document.progress[key];
+  if (!entry) return comic.id;
+  if (entry.name === comic.name && entry.size === comic.size) return key;
+  // Rare: that entry was rewritten for another file during this sync.
+  for (const [other, value] of Object.entries(document.progress)) if (value?.name === comic.name && value?.size === comic.size) return other;
   return comic.id;
 }
 const newer = (a, b) => typeof a === 'string' && (typeof b !== 'string' || a > b);
@@ -143,31 +163,50 @@ export function incomingPositions(state, remote, { skip } = {}) {
 
 /** The shared document with this device's newer positions written in (the
  * positions of comics this device does not have are kept as they are). */
-export function outgoingDocument(state, remote) {
-  const document = cleanDocument(remote);
+export function outgoingDocument(state, remote) { return mergeOutgoing(state, remote).document; }
+function mergeOutgoing(state, remote) {
+  const document = cleanDocument(remote), files = documentFiles(document); let changed = 0;
   for (const comic of state?.comics || []) {
     const position = state.progress?.[comic.id]; if (!position?.updatedAt) continue;
-    const key = remoteKey(document, comic);
+    const key = remoteKey(document, files, comic);
     if (!newer(position.updatedAt, document.progress[key]?.updatedAt)) continue;
     document.progress[key] = { page: position.page, panel: position.panel, pageCount: position.pageCount, overview: Boolean(position.overview), status: position.status, updatedAt: position.updatedAt, name: comic.name, size: comic.size };
+    changed++;
+    const file = fileOf(comic); if (file !== null && !files.has(file)) files.set(file, key);
   }
-  return document;
+  return { document, changed };
 }
 export const sameSyncDocument = (a, b) => JSON.stringify(cleanDocument(a).progress) === JSON.stringify(cleanDocument(b).progress);
 
 /** One sync: take newer positions from other devices, then save this
  * device's newer ones. A save from another device in between is merged in
- * and tried again. Returns { applied, sent }. */
-export async function syncReadingPositions({ cloud, store, skip, signal, attempts = 3 }) {
+ * and tried again. Returns { applied, sent }.
+ * `seen` (kept by the caller between syncs): the shared list as this device
+ * last saw it. While its revision is unchanged the list is not downloaded
+ * again, and with no `changes` on this device either, nothing else is done.
+ * `changes`: false when nothing changed on this device since the last sync. */
+const pause = () => new Promise(resolve => setTimeout(resolve, 0));
+export async function syncReadingPositions({ cloud, store, skip, signal, attempts = 3, seen = null, changes = true }) {
   let applied = 0;
+  const remember = (revision, data) => { if (seen) { seen.revision = revision; seen.data = data; seen.skipped = skip || null; } };
   for (let attempt = 1; ; attempt++) {
-    const remote = await cloud.pull({ signal });
+    let remote = null;
+    if (attempt === 1 && seen?.data && seen.revision != null) {
+      const revision = await cloud.revision({ signal });
+      if (revision === seen.revision) {
+        // A comic left out last time (it was open) is looked at again.
+        if (!changes && !seen.skipped) return { applied, sent: false };
+        remote = { data: seen.data, revision };
+      }
+    }
+    remote ||= await cloud.pull({ signal });
     const document = remote?.data || emptySyncDocument();
     const incoming = incomingPositions(store.state, document, { skip });
     if (incoming.length) applied += store.applySyncedProgress(incoming);
-    const next = outgoingDocument(store.state, document);
-    if (remote && sameSyncDocument(next, document)) return { applied, sent: false };
-    try { await cloud.push(next, remote ? remote.revision : null, { signal }); return { applied, sent: true }; }
-    catch (error) { if (error?.code !== 'CONFLICT' || attempt >= attempts) throw error; }
+    await pause(); // lets a tap in between be answered
+    const { document: next, changed } = mergeOutgoing(store.state, document);
+    if (remote && !changed) { remember(remote.revision, next); return { applied, sent: false }; }
+    try { const revision = await cloud.push(next, remote ? remote.revision : null, { signal }); remember(revision, next); return { applied, sent: true }; }
+    catch (error) { remember(null, null); if (error?.code !== 'CONFLICT' || attempt >= attempts) throw error; }
   }
 }

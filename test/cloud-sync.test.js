@@ -126,3 +126,89 @@ test('an expired session renews itself once; a reused renewal signs this device 
   const copy = createCloudSync({ url: URL, key: KEY, fetchImpl: server.fetchImpl, storage: old, now: () => clock });
   await assert.rejects(copy.pull(), { code: 'SIGNED_OUT' }); assert.equal(copy.signedIn, false);
 });
+
+test('a library of thousands of comics syncs at once, also when the other device uses other ids', () => {
+  const comics = Array.from({ length: 6000 }, (_, i) => comic(`mega:${i}`, `Series ${i % 300} #${i} (2024).cbr`, 50e6 + i));
+  const progress = {};
+  comics.slice(0, 5000).forEach((c, i) => { progress[c.id] = { page: 20, panel: 0, pageCount: 21, overview: false, status: 'read', updatedAt: new Date(Date.UTC(2026, 9, 1) + i * 60000).toISOString() }; });
+  const state = { comics, progress };
+  let started = performance.now();
+  const first = outgoingDocument(state, { v: 1, progress: {} });
+  assert.equal(Object.keys(first.progress).length, 5000);
+  // The same files under other ids, from another device: found by file, not added twice.
+  const other = { v: 1, progress: Object.fromEntries(Object.entries(first.progress).map(([key, entry]) => [`other:${key}`, entry])) };
+  const merged = outgoingDocument(state, other);
+  assert.equal(Object.keys(merged.progress).length, 5000);
+  assert.ok(Object.keys(merged.progress).every(key => key.startsWith('other:')));
+  const newerThere = structuredClone(other); newerThere.progress['other:mega:7'].updatedAt = '2026-12-01T00:00:00.000Z'; newerThere.progress['other:mega:7'].page = 3;
+  assert.deepEqual(incomingPositions(state, newerThere).map(([id, value]) => [id, value.page]), [['mega:7', 3]]);
+  assert.ok(performance.now() - started < 1500, `took ${Math.round(performance.now() - started)} ms`);
+});
+
+test('the same file twice in a library is written once, under the first key', () => {
+  const state = { comics: [comic('a', 'Same.cbz', 10), comic('b', 'Same.cbz', 10)], progress: {
+    a: { page: 1, panel: 0, pageCount: 9, status: 'reading', updatedAt: '2026-11-01T00:00:00.000Z' },
+    b: { page: 5, panel: 0, pageCount: 9, status: 'reading', updatedAt: '2026-11-02T00:00:00.000Z' } } };
+  const document = outgoingDocument(state, { v: 1, progress: {} });
+  assert.deepEqual(Object.keys(document.progress), ['a']);
+  assert.equal(document.progress.a.page, 5);
+});
+
+test('a sync with nothing new only asks for the revision; the list is downloaded again only after another device saved', async () => {
+  const server = fakeSupabase(), requests = []; let between = null;
+  const fetchImpl = async (url, options = {}) => {
+    const { pathname, searchParams } = new globalThis.URL(url);
+    if (pathname.startsWith('/rest/')) requests.push(`${options.method || 'GET'} ${searchParams.get('select')}`);
+    const response = await server.fetchImpl(url, options);
+    if (between && searchParams.get('select') === 'revision' && (options.method || 'GET') === 'GET') { const run = between; between = null; await run(); }
+    return response;
+  };
+  const phone = createCloudSync({ url: URL, key: KEY, fetchImpl, storage: memory() });
+  const ipad = createCloudSync({ url: URL, key: KEY, fetchImpl: server.fetchImpl, storage: memory() });
+  await phone.signIn('walter@example.com', 'right password'); await ipad.signIn('walter@example.com', 'right password');
+  const store = library([comic('mega:A', 'One.cbz'), comic('mega:B', 'Two.cbz')]);
+  const ipadStore = library([comic('mega:A', 'One.cbz'), comic('mega:B', 'Two.cbz')]);
+  store.setProgress('mega:A', { page: 2, pageCount: 20, status: 'reading', updatedAt: '2026-11-03T10:00:00.000Z' });
+  const seen = {};
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen }), { applied: 0, sent: true });
+  assert.deepEqual(requests.splice(0), ['GET data,revision', 'POST revision']);
+  // Nothing new anywhere: one small request.
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen, changes: false }), { applied: 0, sent: false });
+  assert.deepEqual(requests.splice(0), ['GET revision']);
+  // A change here: saved over the copy this device already has.
+  store.setProgress('mega:A', { page: 3, pageCount: 20, status: 'reading', updatedAt: '2026-11-03T10:05:00.000Z' });
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen, changes: true }), { applied: 0, sent: true });
+  assert.deepEqual(requests.splice(0), ['GET revision', 'PATCH revision']);
+  assert.equal(server.rows.get('walter@example.com').data.progress['mega:A'].page, 3);
+  // The iPad saves: the phone downloads the list again and takes the newer place.
+  ipadStore.setProgress('mega:B', { page: 8, pageCount: 20, status: 'reading', updatedAt: '2026-11-03T11:00:00.000Z' });
+  await syncReadingPositions({ cloud: ipad, store: ipadStore });
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen, changes: false }), { applied: 1, sent: false });
+  assert.deepEqual(requests.splice(0), ['GET revision', 'GET data,revision']);
+  assert.equal(store.state.progress['mega:B'].page, 8);
+  // The iPad saves right between the phone's check and its save: merged, nothing lost.
+  store.setProgress('mega:A', { page: 4, pageCount: 20, status: 'reading', updatedAt: '2026-11-03T12:00:00.000Z' });
+  between = async () => { ipadStore.setProgress('mega:B', { page: 9, pageCount: 20, status: 'reading', updatedAt: '2026-11-03T12:01:00.000Z' }); await syncReadingPositions({ cloud: ipad, store: ipadStore }); };
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen, changes: true }), { applied: 1, sent: true });
+  const shared = server.rows.get('walter@example.com').data.progress;
+  assert.equal(shared['mega:A'].page, 4); assert.equal(shared['mega:B'].page, 9);
+  assert.equal(seen.revision, server.rows.get('walter@example.com').revision);
+});
+
+test('a comic that was open during the last sync gets the other device\'s newer place after closing it', async () => {
+  const server = fakeSupabase();
+  const phone = createCloudSync({ url: URL, key: KEY, fetchImpl: server.fetchImpl, storage: memory() });
+  const ipad = createCloudSync({ url: URL, key: KEY, fetchImpl: server.fetchImpl, storage: memory() });
+  await phone.signIn('walter@example.com', 'right password'); await ipad.signIn('walter@example.com', 'right password');
+  const store = library([comic('mega:A', 'One.cbz')]), ipadStore = library([comic('mega:A', 'One.cbz')]);
+  store.setProgress('mega:A', { page: 1, pageCount: 20, status: 'reading', updatedAt: '2026-11-03T10:00:00.000Z' });
+  ipadStore.setProgress('mega:A', { page: 15, pageCount: 20, status: 'reading', updatedAt: '2026-11-03T11:00:00.000Z' });
+  await syncReadingPositions({ cloud: ipad, store: ipadStore });
+  const seen = {};
+  // Open on the phone: its place is kept.
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen, skip: 'mega:A' }), { applied: 0, sent: false });
+  assert.equal(store.state.progress['mega:A'].page, 1);
+  // Closed without reading on: the iPad's newer place comes in, with no new download.
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen, changes: false }), { applied: 1, sent: false });
+  assert.equal(store.state.progress['mega:A'].page, 15);
+});
