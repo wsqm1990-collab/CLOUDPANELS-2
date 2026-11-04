@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseScript, linesForStep, pickVoice, utteranceSettings, panelsKeyOf, scriptKey, createSpeaker, requestPageScript, scriptRequestNote } from '../src/read-aloud.js';
+import { parseScript, linesForStep, pickVoice, utteranceSettings, panelsKeyOf, scriptKey, createSpeaker, requestPageScript, scriptRequestNote, scriptInstructions } from '../src/read-aloud.js';
 
 const reply = JSON.stringify({ language: 'pt-BR', lines: [
   { panel: 1, x: .3, y: .1, kind: 'caption', speaker: 'narrator', voice: 'narrator', tone: 'normal', text: 'Mais tarde…' },
@@ -118,4 +118,30 @@ test('with areas outside the panels in between, numbered lines still find their 
   assert.deepEqual(texts(0), ['Up here.'], 'a balloon outside every panel is read with the area it sits in');
   assert.deepEqual(texts(1), ['Left one.'], 'the AI said panel 1, even if its spot looked elsewhere');
   assert.deepEqual(texts(2), ['Right one.']);
+});
+
+test('the page script also carries the mood, place and sounds for music and effects', async () => {
+  const { MOODS, AMBIENCES, SOUNDS, sceneForStep, classifySound } = await import('../src/read-aloud.js');
+  const reply = JSON.stringify({ language: 'en-US', mood: 'TENSE', intensity: 2, ambience: 'city', panels: [{ panel: 2, mood: 'action', intensity: 3 }, { panel: 9, mood: 'sad' }, { panel: 1, mood: 'disco' }],
+    lines: [{ panel: 1, kind: 'speech', text: 'Quiet.' }, { panel: 2, kind: 'sfx', sound: 'explosion', text: 'KRA-KOOM' }, { panel: 2, kind: 'sfx', text: 'THWIP' }, { panel: 2, kind: 'sfx', sound: 'kazoo', text: 'POW' }] });
+  const script = parseScript(reply, { panelCount: 2, panelsKey: 'k' });
+  assert.equal(script.mood, 'tense'); assert.equal(script.intensity, 2); assert.equal(script.ambience, 'city');
+  assert.deepEqual(script.panels, [{ panel: 2, mood: 'action', intensity: 3, ambience: '' }, { panel: 1, mood: '', intensity: 0, ambience: '' }], 'panels beyond the page are left out; unknown moods are blank');
+  assert.deepEqual(script.lines.filter(line => line.kind === 'sfx').map(line => line.sound), ['explosion', 'web', 'punch'], 'the AI sound, or one guessed from the lettering');
+  assert.deepEqual(sceneForStep(script, { panelNumber: 1 }), { mood: 'tense', intensity: 2, ambience: 'city' });
+  assert.deepEqual(sceneForStep(script, { panelNumber: 2 }), { mood: 'action', intensity: 3, ambience: 'city' });
+  // A page read before music existed: a mood is guessed from how people speak.
+  assert.equal(sceneForStep({ lines: [{ tone: 'sad' }, { tone: 'sad' }, { tone: 'normal' }] }).mood, 'sad');
+  assert.equal(sceneForStep({ lines: [{ tone: 'shout', kind: 'speech' }, { kind: 'sfx', tone: 'normal' }] }).mood, 'action');
+  assert.equal(sceneForStep({ lines: [] }).mood, 'calm');
+  assert.ok(MOODS.includes('none') && AMBIENCES.includes('none') && SOUNDS.length >= 30);
+  for (const [text, sound] of [['KABOOM!', 'explosion'], ['BLAM BLAM', 'gunshot'], ['RATATATAT', 'gunfire'], ['SNIKT', 'slash'], ['WHOOOSH', 'whoosh'], ['KRSSH', 'glass'], ['VROOOM', 'engine'], ['BA-DUMP', 'heartbeat'], ['CLANG', 'metal'], ['SPLASH', 'splash']]) assert.equal(classifySound(text), sound, text);
+  assert.match(scriptInstructions(), /mood:.*calm/); assert.match(scriptInstructions(), /sound \(sound effects only\)/);
+});
+
+test('sound effects come with the lines of their panel only when asked for', () => {
+  const script = parseScript(reply, { panelCount: 3, panelsKey: panelsKeyOf(panels) });
+  const texts = sounds => linesForStep(script, { rects: panels, panel: 1, panelsKey: panelsKeyOf(panels), sounds }).map(line => line.text);
+  assert.deepEqual(texts(false), ['O trem atrasou.']);
+  assert.deepEqual(texts(true), ['BOOM', 'O trem atrasou.'], 'in reading order');
 });

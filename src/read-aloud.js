@@ -8,6 +8,11 @@ const KINDS = new Set(['speech', 'thought', 'caption', 'sfx']);
 const TONES = new Set(['normal', 'shout', 'whisper', 'sad', 'angry', 'scared', 'laugh']);
 const VOICES = new Set(['narrator', 'man', 'woman', 'boy', 'girl', 'old man', 'old woman', 'creature', 'robot']);
 const MAX_LINES = 150;
+// Music, background sound and sound effects (optional extras of read aloud).
+export const MOODS = Object.freeze(['calm', 'happy', 'funny', 'romantic', 'sad', 'mystery', 'tense', 'action', 'scary', 'heroic', 'none']);
+export const AMBIENCES = Object.freeze(['none', 'city', 'night', 'rain', 'storm', 'wind', 'indoors', 'fire', 'water', 'forest', 'space']);
+export const SOUNDS = Object.freeze(['explosion', 'punch', 'slash', 'gunshot', 'gunfire', 'laser', 'zap', 'whoosh', 'web', 'crash', 'glass', 'thud', 'footsteps', 'knock', 'door', 'metal', 'thunder', 'splash', 'roar', 'alarm', 'beep', 'ring', 'engine', 'screech', 'magic', 'boing', 'pop', 'snap', 'heartbeat', 'fire', 'rumble', 'crunch']);
+const MOOD_SET = new Set(MOODS), AMBIENCE_SET = new Set(AMBIENCES), SOUND_SET = new Set(SOUNDS);
 
 /** What the AI is asked to do with one page. */
 export function scriptInstructions() {
@@ -15,18 +20,24 @@ export function scriptInstructions() {
     'You transcribe comic book pages for the read-aloud feature of a comic reader app.',
     'Look at the page and list the text a reader would read, in reading order: panel by panel, and within each panel balloon by balloon.',
     'Reply with JSON only (no other text, no code fence) in exactly this shape:',
-    '{"language":"en-US","lines":[{"panel":1,"x":0.42,"y":0.18,"kind":"speech","speaker":"Batman","voice":"man","tone":"normal","text":"We need to go."}]}',
+    '{"language":"en-US","mood":"tense","intensity":2,"ambience":"city","panels":[{"panel":2,"mood":"action","intensity":3}],"lines":[{"panel":1,"x":0.42,"y":0.18,"kind":"speech","speaker":"Batman","voice":"man","tone":"normal","text":"We need to go."},{"panel":2,"x":0.6,"y":0.55,"kind":"sfx","sound":"explosion","speaker":"","voice":"man","tone":"normal","text":"Kaboom"}]}',
     'Rules:',
     '- kind: speech (speech balloon), thought (thought balloon), caption (narration box) or sfx (sound effect lettering such as BOOM).',
     '- text: the exact words, but in normal sentence case instead of ALL CAPITALS, joining words split across lines. Keep the language of the page. No quotation marks around it.',
     '- x and y: the centre of the balloon, caption or sound effect, as fractions of the page width and height (0 = left or top edge, 1 = right or bottom edge), two decimals.',
     '- panel: the number of the numbered outline it sits in, or 0 when the page has no numbered outlines or it sits outside them.',
-    '- speaker: the character speaking (their name if the page shows it, otherwise a short description such as "old man"); "narrator" for captions.',
+    '- speaker: the character speaking (their name if the page shows it, otherwise a short description such as "old man"); "narrator" for captions. Use the same name for the same character on every page.',
     '- voice: one of narrator, man, woman, boy, girl, old man, old woman, creature, robot.',
     '- tone: one of normal, shout, whisper, sad, angry, scared, laugh.',
     '- language: the BCP 47 code of the lettering, such as en-US, pt-BR or es-ES.',
+    `- sound (sound effects only): what it sounds like, one of ${SOUNDS.join(', ')}.`,
+    'The page also gets background music and sound, so describe the scene:',
+    `- mood: the feeling of the page for its music, one of ${MOODS.join(', ')}.`,
+    '- intensity: 1 (gentle), 2 or 3 (strongest).',
+    `- ambience: the background sound of the place, one of ${AMBIENCES.join(', ')}.`,
+    '- panels: only for panels whose mood, intensity or ambience differ from the page, e.g. [{"panel":3,"mood":"action","intensity":3}]; otherwise [].',
     '- Leave out page numbers, credits, logos, signs and background writing that is not dialogue, a caption or a sound effect.',
-    '- A page without text: {"language":"und","lines":[]}.',
+    '- A page without text still gets mood, intensity and ambience, with "lines":[] (and "language":"und" if nothing is written).',
   ].join('\n');
 }
 
@@ -54,17 +65,62 @@ export function parseScript(reply, { panelCount = 0, panelsKey = '' } = {}) {
   try { data = JSON.parse(text.slice(start, end + 1)); } catch { throw Object.assign(new Error('The AI did not describe this page clearly.'), { type: 'empty_answer' }); }
   const language = /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(String(data?.language || '')) && data.language !== 'und' ? String(data.language) : '';
   const lines = [];
+  const intensityOf = value => { const number = Math.round(Number(value)); return number >= 1 && number <= 3 ? number : 0; };
+  const scene = {
+    mood: word(data?.mood, MOOD_SET, ''), intensity: intensityOf(data?.intensity), ambience: word(data?.ambience, AMBIENCE_SET, ''),
+    panels: (Array.isArray(data?.panels) ? data.panels : []).filter(item => item && typeof item === 'object' && Number.isInteger(Number(item.panel)) && Number(item.panel) >= 1 && Number(item.panel) <= panelCount)
+      .slice(0, 60).map(item => ({ panel: Number(item.panel), mood: word(item.mood, MOOD_SET, ''), intensity: intensityOf(item.intensity), ambience: word(item.ambience, AMBIENCE_SET, '') })),
+  };
   for (const raw of Array.isArray(data?.lines) ? data.lines : []) {
     if (!raw || typeof raw !== 'object') continue;
     const words = String(raw.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 600);
     if (!words) continue;
     const kind = word(raw.kind, KINDS, 'speech');
     const panel = Number.isInteger(Number(raw.panel)) && Number(raw.panel) >= 1 && Number(raw.panel) <= panelCount ? Number(raw.panel) : 0;
-    lines.push({ panel, x: fraction(raw.x), y: fraction(raw.y), kind, tone: word(raw.tone, TONES, 'normal'),
-      voice: word(raw.voice, VOICES, kind === 'caption' ? 'narrator' : 'man'), speaker: String(raw.speaker || '').trim().slice(0, 80), text: words });
+    const line = { panel, x: fraction(raw.x), y: fraction(raw.y), kind, tone: word(raw.tone, TONES, 'normal'),
+      voice: word(raw.voice, VOICES, kind === 'caption' ? 'narrator' : 'man'), speaker: String(raw.speaker || '').trim().slice(0, 80), text: words };
+    if (kind === 'sfx') line.sound = word(raw.sound, SOUND_SET, '') || classifySound(words);
+    lines.push(line);
     if (lines.length >= MAX_LINES) break;
   }
-  return { v: 1, language, panelsKey: panelCount > 0 ? panelsKey : '', lines };
+  return { v: 1, language, panelsKey: panelCount > 0 ? panelsKey : '', ...scene, lines };
+}
+
+// Lettered sounds -> the sound effect that plays (when the AI did not say).
+const SOUND_WORDS = [
+  ['web', /thwi?pp?|thwp|thwap/], ['gunfire', /rat-?a-?tat|ratatat|brr+a+p|budda|dakka|takka|brakka|blat-?blat/], ['explosion', /k?a-?boo+m|ba-?doo+m|kra-?boo+m|boo+m|fwoo+m|ka-?blam|kablooey|blooo?m/],
+  ['thunder', /thunder|krakoo+m|kra+ck?-?a-?boo+m|rumble?ble/], ['gunshot', /\bbang|\bblam|\bblat|\bkrack?-?ow|\bbla+m|\bpakow|\bchak/], ['laser', /\bpew|zarr?k|zwa+p|vwee|zee+ow/],
+  ['zap', /zz+a?p|z+a+p|bzz+t?|kzz+t?|zzt|crackle|vzz+t?/], ['slash', /shi+n+g|schwi+n+g|shink|snikt|slash|slice|shunk|chi+ng/], ['web', /thwip/], ['glass', /tinkle|shatter|kr?i?ssh|krsh|crsh/],
+  ['crash', /crash|krash|kerash|smash|kersmash|wreck/], ['punch', /\bk?a?pow|wha+m|thwa+ck|wha+ck|sma+ck|\bba+m|biff|\bsock|thok|kra+k|\bwhap|kapow|\bpunch|\boof|\bwump/], ['whoosh', /wh?oo+sh|fwoo+sh|swoo+sh|zoo+m|whsh|fwip|swish|vwoo+sh|whizz?/],
+  ['thud', /thu+d|thu+mp|flump|clunk|klunk|plop|whump|\bdoof/], ['footsteps', /tap tap|stomp|clomp|tromp|step|kla+k|clack/], ['knock', /knock|\btok\b|rap rap/], ['door', /slam|cree+a+k|ka-?chunk|\bchunk|\bclick/],
+  ['metal', /cla+ng|kla+ng|kling|cla+nk|kla+nk|\btang|\btin+g|\bdink/], ['splash', /splash|sploo+sh|splish|splosh|splat|glug|blub|bloop/], ['roar', /roa+r|rawr|ra+a+rgh|gra+a+h|gr+o+a+r|snarl|\bgrr+/],
+  ['alarm', /wee-?oo|weeoo|whoop|alarm|blare|\bwail/], ['beep', /bee+p|\bbip|\bblip|\bboop|blee+p|\bping/], ['ring', /\bri+n+g|brr+i+n+g|\bdi+n+g|\bdo+n+g|\bbo+n+g/], ['engine', /vroo+m|vrr+|brr+m|\bputt|\bchug/],
+  ['screech', /scree+ch|skree+|skrr+|scree+|squeal|ee+ee+/], ['magic', /shimmer|sparkle|twinkle|vworp|\bglow/], ['boing', /boi+n+g|sproi+n+g|bwoi+n+g/], ['pop', /\bpop\b|\bplip|\bplink|\bblop/],
+  ['snap', /\bsnap|\bcra+ck|\bsnik/], ['heartbeat', /ba-?dump|bu-?dump|ba-?bump|lub-?dub|thump-?thump/], ['fire', /\bfoo+m|whoo+m|frooo+sh/], ['rumble', /rumble|rmmbl|\brrr+|tremble|\bshake/], ['crunch', /crunch|krunch|munch|chomp/],
+];
+export function classifySound(text) {
+  const t = String(text || '').toLowerCase();
+  for (const [sound, pattern] of SOUND_WORDS) if (pattern.test(t)) return sound;
+  return /[ou]{2,}|[ou]m+\b/.test(t) ? 'thud' : 'whoosh';
+}
+
+// A page read before this feature has no mood: guess one from how people speak.
+function guessMood(lines) {
+  if (!lines.length) return 'calm';
+  const count = tone => lines.filter(line => line.tone === tone).length, loud = count('shout') + count('angry') + count('scared');
+  if (lines.some(line => line.kind === 'sfx') && loud) return 'action';
+  if (loud * 2 >= lines.length) return 'tense';
+  if (count('sad') * 2 >= lines.length) return 'sad';
+  if (count('laugh') * 2 >= lines.length) return 'happy';
+  return 'calm';
+}
+
+/** The music and background sound for one reading step (numbered panel or the page). */
+export function sceneForStep(script, { panelNumber = 0 } = {}) {
+  const lines = Array.isArray(script?.lines) ? script.lines : [];
+  const page = { mood: script?.mood || guessMood(lines), intensity: script?.intensity || 2, ambience: script?.ambience || 'none' };
+  const special = panelNumber > 0 && Array.isArray(script?.panels) ? script.panels.find(item => item.panel === panelNumber) : null;
+  return special ? { mood: special.mood || page.mood, intensity: special.intensity || page.intensity, ambience: special.ambience || page.ambience } : page;
 }
 
 function containing(rects, x, y) {
@@ -85,10 +141,10 @@ function containing(rects, x, y) {
  * The lines to read for one reading step: every line of a whole page, or the
  * lines of one panel (or part). The AI's panel numbers are used when they were
  * made for these same panels; otherwise each line goes where its centre is.
- * Sound effects are kept for later and not read out by the device voice.
+ * Sound effects are left out unless `sounds` is set (they play, not read).
  */
-export function linesForStep(script, { rects = [], panel = 0, overview = false, panelsKey = '', numberedRects = rects } = {}) {
-  const lines = (Array.isArray(script?.lines) ? script.lines : []).filter(line => line.kind !== 'sfx');
+export function linesForStep(script, { rects = [], panel = 0, overview = false, panelsKey = '', numberedRects = rects, sounds = false } = {}) {
+  const lines = (Array.isArray(script?.lines) ? script.lines : []).filter(line => sounds || line.kind !== 'sfx');
   if (overview || !lines.length) return [];
   if (!rects.length) return lines;
   const numbered = Boolean(script.panelsKey) && script.panelsKey === panelsKey;

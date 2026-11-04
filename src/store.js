@@ -21,7 +21,7 @@ const decimal = (value, fallback, min, max) => Number.isFinite(Number(value)) &&
 const newId = prefix => prefix + ':' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : now();
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -94,6 +94,10 @@ function settings(value, previous = defaultState().settings) {
     readerGuidedPlus: typeof value.readerGuidedPlus === 'boolean' ? value.readerGuidedPlus : previous.readerGuidedPlus === true,
     // Read aloud is optional and starts switched off.
     readerReadAloud: typeof value.readerReadAloud === 'boolean' ? value.readerReadAloud : previous.readerReadAloud === true,
+    // Read aloud extras (natural voices, music, sound effects): optional, off at first.
+    readerNaturalVoice: typeof value.readerNaturalVoice === 'boolean' ? value.readerNaturalVoice : previous.readerNaturalVoice === true,
+    readerMusic: typeof value.readerMusic === 'boolean' ? value.readerMusic : previous.readerMusic === true,
+    readerSoundEffects: typeof value.readerSoundEffects === 'boolean' ? value.readerSoundEffects : previous.readerSoundEffects === true,
     readerNavigationSeconds: [0, 3, 5, 8].includes(value.readerNavigationSeconds) ? value.readerNavigationSeconds : ([0, 3, 5, 8].includes(previous.readerNavigationSeconds) ? previous.readerNavigationSeconds : 3),
     readerSwipeResistance: [1, 2, 3, 4, 5].includes(value.readerSwipeResistance) ? value.readerSwipeResistance : ([1, 2, 3, 4, 5].includes(previous.readerSwipeResistance) ? previous.readerSwipeResistance : 3),
     readerPageAnimation: ['slide', 'fade', 'none'].includes(value.readerPageAnimation) ? value.readerPageAnimation : (['slide', 'fade', 'none'].includes(previous.readerPageAnimation) ? previous.readerPageAnimation : 'slide'),
