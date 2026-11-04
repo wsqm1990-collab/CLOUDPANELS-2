@@ -11,7 +11,7 @@ const manifest = { project_id: 'android-local', static: { directory: 'dist' } };
 await mkdir(dist, {recursive: true});
 for (const name of await readdir(dist)) await rm(path.join(dist, name), {recursive: true, force: true});
 await mkdir(path.join(dist, 'vendor'), {recursive: true});
-await build({entryPoints: { app: 'src/app.js', 'panel-worker': 'src/panel-worker.js', 'thumb-worker': 'src/thumb-worker.js' }, bundle: true, splitting: true, format: 'esm', platform: 'browser', target: ['safari15.4'], outdir: dist, entryNames: '[name]', chunkNames: 'vendor/[name]-[hash]', minify: true, legalComments: 'eof', logLevel: 'warning', define: {'process.env.NODE_ENV': '"production"'}});
+await build({entryPoints: { app: 'src/app.js', 'panel-worker': 'src/panel-worker.js', 'thumb-worker': 'src/thumb-worker.js', 'tts-worker': 'src/tts-worker.js' }, bundle: true, splitting: true, format: 'esm', platform: 'browser', target: ['safari15.4'], outdir: dist, entryNames: '[name]', chunkNames: 'vendor/[name]-[hash]', minify: true, legalComments: 'eof', logLevel: 'warning', define: {'process.env.NODE_ENV': '"production"'}});
 for (const file of ['index.html', 'styles.css', 'apple-touch-icon.png', 'brand-emblem.png', 'favicon-32.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'manifest.webmanifest', 'THIRD_PARTY_NOTICES.txt']) await cp(path.join('src', file), path.join(dist, file));
 await cp('src/samples', path.join(dist, 'samples'), {recursive: true});
 await cp('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs', path.join(dist, 'vendor/pdf.worker.mjs'));
@@ -20,13 +20,19 @@ await mkdir(path.join(dist, 'vendor/unrar'), {recursive: true});
 for (const file of ['worker.js', 'libunrar.js', 'libunrar.js.mem', 'license.txt']) await cp(path.join('vendor/unrar', file), path.join(dist, 'vendor/unrar', file));
 for (const file of ['worker-bundle.js', 'libarchive.wasm']) await cp(path.join('node_modules/libarchive.js/dist', file), path.join(dist, 'vendor/libarchive', file));
 for (const folder of ['cmaps', 'standard_fonts', 'wasm', 'iccs']) await cp(path.join('node_modules/pdfjs-dist', folder), path.join(dist, 'vendor', folder), {recursive: true});
+// Natural voices (optional): the voice engine ships with the app; the voice
+// files (about 120 MB) live in tts/ and are downloaded only when switched on.
+await mkdir(path.join(dist, 'vendor/ort'), {recursive: true});
+for (const file of ['ort.wasm.bundle.min.mjs', 'LICENSE']) await cp(path.join('vendor/onnxruntime-web', file), path.join(dist, 'vendor/ort', file));
+await cp('tts', path.join(dist, 'tts'), {recursive: true});
 const meta = await readFile('src/index.html', 'utf8');
 const policy = meta.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1];
 await writeFile(path.join(dist, '_headers'), '/*\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Content-Security-Policy: ' + policy + '\n/index.html\n  Cache-Control: no-store\n/app.js\n  Cache-Control: no-cache\n/styles.css\n  Cache-Control: no-cache\n/panel-worker.js\n  Cache-Control: no-cache\n/thumb-worker.js\n  Cache-Control: no-cache\n/sw.js\n  Cache-Control: no-cache\n');
 async function list(dir, prefix = '') { const out = []; for (const e of await readdir(dir, {withFileTypes: true})) { const rel = prefix + e.name; if (e.isDirectory()) out.push(...await list(path.join(dir, e.name), rel + '/')); else out.push(rel); } return out; }
 // Everything needed to start and read offline is cached by the service
-// worker. PDF character maps are fetched on demand and cached as used.
-const appAssets = ['./', ...(await list(dist)).filter(f => !/^(?:_headers|sw\.js|vendor\/(?:cmaps|iccs|standard_fonts)\/)/.test(f))];
+// worker. PDF character maps are fetched on demand and cached as used. The
+// natural voice files are never part of it (they are saved on demand).
+const appAssets = ['./', ...(await list(dist)).filter(f => !/^(?:_headers|sw\.js|tts\/|vendor\/(?:cmaps|iccs|standard_fonts)\/)/.test(f))];
 const digest = createHash('sha256').update(await readFile(path.join(dist, 'app.js'))).update(await readFile(path.join(dist, 'styles.css'))).update(JSON.stringify(appAssets)).digest('hex').slice(0,12);
 const worker = "const CACHE='cloudpanels-shell-" + digest + "';\nconst FILES=" + JSON.stringify(appAssets) + ";\nconst SCOPE=new URL('./', self.location.href);\nconst URLS=new Set(FILES.map(f=>new URL(f, SCOPE).href));\n" +
 "self.addEventListener('install',e=>e.waitUntil((async()=>{const c=await caches.open(CACHE);await Promise.allSettled([...URLS].map(async u=>{const r=await fetch(u,{cache:'reload'});if(r.ok&&new URL(r.url).origin===location.origin)await c.put(u,r);}));self.skipWaiting();})()));\n" +

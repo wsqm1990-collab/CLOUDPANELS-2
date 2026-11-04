@@ -45,6 +45,9 @@ jobs:
           mkdir -p ../results
           { sw_vers; xcodebuild -version; node --version; } > ../results/machine.txt 2>&1
           rm -rf www/.git
+          # The natural voice files (about 120 MB) stay on the website: the app
+          # downloads them only if they are switched on.
+          rm -rf www/tts
           npm install --no-audit --no-fund 2>&1 | tee ../results/npm.log | tail -5
           npx cap add ios 2>&1 | tee ../results/cap-add.log
           node configure-ios.mjs 2>&1 | tee ../results/configure.log

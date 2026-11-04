@@ -388,6 +388,18 @@ test('the enhanced guided view starts switched off and is kept once chosen', () 
   assert.equal(restored.state.settings.readerGuidedPlus, true, 'backups carry it');
   s.setSettings({readerGuidedPlus: false}); assert.equal(s.state.settings.readerGuidedPlus, false);
 });
+test('read aloud extras (natural voices, music, sound effects) start switched off and are kept once chosen', () => {
+  const s = new LibraryStore({storage: memory()});
+  for (const name of ['readerNaturalVoice', 'readerMusic', 'readerSoundEffects']) {
+    assert.equal(s.state.settings[name], false, name);
+    s.setSettings({[name]: true}); assert.equal(s.state.settings[name], true, name);
+    s.setSettings({language: 'es'}); assert.equal(s.state.settings[name], true, 'other settings keep it');
+    s.setSettings({[name]: 'yes'}); assert.equal(s.state.settings[name], true, 'anything but true or false is ignored');
+  }
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  for (const name of ['readerNaturalVoice', 'readerMusic', 'readerSoundEffects']) assert.equal(restored.state.settings[name], true, 'backups carry ' + name);
+  s.setSettings({readerMusic: false}); assert.equal(s.state.settings.readerMusic, false); assert.equal(s.state.settings.readerSoundEffects, true);
+});
 test('reading changes are written quickly, exactly as a full save would write them',async()=>{
  let persisted=null,writes=0;
  const backend={async read(){return persisted},async write(text){writes++;persisted=text}};
