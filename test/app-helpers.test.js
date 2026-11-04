@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {searchComics,filterComics,sortComics,publicError,catalogAnswer,statusOf,normalizeFolderPath,folderContents,isInsideFolder,upNextComics,nextComicInFolder} from '../src/app-helpers.js';
+import {searchComics,filterComics,sortComics,publicError,catalogAnswer,statusOf,normalizeFolderPath,folderContents,isInsideFolder,upNextComics,nextComicInFolder,coverPicks} from '../src/app-helpers.js';
 const a={id:'a',name:'Alpha 010.cbz',metadata:{title:'Alpha 10',series:'Alpha',issue:'10',volume:'1',publisher:'Élan',characters:['Nova'],tags:['Space']},addedAt:'2026-01-01'};
 const b={id:'b',name:'Alpha 002.cbz',metadata:{title:'Alpha 2',series:'Alpha',issue:'2',volume:'1',publisher:'Élan',characters:['Nova'],tags:[]},addedAt:'2026-01-02'};
 const c={id:'c',name:'Beta.pdf',metadata:{title:'Beta',series:'Beta',issue:'1',volume:'1',publisher:'Other',characters:[],tags:[]},addedAt:'2026-01-03'};
@@ -158,4 +158,22 @@ test('Up next stays quick with thousands of comics read, in series read to the e
   const result = upNextComics(comics, progress, 6, []);
   assert.equal(result.length, 6);
   assert.ok(performance.now() - started < 1000, `took ${Math.round(performance.now() - started)} ms`);
+});
+
+test("a folder's covers: the comic being read first, then the next issues, then from the start again", () => {
+  const comic = (id, path) => ({ id, name: path.split('/').pop(), path });
+  const list = [comic('c', 'A/Saga 003.cbz'), comic('a', 'A/Saga 001.cbz'), comic('e', 'B/Tide 001.cbz'), comic('b', 'A/Saga 002.cbz'), comic('d', 'A/Saga 004.cbz')];
+  const ids = picks => picks.map(c => c.id).join(',');
+  assert.equal(ids(coverPicks(list, {}, 3)), 'a,b,c', 'nothing read: the first ones');
+  assert.equal(ids(coverPicks(list, { a: { status: 'finished' }, b: { status: 'finished' } }, 3)), 'c,d,e', 'the first one not read yet comes first');
+  assert.equal(ids(coverPicks(list, {}, 3, list[4])), 'd,e,a', 'the one being read, the next one, then from the start');
+  const all = Object.fromEntries(list.map(c => [c.id, { status: 'finished' }]));
+  assert.equal(ids(coverPicks(list, all, 2)), 'a,b', 'all read: the first ones');
+  assert.equal(ids(coverPicks(list, {}, 12)), 'a,b,c,d,e', 'never more than there are');
+  assert.deepEqual(coverPicks([], {}, 3), []);
+  assert.equal(ids(coverPicks(list, {}, 1)), 'a');
+  const big = Array.from({ length: 6000 }, (_, i) => comic('x' + i, `COMICS/Team ${i % 400}/Team ${String(i).padStart(4, '0')}.cbr`));
+  const started = performance.now();
+  for (let i = 0; i < 10; i++) coverPicks(big, {}, 12);
+  assert.ok(performance.now() - started < 400, `took ${Math.round(performance.now() - started)} ms`);
 });

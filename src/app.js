@@ -9,7 +9,7 @@ import {OfflineLibrary} from './offline.js';
 import {streamToCbz,verifyCbz} from './convert.js';
 import {clearArchiveListings} from './reader.js';
 import {assistantStore,buildLibraryIndex,libraryBrief,libraryTools,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
-import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder} from './app-helpers.js';
+import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder, coverPicks} from './app-helpers.js';
 
 const copy = {
   en: {
@@ -46,6 +46,9 @@ Object.assign(copy.es,{libraryCheckedShort:'Revisado con MEGA a las {time} · {a
 Object.assign(copy.en,{updatingApp:'Updating CloudPanels to the newest version…',appVersion:'App version',libraryNotChecked:'Not checked yet in this session.',libraryCheckedAt:'Last checked at {time}: {found} of {total} library folders found in MEGA · {added} new, {moved} moved, {removed} removed.',libraryCheckFailed:'Last check at {time} failed: {reason}',refreshLibrary:'Update from MEGA',refreshingLibrary:'Checking your MEGA folders…',libraryUpdated:'Library updated from MEGA: {added} new, {moved} moved or renamed, {removed} removed.',libraryUpToDate:'Your library already matches your MEGA folders.',refreshLibraryDetail:'Folders and comics you add, move or rename in MEGA appear here automatically when the app opens or comes back to the front. You can also update now.'});
 Object.assign(copy['pt-BR'],{updatingApp:'Atualizando o CloudPanels para a versão mais nova…',appVersion:'Versão do app',libraryNotChecked:'Ainda não conferido nesta sessão.',libraryCheckedAt:'Última conferência às {time}: {found} de {total} pastas da biblioteca encontradas no MEGA · {added} novos, {moved} movidos, {removed} removidos.',libraryCheckFailed:'A conferência das {time} falhou: {reason}',refreshLibrary:'Atualizar do MEGA',refreshingLibrary:'Conferindo suas pastas do MEGA…',libraryUpdated:'Biblioteca atualizada do MEGA: {added} novos, {moved} movidos ou renomeados, {removed} removidos.',libraryUpToDate:'Sua biblioteca já está igual às pastas do MEGA.',refreshLibraryDetail:'Pastas e quadrinhos que você adiciona, move ou renomeia no MEGA aparecem aqui sozinhos quando o app abre ou volta para a tela. Você também pode atualizar agora.'});
 copy.es.refreshLibrary=copy.en.refreshLibrary;
+Object.assign(copy.en,{viewLabel:'View',viewGrid:'Grid',viewRacks:'Shelves',rackContinue:'Continue reading',rackUpNext:'Up next',rackHere:'In this folder',rackOpen:'Open folder',rackSeeAll:'See all',rackFrom:'From {folder}',rackPage:'Page {page} of {count}',rackContinueButton:'Continue',rackSomeRead:'{count} stories · {read} read',rackAllRead:'{count} stories · all read'});
+Object.assign(copy['pt-BR'],{viewLabel:'Visualização',viewGrid:'Grade',viewRacks:'Estante',rackContinue:'Continuar lendo',rackUpNext:'Próxima leitura',rackHere:'Nesta pasta',rackOpen:'Abrir pasta',rackSeeAll:'Ver tudo',rackFrom:'De {folder}',rackPage:'Página {page} de {count}',rackContinueButton:'Continuar',rackSomeRead:'{count} histórias · {read} lidas',rackAllRead:'{count} histórias · todas lidas'});
+Object.assign(copy.es,{viewLabel:'Vista',viewGrid:'Cuadrícula',viewRacks:'Estantería',rackContinue:'Seguir leyendo',rackUpNext:'Tu próxima lectura',rackHere:'En esta carpeta',rackOpen:'Abrir carpeta',rackSeeAll:'Ver todo',rackFrom:'De {folder}',rackPage:'Página {page} de {count}',rackContinueButton:'Continuar',rackSomeRead:'{count} historias · {read} leídas',rackAllRead:'{count} historias · todas leídas'});
 Object.assign(copy.en,{syncPaused:'Sync between devices is paused while it is being fixed. Nothing is written to your MEGA. To move your reading to another device, use Export backup here and Import backup on the other device.',diagTitle:'Diagnostics',diagDetail:'If something fails, copy this report and send it to whoever is fixing the app. It contains error messages only — no passwords, keys or comic files.',diagCopy:'Copy report',diagCopied:'Report copied.',diagEmpty:'No problems recorded.'});
 Object.assign(copy['pt-BR'],{syncPaused:'A sincronização entre aparelhos está pausada enquanto é corrigida. Nada é gravado no seu MEGA. Para levar sua leitura para outro aparelho, use Exportar backup aqui e Importar backup no outro.',diagTitle:'Diagnóstico',diagDetail:'Se algo falhar, copie este relatório e envie para quem está corrigindo o app. Ele contém só mensagens de erro — nenhuma senha, chave ou arquivo de quadrinho.',diagCopy:'Copiar relatório',diagCopied:'Relatório copiado.',diagEmpty:'Nenhum problema registrado.'});
 
@@ -156,6 +159,8 @@ const modal = document.querySelector('#modal');
 const modalContent = document.querySelector('#modal-content');
 let view = 'library', selectedCollection = null, visibleCount = 60, searchTimer;
 let libraryMode='folders',folderPath=[],mainDirty=false,refreshQueued=false,refreshAfterReading=false;
+const VIEW_KEY='cloudpanels-library-view';
+let libraryView=(()=>{try{return localStorage.getItem(VIEW_KEY)==='rack'?'rack':'grid';}catch{return 'grid';}})();
 let selectionMode=false,selectionCandidates=[];
 const selectedComicIds=new Set();
 let filters = {status:'all',publisher:'',series:'',character:'',sort:'title',group:''};
@@ -373,11 +378,13 @@ function renderLibrary() {
   const smart=!continuing&&['favorites','readLater'].includes(libraryMode);
   if(smart){const ids=new Set(store.state[libraryMode]||[]);comics=comics.filter(comic=>ids.has(comic.id));}
   const folderMode=!continuing&&libraryMode==='folders',contents=folderContents(comics,folderPath,store.state.progress);
-  const selectButton=(comics.length||selectionMode)?action(t(selectionMode?'cancelSelection':'selectComics'),()=>{selectionMode=!selectionMode;selectedComicIds.clear();render();},'button secondary compact',{'data-bulk-select':'toggle','aria-pressed':String(selectionMode)}):null;
+  const query=document.querySelector('#search').value;
+  const racks=folderMode&&libraryView==='rack'&&!selectionMode&&!query.trim()&&store.state.comics.length>0;
+  const selectButton=!racks&&(comics.length||selectionMode)?action(t(selectionMode?'cancelSelection':'selectComics'),()=>{selectionMode=!selectionMode;selectedComicIds.clear();render();},'button secondary compact',{'data-bulk-select':'toggle','aria-pressed':String(selectionMode)}):null;
   const refreshButton=mega.connected&&!selectionMode&&store.state.comics.some(c=>c.source==='mega')?action('↻ '+t('refreshLibrary'),()=>void refreshLibrary({announce:true}),'button secondary compact',{'data-refresh-library':'1',disabled:Boolean(libraryRefresh)}):null;
   main.append(heading(continuing?t('continueReading'):(smart?t(libraryMode):(folderMode&&folderPath.length?folderPath.at(-1):t('library'))),continuing?t('keepReading'):(smart?t(libraryMode==='favorites'?'favoritesText':'readLaterText'):(folderMode?t('folderContents'):t('subtitle'))),...[refreshButton,selectButton].filter(Boolean)));
   if(refreshButton&&!continuing)main.append(element('p',{class:'muted library-check-line','data-library-check-short':'1',text:libraryCheckText(true)}));
-  if(!continuing){main.append(libraryModeSwitch());if(folderMode&&store.state.comics.length)main.append(folderBreadcrumbs());}
+  if(!continuing){main.append(libraryModeSwitch());if(folderMode&&store.state.comics.length)main.append(element('div',{class:'library-path-row'},folderBreadcrumbs(),libraryViewSwitch()));}
   if(!store.state.comics.length&&!continuing&&!smart)main.append(hero());
   if(!comics.length) {
     clearComicSelection();
@@ -386,9 +393,9 @@ function renderLibrary() {
       [action(t('connectMega'),openConnection,'button primary'),action(t('tryReader'),openDemo,'button secondary')]));
     return;
   }
+  if(racks){renderRacks(contents);if(comics.some(c=>c.source==='local'))main.append(element('div',{class:'notice info',style:'margin-top:28px',text:t('localNotice')}));return;}
   const scoped=folderMode?contents.descendants:comics;
   if(!continuing)main.append(...filterToolbar(scoped));
-  const query=document.querySelector('#search').value;
   const searching=Boolean(selectionMode||query.trim()||filters.status!=='all'||filters.publisher||filters.series||filters.character||filters.group);
   if(folderMode&&!selectionMode&&folderPath.length&&contents.count)main.append(folderSummary(contents));
   if(folderMode&&!searching&&contents.folders.length)main.append(folderGrid(contents.folders));
@@ -423,15 +430,93 @@ function folderIcon(){
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('fill','none');svg.setAttribute('aria-hidden','true');
   const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z');svg.append(path);return svg;
 }
+function openFolder(folder){clearComicSelection(true);folderPath=folder.path.slice();visibleCount=60;render();void saveRememberedConnection().catch(()=>{});window.scrollTo({top:0,behavior:'auto'});}
 function folderGrid(folders){
   return element('section',{class:'folder-grid'},folders.map(folder=>{
-    const open=action('',()=>{clearComicSelection(true);folderPath=folder.path.slice();visibleCount=60;render();void saveRememberedConnection().catch(()=>{});window.scrollTo({top:0,behavior:'auto'});},'folder-open',{'aria-label':folder.name});
-    open.append(...[element('span',{class:'folder-icon'},folderIcon()),element('h3',{class:'folder-name',text:folder.name}),element('span',{class:'folder-count',text:t('folderCount',{count:folder.count})}),folder.readingCount?element('span',{class:'folder-progress',text:t('folderReading',{count:folder.readingCount})}):null].filter(Boolean));
+    const open=action('',()=>openFolder(folder),'folder-open',{'aria-label':folder.name});
+    open.append(...[folderStack(folder),element('h3',{class:'folder-name',text:folder.name}),element('span',{class:'folder-count',text:t('folderCount',{count:folder.count})}),folder.readingCount?element('span',{class:'folder-progress',text:t('folderReading',{count:folder.readingCount})}):null].filter(Boolean));
     const progress=folderReadingStatus(folder);
     return element('article',{class:'folder-card'+(folder.allRead?' folder-all-read':'')},open,progress,
       folder.continueComic?action(t('continueFolder'),()=>openComic(folder.continueComic),'folder-continue text-button'):null,
       folderReadActions(folder.comics,folder));
   }));
+}
+// ---- Folder covers and newsstand shelves ---------------------------------------
+function setLibraryView(value){libraryView=value==='rack'?'rack':'grid';try{localStorage.setItem(VIEW_KEY,libraryView);}catch{}clearComicSelection(true);visibleCount=60;render();}
+function strokeIcon(paths){
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  for(const [name,value] of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.8','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'}))svg.setAttribute(name,value);
+  for(const d of paths){const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',d);svg.append(path);}
+  return svg;
+}
+const VIEW_ICONS={grid:['M4 4h7v7H4z','M13 4h7v7h-7z','M4 13h7v7H4z','M13 13h7v7h-7z'],rack:['M3 20h18','M3 11h18','M5 11V4.5h3V11','M9.5 11V6h3v5','M14.5 20v-6h3v6','M5.5 20v-5h3v5']};
+function libraryViewSwitch(){
+  return element('div',{class:'view-switch',role:'group','aria-label':t('viewLabel')},[['grid',t('viewGrid')],['rack',t('viewRacks')]].map(([value,label])=>{
+    const button=action('',()=>{if(libraryView!==value)setLibraryView(value);},'',{'aria-pressed':String(libraryView===value),'data-library-view':value});
+    button.append(strokeIcon(VIEW_ICONS[value]),element('span',{text:label}));return button;
+  }));
+}
+const STACK_SHADES=['#1e2b3b','#243245','#1b2838','#26364a'];
+function stackCover(comic,className=''){
+  let hash=0;for(const char of String(comic.id))hash=(hash*31+char.charCodeAt(0))>>>0;
+  const cover=element('span',{class:'stack-cover'+(className?' '+className:''),style:'background:'+STACK_SHADES[hash%STACK_SHADES.length]},element('span',{class:'stack-cover-title',text:comic.metadata?.series||comic.metadata?.title||comic.name}));
+  queueCover(cover,comic);return cover;
+}
+// The comic being read in the folder in front, the next ones behind it.
+function folderStack(folder){
+  const picks=coverPicks(folder.comics,store.state.progress,3,folder.continueComic);
+  if(!picks.length)return element('span',{class:'folder-icon'},folderIcon());
+  const [front,...back]=picks,stack=element('span',{class:'folder-stack','aria-hidden':'true'});
+  back.forEach((comic,index)=>stack.append(stackCover(comic,index?'stack-right':'stack-left')));
+  stack.append(stackCover(front,'stack-front'));
+  return stack;
+}
+function rackMeta(group){
+  if(group.allRead)return t('rackAllRead',{count:group.count});
+  return group.readCount?t('rackSomeRead',{count:group.count,read:group.readCount}):t('folderCount',{count:group.count});
+}
+function rackShelf(title,meta,comics,open,openLabel){
+  const covers=element('div',{class:'rack-covers'},comics.map((comic,index)=>{
+    const name=comic.metadata?.title||comic.name,reading=statusOf(comic,store.state.progress)==='reading';
+    const button=action('',()=>openComic(comic),'rack-cover',{'aria-label':(reading?t('resume'):t('open'))+' '+name,title:name,style:'z-index:'+(index+1)});
+    button.append(stackCover(comic));return button;
+  }));
+  const label=element('div',{class:'rack-label'},element('span',{class:'rack-plate',text:title}),meta?element('span',{class:'rack-meta',text:meta}):null);
+  const button=open?action('',open,'rack-open text-button'):null;
+  if(button)button.append(element('span',{text:openLabel||t('rackOpen')}),strokeIcon(['m9 6 6 6-6 6']));
+  return element('section',{class:'rack','aria-label':title},covers,element('div',{class:'rack-rail'},label,button));
+}
+function featuredRack(comic){
+  const progress=store.state.progress[comic.id]||{},count=Math.max(1,Number(progress.pageCount)||1),page=Math.min(count,(Number(progress.page)||0)+1),fraction=Math.min(100,Math.round(page/count*100));
+  const name=comic.metadata?.title||comic.name,where=comicFolderParts(comic)[folderPath.length]||'';
+  const cover=action('',()=>openComic(comic),'rack-featured-cover',{'aria-label':t('resume')+' '+name});cover.append(stackCover(comic));
+  return element('section',{class:'rack-featured','aria-label':t('rackContinue')},
+    element('div',{class:'rack-stand'},cover,element('span',{class:'rack-stand-base','aria-hidden':'true'})),
+    element('div',{class:'rack-featured-info'},
+      element('span',{class:'rack-plate',text:t('rackContinue')}),
+      element('h2',{class:'rack-featured-title',text:name}),
+      where?element('p',{class:'rack-featured-from',text:t('rackFrom',{folder:where})}):null,
+      element('div',{class:'progress-track','aria-hidden':'true'},element('span',{style:'width:'+fraction+'%'})),
+      element('p',{class:'rack-featured-page',text:t('rackPage',{page,count})}),
+      element('div',{class:'row'},action(t('rackContinueButton'),()=>openComic(comic),'button primary'),action(t('details'),()=>openDetails(comic.id),'button secondary rack-details'))));
+}
+// Newsstand shelves: what is being read in front, then "Up next", then one shelf
+// per folder here. Only covers on screen are loaded, as in the grid.
+function renderRacks(contents){
+  const progress=store.state.progress,queued=new Set(store.state.readLater||[]);let current=null;
+  for(const comic of contents.descendants)if(statusOf(comic,progress)==='reading'&&(!current||(progress[comic.id]?.updatedAt||'')>(progress[current.id]?.updatedAt||'')))current=comic;
+  if(current)main.append(featuredRack(current));
+  const shelves=element('div',{class:'rack-shelves'});
+  if(contents.descendants.some(comic=>statusOf(comic,progress)!=='unread'||queued.has(comic.id))){
+    const next=upNextComics(contents.descendants,progress,13,store.state.readLater||[]).filter(comic=>comic!==current).slice(0,12);
+    if(next.length)shelves.append(rackShelf(t('rackUpNext'),'',next,null));
+  }
+  for(const folder of contents.folders)shelves.append(rackShelf(folder.name,rackMeta(folder),coverPicks(folder.comics,progress,12,folder.continueComic),()=>openFolder(folder)));
+  if(contents.comics.length){
+    const readCount=contents.comics.filter(comic=>statusOf(comic,progress)==='finished').length;
+    shelves.append(rackShelf(t('rackHere'),rackMeta({count:contents.comics.length,readCount,allRead:readCount===contents.comics.length}),coverPicks(contents.comics,progress,12),()=>setLibraryView('grid'),t('rackSeeAll')));
+  }
+  if(shelves.childElementCount)main.append(shelves);
 }
 function clearComicSelection(exit=false){selectedComicIds.clear();selectionCandidates=[];if(exit)selectionMode=false;}
 function toggleComicSelection(id,enabled=!selectedComicIds.has(id)){
