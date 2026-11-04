@@ -100,3 +100,15 @@ test('two-page view pairs pages around a double page without skipping or stickin
   assert.deepEqual(spreadPartners({ index: 8, pageCount: 8 }), []);
   assert.deepEqual(spreadPartners({ index: NaN, pageCount: 8 }), []);
 });
+
+test('a page read in parts shows the whole page first, then its parts, then the next page', () => {
+  const step = (position, delta) => stepReadingPosition({ ...position, pageCount: 3, panelCount: 4, guided: true, delta, leadOverview: true });
+  assert.deepEqual(step({ page: 1, panel: 0, overview: true }, 1), { kind: 'panel', page: 1, panel: 0, overview: false }, 'whole page → part 1');
+  assert.deepEqual(step({ page: 1, panel: 2, overview: false }, 1), { kind: 'panel', page: 1, panel: 3, overview: false });
+  assert.deepEqual(step({ page: 1, panel: 3, overview: false }, 1), { kind: 'page', page: 2, panel: 0, overview: false }, 'no repeated whole page after the last part');
+  assert.equal(step({ page: 2, panel: 3, overview: false }, 1).kind, 'end');
+  assert.deepEqual(step({ page: 1, panel: 0, overview: false }, -1), { kind: 'overview', page: 1, panel: 0, overview: true }, 'back from part 1 → the whole page');
+  assert.deepEqual(step({ page: 1, panel: 0, overview: true }, -1), { kind: 'page', page: 0, panel: -1, overview: true }, 'back from the whole page → the previous page');
+  assert.equal(step({ page: 0, panel: 0, overview: true }, -1).kind, 'none', 'nothing before the first page');
+  assert.deepEqual(stepReadingPosition({ page: 1, panel: 3, overview: false, pageCount: 3, panelCount: 4, guided: true, delta: 1 }), { kind: 'overview', page: 1, panel: 3, overview: true }, 'pages with panels keep the whole page at the end');
+});

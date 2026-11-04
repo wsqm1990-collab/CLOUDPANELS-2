@@ -438,7 +438,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     dialog.classList.toggle('reader-guided', guided && !editing);
     dialog.classList.toggle('reader-guided-plus', guided && !editing && guidedPlus());
     const ready = Boolean(book && currentPage >= 0), blocked = loading || turning || editing || !ready;
-    buttons.prev.disabled = blocked || (currentPage === 0 && (!guided || (panel === 0 && !overview)));
+    // At the very start: the first panel, or (a page read in parts) its whole page.
+    const atStart = partsPage() ? overview : panel === 0 && !overview;
+    buttons.prev.disabled = blocked || (currentPage === 0 && (!guided || atStart));
     // Keep Next enabled on the last page: it offers an explicit finish action.
     buttons.next.disabled = blocked;
     buttons.finish.disabled = blocked || analysisPending || !positionCommitted;
@@ -1166,14 +1168,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const rects = await obtainPagePanels({ force });
       if (serial !== mySession || pageSerial !== myPage || !guided) return;
       const count = panels().length;
-      panel = resolvePanelIndex(selectedPanel, count); loading = false; positionCommitted = true; updateControls(); layoutPage({ smooth: true }); persist(); normalStatus(); activity(false); wakeRestore();
+      panel = resolvePanelIndex(selectedPanel, count); if (partsPage()) overview = panel === 0; loading = false; positionCommitted = true; updateControls(); layoutPage({ smooth: true }); persist(); normalStatus(); activity(false); wakeRestore();
       if (rects.length) showHint(guidedLabels().detected(rects.length), 3500);
       else if (count) showHint(plusLabels().partsHint, 3500);
       else showHint(guidedLabels().fallback, 6500);
       schedulePrefetch();
     } catch (error) {
       if (serial !== mySession || pageSerial !== myPage || error?.name === 'AbortError') return;
-      loading = false; guidedMode = 'whole'; guidedFallbackPage = currentPage; panel = 0; overview = false; positionCommitted = true;
+      loading = false; guidedMode = 'whole'; guidedFallbackPage = currentPage; panel = 0; overview = partsPage(); positionCommitted = true;
       activity(false); updateControls(); layoutPage(); persist(); normalStatus();
       if (partsPage()) showHint(plusLabels().partsHint, 3500); else showHint(guidedLabels().fallback, 6500);
       schedulePrefetch();
@@ -1218,7 +1220,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function applyGuidedPlus() {
     // Outside Panel view the page is left exactly where it is.
     if (!book || currentPage < 0 || loading || editing || !guided) { updateControls(); return; }
-    if (guidedFallbackPage === currentPage) { panel = 0; overview = false; }
+    if (guidedFallbackPage === currentPage) { panel = 0; overview = partsPage(); }
     layoutPage(); persist(); updateControls(); normalStatus();
     if (partsPage()) showHint(plusLabels().partsHint, 3500);
   }
@@ -1432,6 +1434,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         // The panels found (or, with the enhanced view, the parts of a page without them).
         const count = panels().length;
         panel = resolvePanelIndex(targetPanel, count); overview = Boolean(targetOverview && count);
+        // A page read in parts shows whole first; reading back lands on its last part.
+        if (partsPage()) overview = targetPanel !== -1 && panel === 0;
       }
       loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom, enter: direction }); persist(); updateControls(); normalStatus();
       if (snapshot) await pageTransition.play({ snapshot, style: pageAnimation(), duration: pageDuration(), direction: direction * (rtl() ? -1 : 1) });
@@ -1497,7 +1501,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (delta < 0 && currentPage <= 0) return;
       return showPage(target, 0, { animate: true, direction: delta, spread: delta > 0 ? 'forward' : 'backward' });
     }
-    const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta, showOverview: store.state.settings.readerOverview !== false });
+    const step = stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta, showOverview: store.state.settings.readerOverview !== false, leadOverview: partsPage() });
     if (step.kind === 'panel' || step.kind === 'overview') {
       const fromBottom = guidedFillFromBottom; guidedFillFromBottom = false;
       panel = step.panel; overview = step.overview; layoutPage({ smooth: true, fromBottom }); persist(); updateControls(); normalStatus();
