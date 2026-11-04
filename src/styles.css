@@ -705,3 +705,10 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
    visible while the camera glides to the next panel. */
 .reader-dialog.reader-guided.reader-guided-plus .panel-focus{box-shadow:0 0 0 9999px rgba(0,0,0,.64);box-shadow:0 0 0 9999px color-mix(in srgb,var(--reader-reading-background,#000) 64%,transparent)}
 .reader-dialog.reader-guided.reader-guided-plus.reader-guided-moving .reader-canvas-overlay{opacity:1}
+/* Read aloud (optional, off unless switched on in Panel options): Listen /
+   Pause in the top bar, and floating at the top left while reading full screen. */
+.reader-listen[hidden]{display:none!important}
+.reader-listen svg{width:16px;height:16px;flex:none}
+.reader-listen[aria-pressed="true"]{border-color:#c4ef76;color:#c4ef76}
+.reader-listen-float{position:absolute;z-index:16;top:max(10px,env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));display:none;align-items:center;gap:6px;min-height:44px;padding:9px 12px;border:1px solid #e1eaf13b;border-radius:9px;background:#09111ad9;color:#eef4fa;font-size:11px;font-weight:550;box-shadow:0 2px 10px #0005;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.reader-dialog.reader-immersive .reader-listen-float:not([hidden]){display:inline-flex}

@@ -6,6 +6,8 @@ import { createPageTransition } from './reader-transitions.js';
 import { stepReadingPosition, spreadPartners } from './reader-position.js';
 import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker, shrinkPage, fitInside } from './page-thumbnails.js';
 import { createKeepAwake } from './keep-awake.js';
+import { createSpeaker, linesForStep, panelsKeyOf, requestPageScript, pageImageForScript, scriptKey, ScriptDisk } from './read-aloud.js';
+import { assistantStore, friendlyError } from './assistant.js';
 import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry, entryEdge, stripDrag, sideDragAction, sideStep } from './reader-gestures.js';
 
 const MiB = 1024 * 1024;
@@ -169,6 +171,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   buttons.fit.after(fillButton, panButton); shell.append(resumeButton); dialog.classList.add('reader-overlay-controls');
   buttons.next.after(featureButtons.navigate); dialog.querySelector('.reader-panel-controls').append(featureButtons.bookmarks, featureButtons.appearance);
   dialog.querySelector('.reader-panel-controls').prepend(immersiveButton, fullscreenButton); shell.append(restoreButton);
+  // Read aloud (optional): Listen/Pause in the top bar, and floating at the
+  // top left while reading without controls. Both stay hidden unless it is on.
+  const listenButton = document.createElement('button'); listenButton.id = 'reader-listen'; listenButton.type = 'button'; listenButton.className = 'button secondary compact reader-listen'; listenButton.hidden = true;
+  const listenFloat = document.createElement('button'); listenFloat.id = 'reader-listen-float'; listenFloat.type = 'button'; listenFloat.className = 'button secondary compact reader-listen reader-listen-float'; listenFloat.hidden = true;
+  buttons.finish.before(listenButton); shell.append(listenFloat);
   // Keep the basic back/forward actions discoverable while the larger toolbar
   // is hidden. This overlay never takes space away from the comic viewport.
   const quickNavigation = document.createElement('nav'); quickNavigation.id = 'reader-quick-navigation'; quickNavigation.className = 'reader-quick-navigation'; quickNavigation.hidden = true;
@@ -298,6 +305,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       ? { title: 'Lectura guiada mejorada', on: 'Activada', off: 'Desactivada', note: 'Oscurece el resto de la página en vez de cubrirlo, se desliza con calma entre viñetas y lee por partes las páginas donde no se encuentran viñetas. Desactivada, todo queda como antes.', part: (p, n) => `Parte ${p} de ${n}`, partsHint: 'No se encontraron viñetas · Leyendo esta página por partes' }
       : { title: 'Enhanced guided view', on: 'On', off: 'Off', note: 'Dims the rest of the page instead of covering it, glides calmly between panels, and reads pages where no panels are found in parts. Off, everything stays as before.', part: (p, n) => `Part ${p} of ${n}`, partsHint: 'No panels found · Reading this page in parts' };
   const guidedPlus = () => store.state.settings.readerGuidedPlus === true;
+  // Read aloud (optional, off unless switched on in Panel options).
+  const aloudLabels = () => language() === 'pt-BR'
+    ? { title: 'Leitura em voz alta', on: 'Ligada', off: 'Desligada', note: 'Lê os balões em voz alta com a voz deste aparelho e passa sozinha para o próximo quadro. A IA do assistente lê cada página uma vez (alguns centavos por página, na sua chave) e guarda neste aparelho. Desligada, nada muda.', listen: 'Ouvir', pause: 'Pausar', ready: 'Toque em Ouvir para começar', preparing: 'Lendo os balões desta página…', noKey: 'A leitura em voz alta usa a chave da IA do assistente. Adicione sua chave no Assistente primeiro.', noVoice: 'Este aparelho não consegue ler em voz alta.', finished: 'Leitura em voz alta terminada.' }
+    : language() === 'es'
+      ? { title: 'Lectura en voz alta', on: 'Activada', off: 'Desactivada', note: 'Lee los globos en voz alta con la voz de este dispositivo y pasa sola a la siguiente viñeta. La IA del asistente lee cada página una vez (unos céntimos por página, con tu clave) y la guarda en este dispositivo. Desactivada, nada cambia.', listen: 'Escuchar', pause: 'Pausa', ready: 'Toca Escuchar para empezar', preparing: 'Leyendo los globos de esta página…', noKey: 'La lectura en voz alta usa la clave de IA del asistente. Añade tu clave en el Asistente primero.', noVoice: 'Este dispositivo no puede leer en voz alta.', finished: 'Lectura en voz alta terminada.' }
+      : { title: 'Read aloud', on: 'On', off: 'Off', note: 'Reads the balloons out loud with this device’s voice and moves on to the next panel by itself. The assistant’s AI reads each page once (a few cents per page, with your key) and keeps it on this device. Off, nothing changes.', listen: 'Listen', pause: 'Pause', ready: 'Tap Listen to start', preparing: 'Reading this page’s balloons…', noKey: 'Read aloud uses the assistant’s AI key. Add your key in Assistant first.', noVoice: 'This device can’t read aloud.', finished: 'Read aloud finished.' };
+  const readAloudEnabled = () => store.state.settings.readerReadAloud === true;
   const fullscreenSupported = () => (document.fullscreenEnabled !== false && typeof fullscreenTarget.requestFullscreen === 'function') || (document.webkitFullscreenEnabled !== false && typeof fullscreenTarget.webkitRequestFullscreen === 'function');
 
   function translatedControl(button, label) {
@@ -319,7 +333,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     translatedControl(buttons.fit, modeLabels().title); fillButton.textContent = modeLabels().fill; fillButton.title = modeLabels().note;
     panButton.textContent = panLabels().move; resumeButton.textContent = panLabels().resume;
     for (const [name, button] of Object.entries(featureButtons)) button.textContent = featureText()[name];
-    applyAppearance(); syncQuickNavigation();
+    applyAppearance(); syncQuickNavigation(); syncListenButtons();
   }
   const ERROR_PT = {
     'The cloud returned an incomplete page. Please try again.': 'A nuvem enviou uma página incompleta. Tente novamente.',
@@ -461,7 +475,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     dialog.classList.toggle('reader-panning', panMode);
     dialog.classList.toggle('reader-fit-fill', fitMode() === 'fill' && !editing && !guided);
     dialog.classList.toggle('reader-fit-screen', fitMode() === 'screen' && !editing && !guided);
-    syncGestureMode(); syncQuickNavigation();
+    syncGestureMode(); syncQuickNavigation(); syncListenButtons();
     if (!navigationSessionShown && ready && !loading && !analysisPending && positionCommitted) {
       navigationSessionShown = true; navigationTimer.reveal();
     }
@@ -1214,6 +1228,17 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       hidePopup(); applyGuidedPlus();
     }, guidedPlus());
     plusToggle.id = 'reader-guided-plus-toggle'; plusToggle.setAttribute('aria-pressed', String(guidedPlus()));
+    // Read aloud: off unless chosen here, kept on this device.
+    const aloudText = aloudLabels(), aloudNote = document.createElement('p'); aloudNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    aloudNote.textContent = aloudText.note;
+    const aloudRow = document.createElement('div'); aloudRow.className = 'row'; menu.append(aloudNote, aloudRow);
+    const aloudToggle = popupButton(aloudRow, `${aloudText.title}: ${readAloudEnabled() ? aloudText.on : aloudText.off}`, () => {
+      try { store.setSettings({ readerReadAloud: !readAloudEnabled() }); checkSaved(); observePersistence(); }
+      catch (error) { statusMessage(error?.message || text().storage, true); return; }
+      hidePopup(); if (!readAloudEnabled()) stopAloud(); updateControls();
+      if (readAloudEnabled()) showHint(aloudText.ready, 4000);
+    }, readAloudEnabled());
+    aloudToggle.id = 'reader-read-aloud-toggle'; aloudToggle.setAttribute('aria-pressed', String(readAloudEnabled()));
   }
   // Switching the enhanced guided view takes effect on the page being read:
   // a page without panels changes between parts and the whole page at once.
@@ -1224,6 +1249,138 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     layoutPage(); persist(); updateControls(); normalStatus();
     if (partsPage()) showHint(plusLabels().partsHint, 3500);
   }
+  // ---- Read aloud: the balloons of each step are read, then the reader moves on ----
+  const PLAY_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></svg>';
+  const PAUSE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>';
+  const speaker = createSpeaker(), scriptDisk = new ScriptDisk();
+  const aloud = { on: false, key: '', token: 0, poll: undefined, scripts: new Map() };
+  const aloudPosition = () => `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}:${guided}`;
+  const aloudWait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  let listenState = '';
+  function syncListenButtons() {
+    const ready = readAloudEnabled() && Boolean(comic) && !editing, labels = aloudLabels(), state = `${ready}:${aloud.on}:${language()}`;
+    if (state === listenState) return;
+    listenState = state;
+    for (const button of [listenButton, listenFloat]) {
+      button.hidden = !ready;
+      button.innerHTML = `${aloud.on ? PAUSE_ICON : PLAY_ICON}<span>${aloud.on ? labels.pause : labels.listen}</span>`;
+      button.setAttribute('aria-pressed', String(aloud.on)); button.setAttribute('aria-label', aloud.on ? labels.pause : labels.listen);
+    }
+  }
+  function startAloud() {
+    if (!readAloudEnabled() || !book || !comic) return;
+    const labels = aloudLabels();
+    if (!speaker.available()) { showHint(labels.noVoice, 4500); return; }
+    if (!assistantStore.key) { showHint(labels.noKey, 6500); return; }
+    speaker.unlock();
+    aloud.on = true; aloud.key = ''; aloud.token++;
+    clearInterval(aloud.poll); aloud.poll = setInterval(aloudTick, 200);
+    syncListenButtons(); aloudTick();
+  }
+  function stopAloud({ hint = '' } = {}) {
+    const playing = aloud.on;
+    aloud.on = false; aloud.key = ''; aloud.token++; clearInterval(aloud.poll); aloud.poll = undefined;
+    speaker.cancel(); syncListenButtons();
+    if (playing && hint) showHint(hint, 3500);
+  }
+  function aloudReady() {
+    return Boolean(dialog.open && book && comic && currentPage >= 0) && !loading && !turning && !analysisPending && positionCommitted && !editing && !popup && !pager && !cameraFrame && !gesture && !pinch;
+  }
+  function aloudTick() {
+    if (!aloud.on) return;
+    if (!dialog.open || !comic) { stopAloud(); return; }
+    if (!aloudReady()) return;
+    const key = aloudPosition();
+    if (key === aloud.key) return;
+    aloud.key = key; void aloudPlay(key);
+  }
+  // A page's script: from memory, from this device, or read once by the AI.
+  function aloudScript(page, { drawable, rects }) {
+    const key = scriptKey(comic, page);
+    if (!key) return Promise.reject(new Error(text().pageFailed));
+    const known = aloud.scripts.get(key);
+    if (known) return known;
+    const promise = (async () => {
+      const saved = await scriptDisk.get(key).catch(() => null);
+      if (saved) return saved;
+      if (!drawable?.complete || !(drawable.naturalWidth > 0)) throw new Error(text().pageFailed);
+      const picture = pageImageForScript(drawable, rects), controller = new AbortController(), timer = setTimeout(() => controller.abort(), 90000);
+      try {
+        const script = await requestPageScript({ key: assistantStore.key, image: picture, panelCount: rects.length, panelsKey: panelsKeyOf(rects), direction: rtl() ? 'rtl' : 'ltr', signal: controller.signal });
+        void scriptDisk.put(key, script).catch(() => {});
+        return script;
+      } finally { clearTimeout(timer); }
+    })();
+    aloud.scripts.set(key, promise);
+    promise.catch(() => { if (aloud.scripts.get(key) === promise) aloud.scripts.delete(key); });
+    if (aloud.scripts.size > 300) aloud.scripts.delete(aloud.scripts.keys().next().value);
+    return promise;
+  }
+  // The next page is read by the AI while this one is being listened to.
+  function aloudPrefetch(page) {
+    if (!book || !comic || page < 0 || page >= book.pageCount || spreadActive()) return;
+    const key = scriptKey(comic, page);
+    if (!key || aloud.scripts.has(key)) return;
+    const entry = decodedEntry(page), mine = serial, id = comic.id;
+    entry?.promise.then(async candidate => {
+      if (mine !== serial || !aloud.on || comic?.id !== id) return;
+      // In Panel view its panels are found first, on the device, exactly as
+      // when the page is shown, so the AI sees them numbered.
+      if (guided && !store.getPanels(id, page).length) {
+        try {
+          const result = await analyzePagePanels(candidate.decodedImage, { direction: rtl() ? 'rtl' : 'ltr' });
+          if (mine === serial && comic?.id === id && result.confidence === 'high' && result.panels?.length && !store.getPanels(id, page).length) { store.setPanels(id, page, result.panels); checkSaved(); observePersistence(); }
+        } catch { /* The page is shown without them, as before. */ }
+      }
+      if (mine !== serial || !aloud.on || comic?.id !== id) return;
+      void aloudScript(page, { drawable: candidate.decodedImage, rects: store.getPanels(id, page) }).catch(() => {});
+    }, () => {});
+  }
+  async function aloudPlay(key) {
+    const mine = ++aloud.token; speaker.cancel(); keepAwake.activity();
+    const labels = aloudLabels(), spread = spreadPages.length > 1, page = currentPage, pageId = spread ? spreadPages.join('+') : page;
+    const real = spread ? [] : storedPanels(), rects = guided ? panels() : [], partsStep = partsPage(), step = { panel, overview };
+    const waiting = setTimeout(() => { if (mine === aloud.token) showHint(labels.preparing, 60000); }, 350);
+    let script;
+    try { script = await aloudScript(pageId, { drawable: image, rects: real }); }
+    catch (error) {
+      if (mine !== aloud.token) return;
+      stopAloud(); showHint(error?.type === 'no_key' ? labels.noKey : friendlyError(error, language()) || labels.noVoice, 7000); return;
+    } finally { clearTimeout(waiting); }
+    if (mine !== aloud.token || key !== aloud.key || !aloud.on) return;
+    if (!fitHint.hidden && fitHint.textContent === labels.preparing) fitHint.hidden = true;
+    aloudPrefetch((spread ? spreadPages[spreadPages.length - 1] : page) + 1);
+    const lines = linesForStep(script, { rects, panel: step.panel, overview: step.overview, panelsKey: guided && !partsStep ? panelsKeyOf(real) : '' });
+    if (lines.length) {
+      const finished = await speaker.speak(lines, { language: script.language || navigator.language || '' });
+      if (!finished || mine !== aloud.token || !aloud.on) return;
+      await aloudWait(450);
+    } else await aloudWait(step.overview ? 900 : 1700);
+    if (mine !== aloud.token || key !== aloud.key || !aloud.on) return;
+    await aloudAdvance(key, mine);
+  }
+  function aloudAtEnd() {
+    if (!book) return true;
+    if (!guided && spreadActive()) return (spreadPages.length ? spreadPages[spreadPages.length - 1] : currentPage) + 1 >= book.pageCount;
+    return stepReadingPosition({ page: currentPage, pageCount: book.pageCount, panel, panelCount: panels().length, guided, overview, delta: 1, showOverview: store.state.settings.readerOverview !== false, leadOverview: partsPage() }).kind === 'end';
+  }
+  // Moves on like Next does. A wide or long page may first slide or scroll, so
+  // it keeps going until the step changes; at the end of the comic it stops.
+  async function aloudAdvance(key, mine) {
+    const alive = () => mine === aloud.token && aloud.on && aloudPosition() === key;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      // A menu, a touch or a page still loading: wait for it, however long.
+      while (alive() && !aloudReady()) await aloudWait(250);
+      if (!alive()) return;
+      const ending = aloudAtEnd();
+      await move(1);
+      await aloudWait(ending ? 4000 : 550);
+      if (!alive()) return;
+      if (ending) break;
+    }
+    if (alive()) stopAloud({ hint: aloudLabels().finished });
+  }
+  for (const button of [listenButton, listenFloat]) button.addEventListener('click', () => { if (aloud.on) stopAloud(); else startAloud(); });
   function editToolbar() {
     const t = text(), menu = makePopup(t.edit);
     // Reuse the already disabled bottom controls' area while drawing, leaving
@@ -1916,6 +2073,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (event.detail > 0 && performance.now() < suppressClicksUntil) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
   function teardown({ closeDialog = true, notifyChange = true } = {}) {
+    // Closing stops reading aloud; opening the next comic of the folder keeps it going.
+    if (closeDialog) stopAloud(); else { aloud.key = ''; aloud.token++; speaker.cancel(); }
     navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false; slideHintShown = false; keepAwake.stop(); thumbWorker.stop();
     const wasReading = Boolean(comic);
     if (comic && book && currentPage >= 0) persist(false, { observe: false });
@@ -2040,7 +2199,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const fullscreenFailed = () => { if (fullscreenRequest) finishFullscreenRequest(fullscreenRequest, true); };
   document.addEventListener('fullscreenerror', fullscreenFailed); document.addEventListener('webkitfullscreenerror', fullscreenFailed);
   window.addEventListener('pagehide', () => { if (comic) { persist(false, { observe: false }); observePersistence({ immediate: true }); } });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && comic) { cancelPrefetch(); persist(false, { observe: false }); observePersistence({ immediate: true }); } else if (comic) schedulePrefetch(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && aloud.on) stopAloud(); if (document.hidden && comic) { cancelPrefetch(); persist(false, { observe: false }); observePersistence({ immediate: true }); } else if (comic) schedulePrefetch(); });
 
   const controller = {
     async open(value, source, { fromStart = false } = {}) {
