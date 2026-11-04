@@ -129,6 +129,35 @@ function firstIssueAfter(list,issue){
   while(low<high){const middle=(low+high)>>1;if(Number(list[middle].metadata.issue)>issue)high=middle;else low=middle+1;}
   return list[low];
 }
+// The covers that stand for a group of comics (a folder's stack, a shelf):
+// `lead` first (the comic being read there), else the first one not read yet,
+// else the first; then the ones that follow it by path (the next issues), and
+// after the last, the first ones again. One pass, whatever the folder's size.
+export function coverPicks(comics, progress = {}, count = 3, lead = null) {
+  if (!Array.isArray(comics) || !comics.length || !(count > 0)) return [];
+  const key = comic => String(comic?.path || comic?.name || '') + '\u0000' + String(comic?.id);
+  let first = lead && comics.includes(lead) ? lead : null;
+  if (!first) {
+    let open = null, openKey = null, any = null, anyKey = null;
+    for (const comic of comics) {
+      const k = key(comic);
+      if (anyKey === null || k < anyKey) { any = comic; anyKey = k; }
+      if (statusOf(comic, progress) !== 'finished' && (openKey === null || k < openKey)) { open = comic; openKey = k; }
+    }
+    first = open || any;
+  }
+  const firstKey = key(first), after = [], before = [], room = count - 1;
+  const keep = (list, comic, k) => {
+    if (room <= 0) return;
+    let index = list.length;
+    while (index > 0 && list[index - 1][0] > k) index--;
+    if (index >= room) return;
+    list.splice(index, 0, [k, comic]);
+    if (list.length > room) list.pop();
+  };
+  for (const comic of comics) { if (comic === first) continue; const k = key(comic); keep(k > firstKey ? after : before, comic, k); }
+  return [first, ...after.map(([, comic]) => comic), ...before.map(([, comic]) => comic)].slice(0, count);
+}
 export function publicError(error, fallback = 'Something went wrong. Please try again.') {
   if (error?.name === 'AbortError') return '';
   const message = typeof error?.message === 'string' ? error.message : '';
