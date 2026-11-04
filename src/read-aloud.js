@@ -87,14 +87,18 @@ function containing(rects, x, y) {
  * made for these same panels; otherwise each line goes where its centre is.
  * Sound effects are kept for later and not read out by the device voice.
  */
-export function linesForStep(script, { rects = [], panel = 0, overview = false, panelsKey = '' } = {}) {
+export function linesForStep(script, { rects = [], panel = 0, overview = false, panelsKey = '', numberedRects = rects } = {}) {
   const lines = (Array.isArray(script?.lines) ? script.lines : []).filter(line => line.kind !== 'sfx');
   if (overview || !lines.length) return [];
   if (!rects.length) return lines;
   const numbered = Boolean(script.panelsKey) && script.panelsKey === panelsKey;
+  // The steps can hold more than the numbered panels (areas outside them).
+  const same = (a, b) => Boolean(a && b) && ['x', 'y', 'width', 'height'].every(name => Math.abs(a[name] - b[name]) < 1e-6);
   let previous = 0;
   return lines.filter(line => {
-    let index = numbered && line.panel >= 1 && line.panel <= rects.length ? line.panel - 1 : containing(rects, line.x, line.y);
+    let index = -1;
+    if (numbered && line.panel >= 1 && line.panel <= numberedRects.length) index = rects.findIndex(rect => same(rect, numberedRects[line.panel - 1]));
+    if (index < 0) index = containing(rects, line.x, line.y);
     // A line with no place stays with the line before it.
     if (index < 0) index = previous;
     previous = index;

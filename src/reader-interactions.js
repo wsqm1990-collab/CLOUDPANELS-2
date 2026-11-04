@@ -1,3 +1,5 @@
+import { orderPanels } from './panel-detection.js';
+
 /** Fit every edge of a page inside the available stage without rounding up. */
 export function wholePageFit({ imageWidth, imageHeight, availableWidth, availableHeight } = {}) {
   if (![imageWidth, imageHeight, availableWidth, availableHeight].every(value => Number.isFinite(value) && value > 0)) {
@@ -109,6 +111,88 @@ export function readingParts({ imageWidth, imageHeight, availableWidth, availabl
     }
   }
   return parts;
+}
+
+/**
+ * Enhanced guided view: areas of a page that no panel found covers but that
+ * hold drawing (a splash behind the panels, a big title), so they are read
+ * too instead of skipped. `busy` marks the cells of a `cols` × `rows` grid
+ * laid over the page: 1 for drawing, 0 for plain paper. An area shaped like
+ * an L is cut into bands; tiny scraps, margins and gutters are left out.
+ */
+export function uncoveredRegions({ rects = [], busy, cols, rows, minArea = .035, minWidth = .08, minHeight = .08, minFill = .45, pad = .012 } = {}) {
+  if (!busy || !Number.isInteger(cols) || !Number.isInteger(rows) || cols < 4 || rows < 4 || busy.length !== cols * rows) return [];
+  const panels = (Array.isArray(rects) ? rects : []).filter(rect => rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite));
+  const count = cols * rows, open = new Uint8Array(count), drawn = new Uint8Array(count);
+  for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+    const x = (col + .5) / cols, y = (row + .5) / rows, index = row * cols + col;
+    const covered = panels.some(rect => x >= rect.x - pad && x <= rect.x + rect.width + pad && y >= rect.y - pad && y <= rect.y + rect.height + pad);
+    open[index] = covered ? 0 : 1; drawn[index] = !covered && busy[index] ? 1 : 0;
+  }
+  // Flat colour inside a drawing still belongs to it: open cells next to drawing join in.
+  const joined = new Uint8Array(count);
+  for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+    const index = row * cols + col;
+    if (!open[index]) continue;
+    let near = drawn[index];
+    for (let dy = -1; dy <= 1 && !near; dy++) for (let dx = -1; dx <= 1 && !near; dx++) {
+      const r = row + dy, c = col + dx;
+      if (r >= 0 && r < rows && c >= 0 && c < cols && drawn[r * cols + c]) near = 1;
+    }
+    joined[index] = near;
+  }
+  const seen = new Uint8Array(count), regions = [], tolerance = Math.max(2, Math.round(cols * .06));
+  for (let start = 0; start < count; start++) {
+    if (!joined[start] || seen[start]) continue;
+    const extent = new Map(), queue = [start]; seen[start] = 1;
+    while (queue.length) {
+      const index = queue.pop(), row = Math.floor(index / cols), col = index % cols;
+      // The area's edges follow the drawing itself, not the paper around it.
+      if (drawn[index]) { const span = extent.get(row); if (span) { span[0] = Math.min(span[0], col); span[1] = Math.max(span[1], col); } else extent.set(row, [col, col]); }
+      for (const [r, c] of [[row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]]) {
+        if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+        const next = r * cols + c;
+        if (joined[next] && !seen[next]) { seen[next] = 1; queue.push(next); }
+      }
+    }
+    const bands = [];
+    for (const row of [...extent.keys()].sort((a, b) => a - b)) {
+      const [low, high] = extent.get(row), band = bands[bands.length - 1];
+      if (band && band.bottom === row - 1 && Math.abs(low - band.low) <= tolerance && Math.abs(high - band.high) <= tolerance) { band.low = Math.min(band.low, low); band.high = Math.max(band.high, high); band.bottom = row; }
+      else bands.push({ low, high, top: row, bottom: row });
+    }
+    for (const band of bands) {
+      const width = (band.high - band.low + 1) / cols, height = (band.bottom - band.top + 1) / rows;
+      let cells = 0;
+      for (let row = band.top; row <= band.bottom; row++) for (let col = band.low; col <= band.high; col++) cells += drawn[row * cols + col];
+      const area = width * height;
+      if (area < minArea || width < minWidth || height < minHeight || cells / ((band.high - band.low + 1) * (band.bottom - band.top + 1)) < minFill) continue;
+      const region = { x: band.low / cols, y: band.top / rows, width, height };
+      // Not a copy of a panel that is already read.
+      const overlap = panels.reduce((sum, rect) => sum + Math.max(0, Math.min(region.x + region.width, rect.x + rect.width) - Math.max(region.x, rect.x)) * Math.max(0, Math.min(region.y + region.height, rect.y + rect.height) - Math.max(region.y, rect.y)), 0);
+      if (overlap <= region.width * region.height * .5) regions.push(region);
+    }
+  }
+  return regions.sort((a, b) => a.y - b.y || a.x - b.x);
+}
+
+/**
+ * Enhanced guided view: the steps of a page with panels found — the panels
+ * plus the drawing outside them (see uncoveredRegions), in reading order. A
+ * big area (a splash) is read in parts; a smaller one shows whole, like a panel.
+ */
+export function pageReadingSteps({ rects = [], busy, cols, rows, imageWidth, imageHeight, availableWidth, availableHeight, direction = 'ltr' } = {}) {
+  if (!Array.isArray(rects) || !rects.length) return Array.isArray(rects) ? rects : [];
+  const extras = uncoveredRegions({ rects, busy, cols, rows }).flatMap(region => {
+    if (region.width * region.height < .2) return [region];
+    const parts = readingParts({ imageWidth: imageWidth * region.width, imageHeight: imageHeight * region.height, availableWidth, availableHeight, direction });
+    return parts.length ? parts.map(part => ({ x: region.x + part.x * region.width, y: region.y + part.y * region.height, width: part.width * region.width, height: part.height * region.height })) : [region];
+  });
+  if (!extras.length) return rects;
+  // Ordered with slightly smaller stand-ins, so an area that only touches
+  // the panels next to it keeps its place before or after them.
+  const inset = rect => { const dx = Math.min(.025, rect.width * .1), dy = Math.min(.025, rect.height * .1); return { x: rect.x + dx, y: rect.y + dy, width: rect.width - 2 * dx, height: rect.height - 2 * dy, source: rect }; };
+  return orderPanels([...rects, ...extras.map(inset)], direction).map(item => item.source || item);
 }
 
 /** A backwards page turn can request the last panel before its count is known. */
