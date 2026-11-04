@@ -82,6 +82,8 @@ export function createNaturalVoice({ base = ttsBase(), ortUrl = new URL('vendor/
   workerFactory = () => new Worker(new URL('tts-worker.js', globalThis.document?.baseURI || globalThis.location?.href), { type: 'module' }), files = TTS_FILES, keep = 80, engines = voiceEngineCount() } = {}) {
   let state = 'idle', failure = '', loading = null, nextId = 1;
   const progress = { loaded: 0, total: files.reduce((sum, file) => sum + file.size, 0), preparing: false };
+  // A second engine only where the browser runs in 64-bit mode (32-bit Chrome cannot hold two).
+  const extraAllowed = engines > 1 ? Promise.resolve(globalThis.navigator?.userAgentData?.getHighEntropyValues?.(['bitness'])).then(values => values?.bitness !== '32', () => true) : Promise.resolve(false);
   const listeners = new Set(), queue = [], lines = new Map(), pool = [];
   const notify = () => { for (const listener of listeners) { try { listener({ state, failure, ...progress }); } catch {} } };
   const aborted = () => Object.assign(new Error('Stopped.'), { name: 'AbortError' });
@@ -105,7 +107,7 @@ export function createNaturalVoice({ base = ttsBase(), ortUrl = new URL('vendor/
       if (message.type === 'progress') { if (first && state === 'loading') { progress.loaded = message.loaded; progress.total = message.total || progress.total; progress.preparing = Boolean(message.preparing); notify(); } return; }
       if (message.type === 'ready') {
         member.ready = true;
-        if (state !== 'ready') { state = 'ready'; progress.loaded = progress.total; progress.preparing = false; notify(); loading?.resolve(message); while (pool.length < engines && spawn(false)); }
+        if (state !== 'ready') { state = 'ready'; progress.loaded = progress.total; progress.preparing = false; notify(); loading?.resolve(message); void extraAllowed.then(ok => { if (ok && state === 'ready') while (pool.length < engines && spawn(false)); }); }
         dispatch(); return;
       }
       if (message.type === 'failed' && message.id === undefined) { failure = message.message || failure; drop(member); return; }
