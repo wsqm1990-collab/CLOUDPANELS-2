@@ -700,3 +700,8 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 /* The library tabs scroll inside the screen instead of making the page wider
    than a phone (which pushed the bottom bar off the screen). */
 .library-mode-switch{box-sizing:border-box;max-width:calc(100% + 4px)}
+/* Enhanced guided view (optional, off unless switched on in Panel options):
+   the rest of the page is dimmed instead of covered, and the lit part stays
+   visible while the camera glides to the next panel. */
+.reader-dialog.reader-guided.reader-guided-plus .panel-focus{box-shadow:0 0 0 9999px rgba(0,0,0,.64);box-shadow:0 0 0 9999px color-mix(in srgb,var(--reader-reading-background,#000) 64%,transparent)}
+.reader-dialog.reader-guided.reader-guided-plus.reader-guided-moving .reader-canvas-overlay{opacity:1}

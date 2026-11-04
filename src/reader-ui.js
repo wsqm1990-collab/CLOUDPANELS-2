@@ -1,5 +1,5 @@
 import { openComic, pageImageSize, DISPLAY_PIXELS } from './reader.js';
-import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
@@ -186,7 +186,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let currentURL, imageWidth = 0, imageHeight = 0, pageWidth = 0, draft = [], pointer, popup;
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetchTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
-  let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0;
+  let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0, cameraFinish;
   let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [], lastTap, appFullscreenAsked = false;
   const pageTransition = createPageTransition({ stage, wrap, image, overlay });
   // Small pictures of the pages for the page navigator (kept on this device).
@@ -255,8 +255,25 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const rtl = () => store.state.settings.readingDirection === 'rtl';
   const notify = () => onChange?.();
   const storedPanels = () => comic && currentPage >= 0 ? store.getPanels(comic.id, currentPage) : [];
-  const panels = () => guided && !editing && guidedFallbackPage === currentPage ? [] : storedPanels();
+  const panels = () => guided && !editing && guidedFallbackPage === currentPage ? pageParts() : storedPanels();
   const focusLabel = (n, count) => text().panelStatus(n, count);
+  // Enhanced guided view: a page with no panels found is read in parts. The
+  // parts follow the screen's shape and are never saved as the page's panels;
+  // with the option off there are none and the whole page shows, as before.
+  let partsMemo = { key: '', parts: [] };
+  function pageParts() {
+    if (!guidedPlus() || !imageWidth || !imageHeight) return [];
+    const available = availableSize(), direction = rtl() ? 'rtl' : 'ltr';
+    // Held sideways such a page already fills the width and scrolls (see guidedWholeFills).
+    if (available.width > available.height && wholePageFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width < available.width * .92) return [];
+    const key = `${imageWidth}x${imageHeight}:${Math.round(available.width)}x${Math.round(available.height)}:${direction}`;
+    if (partsMemo.key !== key) partsMemo = { key, parts: readingParts({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, direction }) };
+    return partsMemo.parts;
+  }
+  const partsPage = () => guided && !editing && guidedFallbackPage === currentPage && pageParts().length > 0;
+  // Panels found on the page, or the parts of a page without them.
+  const panelMode = () => guidedMode === 'panels' || partsPage();
+  const stepLabel = (n, count) => partsPage() ? plusLabels().part(n, count) : focusLabel(n, count);
   const showImage = visible => { image.hidden = !visible; image.style.display = visible ? 'block' : 'none'; };
   const activity = (busy, open = Boolean(comic)) => { onActivity?.({ busy, open }); };
   const fullscreenTarget = document.documentElement;
@@ -274,6 +291,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     : language() === 'es'
       ? { button: 'Lectura guiada', analyzing: 'Analizando las viñetas de esta página en el dispositivo…', fallback: 'No se identificaron las viñetas con seguridad. Se muestra la página completa; la lectura guiada se intentará en la siguiente página.', options: 'Opciones de viñetas', edit: 'Editar viñetas', detect: 'Detectar de nuevo', detectNote: 'Detectar de nuevo reemplaza la disposición guardada de esta página solo si encuentra viñetas con confianza.', retry: 'Reintentar', whole: 'Ver página completa', cancel: 'Cancelar', detected: n => `${n} viñetas encontradas · Desliza para avanzar` }
       : { button: 'Guided reading', analyzing: 'Analyzing this page’s panels on your device…', fallback: 'Panels could not be identified confidently. Showing the whole page; guided reading will try again on the next page.', options: 'Panel options', edit: 'Edit panels', detect: 'Detect again', detectNote: 'Detect again replaces this page’s saved layout only when panels are identified confidently.', retry: 'Try again', whole: 'Show whole page', cancel: 'Cancel', detected: n => `${n} panels found · Swipe to advance` };
+  // Enhanced guided view (optional, off unless switched on in Panel options).
+  const plusLabels = () => language() === 'pt-BR'
+    ? { title: 'Leitura guiada aprimorada', on: 'Ligada', off: 'Desligada', note: 'Escurece o resto da página em vez de cobrir, desliza com calma entre os quadros e lê em partes as páginas em que nenhum quadro é encontrado. Desligada, tudo fica como antes.', part: (p, n) => `Parte ${p} de ${n}`, partsHint: 'Nenhum quadro encontrado · Lendo esta página em partes' }
+    : language() === 'es'
+      ? { title: 'Lectura guiada mejorada', on: 'Activada', off: 'Desactivada', note: 'Oscurece el resto de la página en vez de cubrirlo, se desliza con calma entre viñetas y lee por partes las páginas donde no se encuentran viñetas. Desactivada, todo queda como antes.', part: (p, n) => `Parte ${p} de ${n}`, partsHint: 'No se encontraron viñetas · Leyendo esta página por partes' }
+      : { title: 'Enhanced guided view', on: 'On', off: 'Off', note: 'Dims the rest of the page instead of covering it, glides calmly between panels, and reads pages where no panels are found in parts. Off, everything stays as before.', part: (p, n) => `Part ${p} of ${n}`, partsHint: 'No panels found · Reading this page in parts' };
+  const guidedPlus = () => store.state.settings.readerGuidedPlus === true;
   const fullscreenSupported = () => (document.fullscreenEnabled !== false && typeof fullscreenTarget.requestFullscreen === 'function') || (document.webkitFullscreenEnabled !== false && typeof fullscreenTarget.webkitRequestFullscreen === 'function');
 
   function translatedControl(button, label) {
@@ -328,7 +352,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!book || currentPage < 0) return;
     const rects = panels(), t = text();
     const fallback = guided && guidedFallbackPage === currentPage;
-    statusMessage(`${t.pageOf(currentPage + 1, book.pageCount)}${guided && rects.length ? ` · ${overview ? turnLabels().overview : focusLabel(panel + 1, rects.length)}` : ''}${fallback ? ` · ${guidedLabels().fallback}` : storageWarning ? '' : ` · ${t.readHint}`}`);
+    statusMessage(`${t.pageOf(currentPage + 1, book.pageCount)}${guided && rects.length ? ` · ${overview ? turnLabels().overview : stepLabel(panel + 1, rects.length)}` : ''}${fallback ? ` · ${rects.length ? plusLabels().partsHint : guidedLabels().fallback}` : storageWarning ? '' : ` · ${t.readHint}`}`);
     if (fallback) {
       const identity = `${serial}:${currentPage}`;
       for (const [label, action] of [[guidedLabels().edit, startEditing], [guidedLabels().retry, () => enableGuided({ force: true })]]) {
@@ -407,11 +431,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     quickPage.textContent = `${t.page} ${Math.max(0, currentPage) + 1} / ${book?.pageCount || '—'}`;
     const rects = guided && !analysisPending && positionCommitted ? panels() : [];
     quickPanel.hidden = !rects.length;
-    quickPanel.textContent = rects.length ? overview ? turnLabels().overview : focusLabel(panel + 1, rects.length) : '';
+    quickPanel.textContent = rects.length ? overview ? turnLabels().overview : stepLabel(panel + 1, rects.length) : '';
   }
   function updateControls() {
     dialog.classList.toggle('reader-overlay-controls', !editing);
     dialog.classList.toggle('reader-guided', guided && !editing);
+    dialog.classList.toggle('reader-guided-plus', guided && !editing && guidedPlus());
     const ready = Boolean(book && currentPage >= 0), blocked = loading || turning || editing || !ready;
     buttons.prev.disabled = blocked || (currentPage === 0 && (!guided || (panel === 0 && !overview)));
     // Keep Next enabled on the last page: it offers an explicit finish action.
@@ -463,7 +488,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   // instead of leaving wide empty bars at the sides. The page then scrolls.
   function guidedWholeFills() {
     if (!guided || editing || !imageWidth || !imageHeight) return false;
-    if (guidedMode === 'panels' && !overview && panels()[panel]) return false;
+    if (panelMode() && !overview && panels()[panel]) return false;
     const available = availableSize();
     if (available.width <= available.height) return false;
     return wholePageFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width < available.width * .92;
@@ -512,7 +537,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     return blob;
   }
   function baselineWidth() {
-    const available = availableSize(), rect = guided && guidedMode === 'panels' && !editing && !overview ? panels()[panel] : undefined;
+    const available = availableSize(), rect = guided && panelMode() && !editing && !overview ? panels()[panel] : undefined;
     if (rect) return guidedPanelFit({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, panel: rect, margin: guidedPanelMargin(available.width, available.height) })?.width || fitWidth();
     return pageFit({ mode: layoutMode(), imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height }).width;
   }
@@ -637,18 +662,28 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     };
     motion = token; token.frame = requestAnimationFrame(step);
   }
+  function positionRect(node, rect) {
+    Object.assign(node.style, { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` });
+  }
   function drawRect(rect, index, focus = false) {
     const node = document.createElement('div'); node.className = focus ? 'panel-focus' : 'panel-rect';
-    Object.assign(node.style, { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` });
+    positionRect(node, rect);
     if (!focus) { const label = document.createElement('span'); label.className = 'panel-label'; label.textContent = String(index + 1); node.append(label); }
     return node;
   }
+  // The part of the page lit in Panel view (fractions of the page), so the
+  // enhanced guided view can glide it to the next panel with the camera.
+  let focusRect = null;
+  const wholePage = () => ({ x: 0, y: 0, width: 1, height: 1 });
+  const mixRect = (from, to, t) => ({ x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t, width: from.width + (to.width - from.width) * t, height: from.height + (to.height - from.height) * t });
+  // Calmer than the quick panel jump, and slower or faster with Animation speed.
+  const glideDuration = () => ({ 240: 360, 650: 760 })[pageDuration()] || 520;
   function paintPanels() {
-    overlay.replaceChildren(); overlay.classList.toggle('editing', editing);
+    overlay.replaceChildren(); overlay.classList.toggle('editing', editing); focusRect = null;
     if (editing) draft.forEach((rect, index) => overlay.append(drawRect(rect, index)));
-    else if (guided && guidedMode === 'panels' && !overview && panels()[panel]) overlay.append(drawRect(panels()[panel], panel, true));
+    else if (guided && panelMode() && !overview && panels()[panel]) { focusRect = panels()[panel]; overlay.append(drawRect(focusRect, panel, true)); }
   }
-  function cancelCamera() { cameraGeneration++; if (cameraFrame) cancelAnimationFrame(cameraFrame); cameraFrame = undefined; dialog.classList.remove('reader-guided-moving'); }
+  function cancelCamera() { cameraGeneration++; if (cameraFrame) cancelAnimationFrame(cameraFrame); cameraFrame = undefined; cameraFinish = undefined; dialog.classList.remove('reader-guided-moving'); }
   function layoutPage({ smooth = false, keepZoom = false, preserveWidthPosition = false, fromBottom = false, enter = 1, keepCenter = false } = {}) {
     if (!imageWidth || !imageHeight || currentPage < 0) return;
     stopMotion();
@@ -661,9 +696,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     cancelCamera();
     dialog.classList.toggle('reader-overlay-controls', !editing);
     dialog.classList.toggle('reader-guided', guided && !editing);
+    dialog.classList.toggle('reader-guided-plus', guided && !editing && guidedPlus());
     dialog.classList.toggle('reader-fit-fill', fitMode() === 'fill' && !editing && !guided);
     dialog.classList.toggle('reader-fit-screen', fitMode() === 'screen' && !editing && !guided);
-    const rect = guided && guidedMode === 'panels' && !editing ? overview ? (guidedWholeFills() ? undefined : { x: 0, y: 0, width: 1, height: 1 }) : panels()[panel] : undefined;
+    const rect = guided && panelMode() && !editing ? overview ? (guidedWholeFills() ? undefined : wholePage()) : panels()[panel] : undefined;
     if (rect) {
       const available = availableSize(), aspect = imageWidth / imageHeight;
       // The whole-page overview keeps using the full screen; single panels get a little room.
@@ -674,24 +710,33 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const startX = (stage.scrollLeft + centerX - wrap.offsetLeft) / startWidth;
       const startY = (stage.scrollTop + centerY - wrap.offsetTop) / (startWidth / aspect);
       const targetX = rect.x + rect.width / 2, targetY = rect.y + rect.height / 2;
+      const plus = guidedPlus(), litFrom = focusRect || wholePage();
       paintPanels();
       const generation = cameraGeneration, identity = `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}`, reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      // Enhanced guided view: the lit part glides along with the camera
+      // (zooming evenly) instead of vanishing while it moves.
+      const glide = plus && smooth && !reduce ? overlay.querySelector('.panel-focus') || overlay.appendChild(drawRect(rect, panel, true)) : null;
+      if (glide) positionRect(glide, litFrom);
       const apply = progress => {
-        const eased = 1 - (1 - progress) ** 3;
-        setPageWidth(startWidth + (target.width - startWidth) * eased, { availableHeight: available.height, syncGestures: false });
+        const eased = plus ? (progress < .5 ? 4 * progress ** 3 : 1 - (2 - 2 * progress) ** 3 / 2) : 1 - (1 - progress) ** 3;
+        setPageWidth(plus ? startWidth * (target.width / startWidth) ** eased : startWidth + (target.width - startWidth) * eased, { availableHeight: available.height, syncGestures: false });
         scrollToPosition(wrap.offsetLeft + (startX + (targetX - startX) * eased) * pageWidth - centerX,
           wrap.offsetTop + (startY + (targetY - startY) * eased) * pageWidth / aspect - centerY);
+        if (glide) { focusRect = mixRect(litFrom, rect, eased); positionRect(glide, focusRect); }
       };
       if (!smooth || reduce) { apply(1); syncGestureMode(); }
       else {
-        const began = performance.now(); dialog.classList.add('reader-guided-moving');
+        const began = performance.now(), duration = plus ? glideDuration() : overview ? pageDuration() : 240; dialog.classList.add('reader-guided-moving');
+        const settle = () => { cameraFrame = undefined; cameraFinish = undefined; dialog.classList.remove('reader-guided-moving'); if (glide) paintPanels(); syncGestureMode(); };
         const frame = now => {
           if (generation !== cameraGeneration || identity !== `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}` || !dialog.open) return;
-          const progress = Math.min(1, (now - began) / (overview ? pageDuration() : 240)); apply(progress);
-          if (progress < 1) cameraFrame = requestAnimationFrame(frame);
-          else { cameraFrame = undefined; dialog.classList.remove('reader-guided-moving'); syncGestureMode(); }
+          const progress = Math.min(1, (now - began) / duration); apply(progress);
+          if (progress < 1) cameraFrame = requestAnimationFrame(frame); else settle();
         };
         cameraFrame = requestAnimationFrame(frame);
+        // Enhanced guided view: touching the page while it glides lands the
+        // camera at once, so the tap or swipe that follows works as usual.
+        if (glide) cameraFinish = () => { if (generation !== cameraGeneration) return; cancelAnimationFrame(cameraFrame); apply(1); settle(); };
       }
     } else {
       if (!keepZoom) {
@@ -1120,13 +1165,18 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     try {
       const rects = await obtainPagePanels({ force });
       if (serial !== mySession || pageSerial !== myPage || !guided) return;
-      panel = resolvePanelIndex(selectedPanel, rects.length); loading = false; positionCommitted = true; updateControls(); layoutPage({ smooth: true }); persist(); normalStatus(); activity(false); wakeRestore();
-      showHint(rects.length ? guidedLabels().detected(rects.length) : guidedLabels().fallback, rects.length ? 3500 : 6500);
+      const count = panels().length;
+      panel = resolvePanelIndex(selectedPanel, count); loading = false; positionCommitted = true; updateControls(); layoutPage({ smooth: true }); persist(); normalStatus(); activity(false); wakeRestore();
+      if (rects.length) showHint(guidedLabels().detected(rects.length), 3500);
+      else if (count) showHint(plusLabels().partsHint, 3500);
+      else showHint(guidedLabels().fallback, 6500);
       schedulePrefetch();
     } catch (error) {
       if (serial !== mySession || pageSerial !== myPage || error?.name === 'AbortError') return;
       loading = false; guidedMode = 'whole'; guidedFallbackPage = currentPage; panel = 0; overview = false; positionCommitted = true;
-      activity(false); updateControls(); layoutPage(); persist(); normalStatus(); showHint(guidedLabels().fallback, 6500); schedulePrefetch();
+      activity(false); updateControls(); layoutPage(); persist(); normalStatus();
+      if (partsPage()) showHint(plusLabels().partsHint, 3500); else showHint(guidedLabels().fallback, 6500);
+      schedulePrefetch();
     }
   }
   function disableGuided() {
@@ -1152,6 +1202,25 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, panel);
     }, spreadEnabled());
     toggle.setAttribute('aria-pressed', String(spreadEnabled()));
+    // Enhanced guided view: off unless chosen here, kept on this device.
+    const plus = plusLabels(), plusNote = document.createElement('p'); plusNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    plusNote.textContent = plus.note;
+    const plusRow = document.createElement('div'); plusRow.className = 'row'; menu.append(plusNote, plusRow);
+    const plusToggle = popupButton(plusRow, `${plus.title}: ${guidedPlus() ? plus.on : plus.off}`, () => {
+      try { store.setSettings({ readerGuidedPlus: !guidedPlus() }); checkSaved(); observePersistence(); }
+      catch (error) { statusMessage(error?.message || text().storage, true); return; }
+      hidePopup(); applyGuidedPlus();
+    }, guidedPlus());
+    plusToggle.id = 'reader-guided-plus-toggle'; plusToggle.setAttribute('aria-pressed', String(guidedPlus()));
+  }
+  // Switching the enhanced guided view takes effect on the page being read:
+  // a page without panels changes between parts and the whole page at once.
+  function applyGuidedPlus() {
+    // Outside Panel view the page is left exactly where it is.
+    if (!book || currentPage < 0 || loading || editing || !guided) { updateControls(); return; }
+    if (guidedFallbackPage === currentPage) { panel = 0; overview = false; }
+    layoutPage(); persist(); updateControls(); normalStatus();
+    if (partsPage()) showHint(plusLabels().partsHint, 3500);
   }
   function editToolbar() {
     const t = text(), menu = makePopup(t.edit);
@@ -1358,9 +1427,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       currentPage = index; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
       layoutPage({ fromBottom, enter: direction });
       if (guided) {
-        const rects = await obtainPagePanels({ signal: request.signal, imageElement: candidate.decodedImage });
+        await obtainPagePanels({ signal: request.signal, imageElement: candidate.decodedImage });
         if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
-        panel = resolvePanelIndex(targetPanel, rects.length); overview = Boolean(targetOverview && rects.length);
+        // The panels found (or, with the enhanced view, the parts of a page without them).
+        const count = panels().length;
+        panel = resolvePanelIndex(targetPanel, count); overview = Boolean(targetOverview && count);
       }
       loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom, enter: direction }); persist(); updateControls(); normalStatus();
       if (snapshot) await pageTransition.play({ snapshot, style: pageAnimation(), duration: pageDuration(), direction: direction * (rtl() ? -1 : 1) });
@@ -1369,7 +1440,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       paintPanels(); updateControls(); activity(false);
       wakeRestore();
       if (index === 0 && onCoverFirstPage) void coverFromFirstPage(comic, blob);
-      if (guided && guidedFallbackPage === currentPage) showHint(guidedLabels().fallback, 6500);
+      if (guided && guidedFallbackPage === currentPage) { if (partsPage()) showHint(plusLabels().partsHint, 3500); else showHint(guidedLabels().fallback, 6500); }
       else if (!slideHintShown && slideable()) { slideHintShown = true; showHint(slideLabels().hint, 3200); }
       trimDecoded(around(index));
       schedulePrefetch(); scheduleThumbnailSeed();
@@ -1709,6 +1780,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (touchPoints.size >= 2) { if (touchPoints.size === 2) beginPinch(); return; }
     gesture = undefined;
     if (!book || currentPage < 0 || loading || editing || popup || turning || pager) return;
+    cameraFinish?.();
     const now = performance.now(), caughtMoving = Boolean(motion) || Boolean(stretch.x || stretch.y);
     const caught = currentScroll(); stopMotion();
     const limits = scrollLimits();

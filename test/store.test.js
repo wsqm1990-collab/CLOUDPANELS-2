@@ -378,6 +378,16 @@ test('the page-turn choice is kept, and anything unknown falls back to swiping a
   const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
   assert.equal(restored.state.settings.readerTurnMode, 'swipe', 'backups carry it');
 });
+test('the enhanced guided view starts switched off and is kept once chosen', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerGuidedPlus, false);
+  s.setSettings({readerGuidedPlus: true}); assert.equal(s.state.settings.readerGuidedPlus, true);
+  s.setSettings({language: 'es'}); assert.equal(s.state.settings.readerGuidedPlus, true, 'other settings keep it');
+  s.setSettings({readerGuidedPlus: 'yes'}); assert.equal(s.state.settings.readerGuidedPlus, true, 'anything but true or false is ignored');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerGuidedPlus, true, 'backups carry it');
+  s.setSettings({readerGuidedPlus: false}); assert.equal(s.state.settings.readerGuidedPlus, false);
+});
 test('reading changes are written quickly, exactly as a full save would write them',async()=>{
  let persisted=null,writes=0;
  const backend={async read(){return persisted},async write(text){writes++;persisted=text}};

@@ -21,7 +21,7 @@ const decimal = (value, fallback, min, max) => Number.isFinite(Number(value)) &&
 const newId = prefix => prefix + ':' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : now();
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -90,6 +90,8 @@ function settings(value, previous = defaultState().settings) {
     cacheMiB: integer(value.cacheMiB, previous.cacheMiB, 16, 256), readingDirection: ['ltr', 'rtl'].includes(value.readingDirection) ? value.readingDirection : previous.readingDirection,
     readerFitMode: ['whole', 'fill', 'width', 'screen'].includes(value.readerFitMode) ? value.readerFitMode : (previous.readerFitMode || 'whole'),
     readerGuided: typeof value.readerGuided === 'boolean' ? value.readerGuided : Boolean(previous.readerGuided),
+    // Enhanced guided view is optional and starts switched off.
+    readerGuidedPlus: typeof value.readerGuidedPlus === 'boolean' ? value.readerGuidedPlus : previous.readerGuidedPlus === true,
     readerNavigationSeconds: [0, 3, 5, 8].includes(value.readerNavigationSeconds) ? value.readerNavigationSeconds : ([0, 3, 5, 8].includes(previous.readerNavigationSeconds) ? previous.readerNavigationSeconds : 3),
     readerSwipeResistance: [1, 2, 3, 4, 5].includes(value.readerSwipeResistance) ? value.readerSwipeResistance : ([1, 2, 3, 4, 5].includes(previous.readerSwipeResistance) ? previous.readerSwipeResistance : 3),
     readerPageAnimation: ['slide', 'fade', 'none'].includes(value.readerPageAnimation) ? value.readerPageAnimation : (['slide', 'fade', 'none'].includes(previous.readerPageAnimation) ? previous.readerPageAnimation : 'slide'),

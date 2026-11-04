@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation, turnInputs } from '../src/reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation, turnInputs } from '../src/reader-interactions.js';
 
 test('a portrait comic fits entirely inside a short landscape viewport', () => {
   const result = wholePageFit({ imageWidth: 1800, imageHeight: 2700, availableWidth: 1000, availableHeight: 600 });
@@ -293,4 +293,31 @@ test('pages turn by swiping and tapping, by swiping only, or by tapping only', (
   assert.deepEqual(turnInputs('swipe'), { mode: 'swipe', swipe: true, tap: false });
   assert.deepEqual(turnInputs('tap'), { mode: 'tap', swipe: false, tap: true });
   for (const unknown of [undefined, null, '', 'curl', 3]) assert.deepEqual(turnInputs(unknown), { mode: 'both', swipe: true, tap: true });
+});
+
+const rounded = parts => parts.map(part => [part.x, part.y, part.width, part.height].map(value => Math.round(value * 1000) / 1000));
+
+test('enhanced guided view reads a page without panels in four overlapping parts on an upright phone or iPad', () => {
+  for (const [availableWidth, availableHeight] of [[390, 750], [786, 1000]]) {
+    const parts = readingParts({ imageWidth: 1000, imageHeight: 1500, availableWidth, availableHeight });
+    assert.deepEqual(rounded(parts), [[0, 0, .55, .55], [.45, 0, .55, .55], [0, .45, .55, .55], [.45, .45, .55, .55]]);
+    for (const part of parts) assert.ok(guidedPanelFit({ imageWidth: 1000, imageHeight: 1500, availableWidth, availableHeight, panel: part }), 'every part can be shown like a panel');
+  }
+});
+
+test('parts follow the reading direction and the shape of the page', () => {
+  const rtl = readingParts({ imageWidth: 1000, imageHeight: 1500, availableWidth: 390, availableHeight: 750, direction: 'rtl' });
+  assert.deepEqual(rounded(rtl).map(([x, y]) => [x, y]), [[.45, 0], [0, 0], [.45, .45], [0, .45]], 'right to left, then down');
+  assert.deepEqual(rounded(readingParts({ imageWidth: 2000, imageHeight: 1500, availableWidth: 390, availableHeight: 750 })), [[0, 0, .55, 1], [.45, 0, .55, 1]], 'a double page on a phone: left half, right half');
+  assert.deepEqual(rounded(readingParts({ imageWidth: 1000, imageHeight: 3000, availableWidth: 390, availableHeight: 750 })), [[0, 0, 1, .55], [0, .45, 1, .55]], 'a tall strip stays one column');
+});
+
+test('parts always stay inside the page, and unknown sizes give none', () => {
+  assert.deepEqual(rounded(readingParts({ imageWidth: 1000, imageHeight: 1500, availableWidth: 400, availableHeight: 1500 })), [[0, 0, .55, 1], [.45, 0, .55, 1]], 'a very tall screen reads the page as two tall halves');
+  for (const invalid of [0, -1, NaN, Infinity, undefined]) assert.deepEqual(readingParts({ imageWidth: invalid, imageHeight: 1500, availableWidth: 390, availableHeight: 750 }), []);
+  for (const [imageWidth, imageHeight, availableWidth, availableHeight] of [[1000, 1500, 390, 750], [2047, 3191, 819.2, 1064.8], [3000, 1500, 389.667, 683.333], [800, 2600, 1080, 760]]) {
+    const parts = readingParts({ imageWidth, imageHeight, availableWidth, availableHeight });
+    assert.ok(parts.length <= 6);
+    for (const part of parts) assert.ok(part.x >= 0 && part.y >= 0 && part.x + part.width <= 1 && part.y + part.height <= 1, 'parts stay inside the page');
+  }
 });
