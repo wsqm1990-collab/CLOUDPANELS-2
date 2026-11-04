@@ -77,6 +77,40 @@ export function guidedPanelFit({ imageWidth, imageHeight, availableWidth, availa
   };
 }
 
+/**
+ * Enhanced guided view: a page with no panels found is read in a few
+ * overlapping parts, in reading order, instead of only as a whole page.
+ * Picks the grid that makes the art clearly bigger with the fewest steps
+ * (single columns preferred), or none when splitting would not help.
+ */
+export function readingParts({ imageWidth, imageHeight, availableWidth, availableHeight, direction = 'ltr', overlap = .1, maxParts = 6 } = {}) {
+  if (![imageWidth, imageHeight, availableWidth, availableHeight].every(value => Number.isFinite(value) && value > 0)) return [];
+  const whole = Math.min(availableWidth / imageWidth, availableHeight / imageHeight);
+  let best = null;
+  for (let count = 2; count <= maxParts; count++) {
+    for (let columns = 1; columns <= count; columns++) {
+      if (count % columns) continue;
+      const rows = count / columns;
+      const width = Math.min(1, (1 + (columns - 1) * overlap) / columns), height = Math.min(1, (1 + (rows - 1) * overlap) / rows);
+      const gain = Math.min(availableWidth / (imageWidth * width), availableHeight / (imageHeight * height)) / whole;
+      if (gain < 1.3) continue;
+      // Zoom past twice the whole page adds steps without helping to read.
+      const score = Math.min(gain, 2) - .15 * (count - 1) - .25 * (columns - 1);
+      if (!best || score > best.score + 1e-9) best = { score, columns, rows, width, height };
+    }
+  }
+  if (!best) return [];
+  const parts = [], position = (index, size, total) => total > 1 ? index * (1 - size) / (total - 1) : 0;
+  for (let row = 0; row < best.rows; row++) {
+    for (let step = 0; step < best.columns; step++) {
+      const column = direction === 'rtl' ? best.columns - 1 - step : step;
+      const x = position(column, best.width, best.columns), y = position(row, best.height, best.rows);
+      parts.push({ x, y, width: Math.min(best.width, 1 - x), height: Math.min(best.height, 1 - y) });
+    }
+  }
+  return parts;
+}
+
 /** A backwards page turn can request the last panel before its count is known. */
 export function resolvePanelIndex(target, count) {
   count = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
