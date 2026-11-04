@@ -2,10 +2,11 @@
 // away from the page so reading and turning pages stay smooth. The files are
 // downloaded once into this device's storage; nothing is sent anywhere.
 import { parseLexicon, createPhonemizer, chunkSounds, soundTokens } from './tts-text.js';
+import { smallerMemory } from './tts-memory.js';
 
 const CACHE = 'cloudpanels-voices-v1';
 const ROWS = 510, SIZE = 256;
-let ready = null, session = null, ort = null, phonemizer = null, voicePack = null, names = null, voiceIndex = new Map();
+let failedWith = '', ready = null, session = null, ort = null, phonemizer = null, voicePack = null, names = null, voiceIndex = new Map();
 const cancelled = new Set();
 let queue = Promise.resolve();
 
@@ -60,7 +61,21 @@ async function download(storage, base, file, progress) {
   if (!response.ok) { clearTimeout(watchdog); throw new Error(`The voices could not be downloaded (HTTP ${response.status}).`); }
   let bytes;
   const reader = response.body && typeof response.body.getReader === 'function' ? response.body.getReader() : null;
-  if (reader) {
+  if (reader && file.size) {
+    // Written straight into one buffer of the known size: half the memory of
+    // collecting pieces and joining them (phones with little memory).
+    bytes = new Uint8Array(file.size); let loaded = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (loaded + value.byteLength > bytes.byteLength) throw new RangeError('too long');
+        watch(); bytes.set(value, loaded); loaded += value.byteLength; progress(loaded);
+      }
+    } catch (error) { throw new Error(error instanceof RangeError ? 'The voices download did not match. Try again.' : 'The voices download stopped. Check the connection and try again.'); }
+    finally { clearTimeout(watchdog); }
+    if (loaded !== bytes.byteLength) throw new Error('The voices download was cut short. Try again on a steady connection.');
+  } else if (reader) {
     const parts = []; let loaded = 0;
     try {
       for (;;) {
@@ -96,12 +111,14 @@ async function load({ base, files, ortUrl }) {
   const index = await download(cache, base, byName('.json'), progressFor(byName('.json')));
   const lexicon = await download(cache, base, byName('.txt'), progressFor(byName('.txt')));
   post({ type: 'progress', loaded: total, total, preparing: true });
+  smallerMemory();
   ort = await import(ortUrl);
   ort.env.wasm.wasmBinary = wasm;
   ort.env.wasm.numThreads = 1;
   ort.env.wasm.proxy = false;
   ort.env.logLevel = 'error';
-  session = await ort.InferenceSession.create(new Uint8Array(model), { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+  try { session = await ort.InferenceSession.create(new Uint8Array(model), { executionProviders: ['wasm'], graphOptimizationLevel: 'all' }); }
+  catch (error) { throw new Error(/memory|RangeError|allocat/i.test(String(error?.message || error) + (error?.name || '')) ? 'This device did not have enough free memory for the voices. Close other apps and try again.' : `The voice engine could not start (${String(error?.message || error).slice(0, 120)}).`); }
   names = {
     tokens: session.inputNames.find(name => /token|input_ids/.test(name)) || session.inputNames[0],
     style: session.inputNames.find(name => /style/.test(name)) || session.inputNames[1],
@@ -153,20 +170,20 @@ async function say({ id, text, voice, speed = 1 }) {
 self.onmessage = event => {
   const message = event.data || {};
   if (message.type === 'load') {
-    if (!ready) ready = load(message).then(info => { post({ type: 'ready', ...info }); return info; }, error => { ready = null; post({ type: 'failed', message: String(error?.message || error) }); throw error; });
+    if (!ready) ready = load(message).then(info => { post({ type: 'ready', ...info }); return info; }, error => { failedWith = String(error?.message || error); ready = null; post({ type: 'failed', message: failedWith }); return null; });
     return;
   }
   if (message.type === 'cancel') { for (const id of message.ids || []) cancelled.add(id); return; }
   if (message.type === 'say') {
     queue = queue.then(async () => {
-      try { await ready; await say(message); }
+      try { await ready; if (!session) throw new Error(failedWith || 'The voices are not ready.'); await say(message); }
       catch (error) { post({ type: 'failed', id: message.id, message: String(error?.message || error) }); }
     });
     return;
   }
   if (message.type === 'sounds') {
     queue = queue.then(async () => {
-      try { await ready; post({ type: 'sounds', id: message.id, sounds: phonemizer.phonemize(message.text) }); }
+      try { await ready; if (!phonemizer) throw new Error(failedWith || 'The voices are not ready.'); post({ type: 'sounds', id: message.id, sounds: phonemizer.phonemize(message.text) }); }
       catch (error) { post({ type: 'failed', id: message.id, message: String(error?.message || error) }); }
     });
   }

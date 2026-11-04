@@ -170,6 +170,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const button = document.createElement('button'); button.id = `reader-${name}`; button.type = 'button'; button.className = 'button ghost compact'; return [name, button];
   }));
   const fitHint = document.createElement('div'); fitHint.className = 'reader-fit-hint'; fitHint.setAttribute('role', 'status'); fitHint.hidden = true; shell.append(fitHint);
+  // Natural voice messages (download, ready, problems) get their own clearly visible place.
+  const voiceNote = document.createElement('div'); voiceNote.className = 'reader-voice-note'; voiceNote.id = 'reader-voice-note'; voiceNote.setAttribute('role', 'status'); voiceNote.hidden = true; shell.append(voiceNote);
+  let voiceNoteTimer;
+  function showVoiceNote(message, duration = 5000) { clearTimeout(voiceNoteTimer); voiceNote.textContent = message; voiceNote.hidden = false; voiceNoteTimer = setTimeout(() => { voiceNote.hidden = true; }, duration); }
   buttons.fit.after(fillButton, panButton); shell.append(resumeButton); dialog.classList.add('reader-overlay-controls');
   buttons.next.after(featureButtons.navigate); dialog.querySelector('.reader-panel-controls').append(featureButtons.bookmarks, featureButtons.appearance);
   dialog.querySelector('.reader-panel-controls').prepend(immersiveButton, fullscreenButton); shell.append(restoreButton);
@@ -361,10 +365,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const extrasLabels = () => {
     const mb = Math.round(TTS_BYTES / 1e6);
     return language() === 'pt-BR'
-      ? { voices: 'Vozes naturais (inglês)', voicesNote: `Vozes de IA grátis, feitas neste aparelho, para quadrinhos em inglês: homens, mulheres e o narrador têm cada um a sua voz. Baixa cerca de ${mb} MB uma vez só (melhor no Wi‑Fi). Outros idiomas continuam com a voz do aparelho.`, music: 'Música de fundo', musicNote: 'Música que acompanha o clima de cada página (calma, tensa, ação…), feita neste aparelho. Grátis.', effects: 'Efeitos sonoros', effectsNote: 'Toca os sons escritos na página (BOOM, socos, tiros…) e o som do lugar (chuva, vento, cidade). Grátis.', downloading: n => `Preparando as vozes naturais… ${n}%`, preparingVoices: 'Preparando as vozes naturais…', voicesReady: 'Vozes naturais prontas.', voicesFailed: 'As vozes naturais não conseguiram iniciar neste aparelho. Usando a voz do aparelho.', onlyEnglish: 'As vozes naturais são para quadrinhos em inglês. Esta página usa a voz do aparelho.' }
+      ? { voices: 'Vozes naturais (inglês)', voicesNote: `Vozes de IA grátis, feitas neste aparelho, para quadrinhos em inglês: homens, mulheres e o narrador têm cada um a sua voz. Baixa cerca de ${mb} MB uma vez só (melhor no Wi‑Fi). Outros idiomas continuam com a voz do aparelho.`, music: 'Música de fundo', musicNote: 'Música que acompanha o clima de cada página (calma, tensa, ação…), feita neste aparelho. Grátis.', effects: 'Efeitos sonoros', effectsNote: 'Toca os sons escritos na página (BOOM, socos, tiros…) e o som do lugar (chuva, vento, cidade). Grátis.', downloading: n => `Preparando as vozes naturais… ${n}%`, preparingVoices: 'Preparando as vozes naturais…', voicesReady: 'Vozes naturais prontas.', voicesFailed: why => `As vozes naturais não iniciaram neste aparelho.${why ? ' ' + why : ''} Usando a voz do aparelho.`, onlyEnglish: 'As vozes naturais são para quadrinhos em inglês. Esta página usa a voz do aparelho.', statusIdle: 'Situação: ainda não baixadas.', statusLoading: n => `Situação: baixando… ${n}%`, statusPreparing: 'Situação: preparando…', statusReady: 'Situação: prontas.', statusFailed: why => `Situação: não iniciaram. ${why}`, test: 'Testar voz' }
       : language() === 'es'
-        ? { voices: 'Voces naturales (inglés)', voicesNote: `Voces de IA gratis, hechas en este dispositivo, para cómics en inglés: hombres, mujeres y el narrador tienen cada uno su voz. Descarga unos ${mb} MB una sola vez (mejor con Wi‑Fi). Otros idiomas siguen con la voz del dispositivo.`, music: 'Música de fondo', musicNote: 'Música que sigue el ambiente de cada página (calma, tensión, acción…), hecha en este dispositivo. Gratis.', effects: 'Efectos de sonido', effectsNote: 'Reproduce los sonidos escritos en la página (BOOM, golpes, disparos…) y el sonido del lugar (lluvia, viento, ciudad). Gratis.', downloading: n => `Preparando las voces naturales… ${n}%`, preparingVoices: 'Preparando las voces naturales…', voicesReady: 'Voces naturales listas.', voicesFailed: 'Las voces naturales no pudieron iniciar en este dispositivo. Usando la voz del dispositivo.', onlyEnglish: 'Las voces naturales son para cómics en inglés. Esta página usa la voz del dispositivo.' }
-        : { voices: 'Natural voices (English)', voicesNote: `Free AI voices made on this device for English comics: men, women and the narrator each get their own voice. Downloads about ${mb} MB once (Wi‑Fi is best). Other languages keep the device voice.`, music: 'Background music', musicNote: 'Music that follows the mood of each page (calm, tense, action…), made on this device. Free.', effects: 'Sound effects', effectsNote: 'Plays the sounds written on the page (BOOM, punches, shots…) and the sound of the place (rain, wind, city). Free.', downloading: n => `Getting the natural voices ready… ${n}%`, preparingVoices: 'Getting the natural voices ready…', voicesReady: 'Natural voices ready.', voicesFailed: 'The natural voices could not start on this device. Using the device voice.', onlyEnglish: 'Natural voices are for English comics. This page uses the device voice.' };
+        ? { voices: 'Voces naturales (inglés)', voicesNote: `Voces de IA gratis, hechas en este dispositivo, para cómics en inglés: hombres, mujeres y el narrador tienen cada uno su voz. Descarga unos ${mb} MB una sola vez (mejor con Wi‑Fi). Otros idiomas siguen con la voz del dispositivo.`, music: 'Música de fondo', musicNote: 'Música que sigue el ambiente de cada página (calma, tensión, acción…), hecha en este dispositivo. Gratis.', effects: 'Efectos de sonido', effectsNote: 'Reproduce los sonidos escritos en la página (BOOM, golpes, disparos…) y el sonido del lugar (lluvia, viento, ciudad). Gratis.', downloading: n => `Preparando las voces naturales… ${n}%`, preparingVoices: 'Preparando las voces naturales…', voicesReady: 'Voces naturales listas.', voicesFailed: why => `Las voces naturales no iniciaron en este dispositivo.${why ? ' ' + why : ''} Usando la voz del dispositivo.`, onlyEnglish: 'Las voces naturales son para cómics en inglés. Esta página usa la voz del dispositivo.', statusIdle: 'Estado: aún no descargadas.', statusLoading: n => `Estado: descargando… ${n}%`, statusPreparing: 'Estado: preparando…', statusReady: 'Estado: listas.', statusFailed: why => `Estado: no iniciaron. ${why}`, test: 'Probar voz' }
+        : { voices: 'Natural voices (English)', voicesNote: `Free AI voices made on this device for English comics: men, women and the narrator each get their own voice. Downloads about ${mb} MB once (Wi‑Fi is best). Other languages keep the device voice.`, music: 'Background music', musicNote: 'Music that follows the mood of each page (calm, tense, action…), made on this device. Free.', effects: 'Sound effects', effectsNote: 'Plays the sounds written on the page (BOOM, punches, shots…) and the sound of the place (rain, wind, city). Free.', downloading: n => `Getting the natural voices ready… ${n}%`, preparingVoices: 'Getting the natural voices ready…', voicesReady: 'Natural voices ready.', voicesFailed: why => `The natural voices could not start on this device.${why ? ' ' + why : ''} Using the device voice.`, onlyEnglish: 'Natural voices are for English comics. This page uses the device voice.', statusIdle: 'Status: not downloaded yet.', statusLoading: n => `Status: downloading… ${n}%`, statusPreparing: 'Status: getting ready…', statusReady: 'Status: ready.', statusFailed: why => `Status: could not start. ${why}`, test: 'Test voice' };
   };
   const fullscreenSupported = () => (document.fullscreenEnabled !== false && typeof fullscreenTarget.requestFullscreen === 'function') || (document.webkitFullscreenEnabled !== false && typeof fullscreenTarget.webkitRequestFullscreen === 'function');
 
@@ -1290,7 +1294,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       try { store.setSettings({ readerReadAloud: !readAloudEnabled() }); checkSaved(); observePersistence(); }
       catch (error) { statusMessage(error?.message || text().storage, true); return; }
       hidePopup(); if (!readAloudEnabled()) { stopAloud(); natural?.dispose(); natural = null; } updateControls();
-      if (readAloudEnabled()) showHint(aloudText.ready, 4000);
+      if (readAloudEnabled()) showVoiceNote(aloudText.ready, 5000);
     }, readAloudEnabled());
     aloudToggle.id = 'reader-read-aloud-toggle'; aloudToggle.setAttribute('aria-pressed', String(readAloudEnabled()));
     // Its extras: natural voices, music and sound effects (each off at first).
@@ -1305,6 +1309,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
           hidePopup(); applyExtras(setting);
         }, isOn());
         extraToggle.id = id; extraToggle.setAttribute('aria-pressed', String(isOn()));
+        // Natural voices: how they are doing, and a quick way to hear them.
+        if (setting === 'readerNaturalVoice' && isOn()) {
+          const test = popupButton(extraRow, extras.test, () => { hidePopup(); void testVoices(); });
+          test.id = 'reader-natural-voice-test';
+          const status = document.createElement('p'); status.id = 'reader-natural-voice-status'; status.style.cssText = 'font-size:12px;color:#e3ecf5;line-height:1.5;margin:8px 0 0;';
+          status.textContent = voiceStatus(); menu.append(status);
+        }
       }
     }
   }
@@ -1332,9 +1343,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       engine.onChange(({ state, loaded, total, preparing }) => {
         if (engine !== natural || !dialog.open) return;
         const extras = extrasLabels();
-        if (state === 'loading') { voiceNotice = true; showHint(preparing || !total ? extras.preparingVoices : extras.downloading(Math.min(99, Math.floor(loaded / total * 100))), 120000); }
-        else if (state === 'ready' && voiceNotice) { voiceNotice = false; showHint(extras.voicesReady, 2500); }
-        else if (state === 'failed') { voiceNotice = false; showHint(extras.voicesFailed, 6500); }
+        if (state === 'loading') { voiceNotice = true; showVoiceNote(preparing || !total ? extras.preparingVoices : extras.downloading(Math.min(99, Math.floor(loaded / total * 100))), 120000); }
+        else if (state === 'ready' && voiceNotice) { voiceNotice = false; showVoiceNote(extras.voicesReady, 3000); }
+        else if (state === 'failed') { voiceNotice = false; showVoiceNote(extras.voicesFailed(engine.failure), 12000); }
       });
       natural = engine;
     }
@@ -1347,11 +1358,40 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     engine.load().catch(() => {});
     return engine;
   }
+  function voiceStatus() {
+    const extras = extrasLabels(), engine = natural;
+    if (!naturalVoiceSupported()) return extras.statusFailed('');
+    if (!engine || engine.state === 'idle') return extras.statusIdle;
+    if (engine.state === 'failed') return extras.statusFailed(engine.failure);
+    if (engine.state === 'ready') return extras.statusReady;
+    const { loaded, total, preparing } = engine.progress;
+    return preparing ? extras.statusPreparing : extras.statusLoading(Math.min(99, Math.floor(loaded / (total || 1) * 100)));
+  }
+  // "Test voice": two short lines (a man, then a woman) in the natural voices.
+  async function testVoices() {
+    const extras = extrasLabels();
+    if (aloud.on) stopAloud();
+    soundscape.resume();
+    const engine = startVoices();
+    if (!engine) { showVoiceNote(extras.voicesFailed(''), 8000); return; }
+    try {
+      await engine.load();
+      const lines = [{ voice: 'man', speaker: 'test man', text: 'Hi! This is how the natural voices sound in your comics.' }, { voice: 'woman', speaker: 'test woman', text: 'And this is another voice, for the women in your stories.' }];
+      for (const [index, line] of lines.entries()) {
+        const plan = voicePlan({ kind: 'speech', tone: 'normal', ...line }, index ? 'af_heart' : 'am_michael');
+        if (!index) showVoiceNote(extras.preparingVoices, 8000);
+        const audio = await engine.synth(line.text, plan);
+        if (aloud.on || !dialog.open) return;
+        if (!index) voiceNote.hidden = true;
+        await soundscape.playVoice(audio.samples, audio.sampleRate, plan);
+      }
+    } catch (error) { if (error?.name !== 'AbortError') showVoiceNote(extras.voicesFailed(engine.failure || error?.message || ''), 12000); }
+  }
   // A switch changed in Panel options: takes effect at once.
   function applyExtras(setting) {
     soundscape.music = musicOn(); soundscape.effects = effectsOn();
     if (setting === 'readerNaturalVoice') {
-      if (naturalOn()) { if (!startVoices()) showHint(extrasLabels().voicesFailed, 5000); }
+      if (naturalOn()) { if (!startVoices()) showVoiceNote(extrasLabels().voicesFailed(''), 8000); }
       else { natural?.dispose(); natural = null; voiceNotice = false; }
     }
     if (aloud.on && aloud.scene) { soundscape.resume(); soundscape.setScene(aloud.scene); }
@@ -1372,8 +1412,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function startAloud() {
     if (!readAloudEnabled() || !book || !comic) return;
     const labels = aloudLabels();
-    if (!speaker.available() && !(naturalOn() && naturalVoiceSupported())) { showHint(labels.noVoice, 4500); return; }
-    if (!assistantStore.key) { showHint(labels.noKey, 6500); return; }
+    if (!speaker.available() && !(naturalOn() && naturalVoiceSupported())) { showVoiceNote(labels.noVoice, 6000); return; }
+    if (!assistantStore.key) { showVoiceNote(labels.noKey, 8000); return; }
     speaker.unlock();
     // The tap that starts reading is what lets the device play music and voices.
     if (musicOn() || effectsOn() || naturalOn()) { soundscape.music = musicOn(); soundscape.effects = effectsOn(); soundscape.resume(); }
@@ -1387,7 +1427,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const playing = aloud.on;
     aloud.on = false; aloud.key = ''; aloud.token++; clearInterval(aloud.poll); aloud.poll = undefined;
     speaker.cancel(); soundscape.stop(); natural?.only([]); aloud.scene = null; aloud.nextVoices = []; syncListenButtons();
-    if (playing && hint) showHint(hint, 3500);
+    if (playing && hint) showVoiceNote(hint, 4000);
   }
   function aloudReady() {
     return Boolean(dialog.open && book && comic && currentPage >= 0) && !loading && !turning && !analysisPending && positionCommitted && !editing && !popup && !pager && !cameraFrame && !gesture && !pinch;
@@ -1452,15 +1492,15 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const mine = ++aloud.token; speaker.cancel(); soundscape.stopVoices(); keepAwake.activity();
     const labels = aloudLabels(), spread = spreadPages.length > 1, page = currentPage, pageId = spread ? spreadPages.join('+') : page;
     const real = spread ? [] : storedPanels(), rects = guided ? panels() : [], partsStep = partsPage(), step = { panel, overview };
-    const waiting = setTimeout(() => { if (mine === aloud.token) showHint(labels.preparing, 60000); }, 350);
+    const waiting = setTimeout(() => { if (mine === aloud.token) showVoiceNote(labels.preparing, 60000); }, 350);
     let script;
     try { script = await aloudScript(pageId, { drawable: image, rects: real }); }
     catch (error) {
       if (mine !== aloud.token) return;
-      stopAloud(); showHint(error?.type === 'no_key' ? labels.noKey : friendlyError(error, language()) || labels.noVoice, 7000); return;
+      stopAloud(); showVoiceNote(error?.type === 'no_key' ? labels.noKey : friendlyError(error, language()) || labels.noVoice, 9000); return;
     } finally { clearTimeout(waiting); }
     if (mine !== aloud.token || key !== aloud.key || !aloud.on) return;
-    if (!fitHint.hidden && fitHint.textContent === labels.preparing) fitHint.hidden = true;
+    if (!voiceNote.hidden && voiceNote.textContent === labels.preparing) voiceNote.hidden = true;
     aloudPrefetch((spread ? spreadPages[spreadPages.length - 1] : page) + 1);
     const panelsKey = guided && !partsStep ? panelsKeyOf(real) : '', voiceLanguage = script.language || navigator.language || '';
     const lines = linesForStep(script, { rects, panel: step.panel, overview: step.overview, panelsKey, numberedRects: real, sounds: effectsOn() });
@@ -1471,7 +1511,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       aloud.scene = sceneForStep(script, { panelNumber }); soundscape.setScene(aloud.scene);
     }
     const english = /^en\b/i.test(script.language || ''), voices = naturalOn() && english ? naturalEngine() : null;
-    if (naturalOn() && !english && !aloud.noted && script.lines.some(line => line.kind !== 'sfx')) { aloud.noted = true; showHint(extrasLabels().onlyEnglish, 4500); }
+    if (naturalOn() && !english && !aloud.noted && script.lines.some(line => line.kind !== 'sfx')) { aloud.noted = true; showVoiceNote(extrasLabels().onlyEnglish, 6000); }
     if (voices && voices.state !== 'failed') prepareVoices(script, voices, { rects, step, panelsKey, real });
     if (lines.length) {
       const finished = voices || effectsOn() ? await perform(lines, { mine, language: voiceLanguage, voices }) : await speakWithDevice(lines, voiceLanguage);
@@ -2258,7 +2298,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
     comic = undefined; currentPage = -1; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
-    clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
+    clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; clearTimeout(voiceNoteTimer); voiceNote.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;
     wrap.style.removeProperty('width'); wrap.style.removeProperty('min-height'); wrap.style.removeProperty('margin-top');

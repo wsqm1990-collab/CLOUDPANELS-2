@@ -86,3 +86,18 @@ test('lines no longer needed are dropped before they start; a failed start is re
   assert.equal(broken.state, 'failed');
   await assert.rejects(broken.synth('Hi.', plan), /WebAssembly/);
 });
+
+test('the voice engine asks the device for less memory, stepping down if refused', async () => {
+  const { smallerMemory, MEMORY_STEPS } = await import('../src/tts-memory.js');
+  const asked = [];
+  class Real { constructor(d) { asked.push(d.maximum); if (d.shared && d.maximum > 8192) throw new RangeError('could not allocate memory'); this.d = d; } }
+  const scope = { WebAssembly: { Memory: Real } };
+  smallerMemory(scope);
+  const memory = new scope.WebAssembly.Memory({ initial: 256, maximum: 65536, shared: true });
+  assert.deepEqual(asked, [...MEMORY_STEPS].filter(pages => pages >= 8192), 'it tried 1 GB, 768 MB, then 512 MB');
+  assert.equal(memory.d.maximum, 8192); assert.ok(memory instanceof scope.WebAssembly.Memory);
+  assert.equal(new scope.WebAssembly.Memory({ initial: 1, maximum: 2 }).d.maximum, 2, 'small or unshared memories are left alone');
+  smallerMemory(scope); assert.equal(scope.WebAssembly.Memory.cloudpanels, true, 'wrapped once');
+  const none = { WebAssembly: { Memory: class { constructor() { throw new RangeError('no'); } } } };
+  smallerMemory(none); assert.throws(() => new none.WebAssembly.Memory({ initial: 1, maximum: 65536, shared: true }), RangeError);
+});
