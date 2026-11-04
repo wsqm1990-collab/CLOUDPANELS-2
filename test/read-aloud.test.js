@@ -110,3 +110,12 @@ test('the page goes to the AI with the user key and comes back as a script', asy
   await assert.rejects(requestPageScript({ key: 'k', image: 'A', fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid x-api-key' } }) }) }), error => error.status === 401);
   assert.match(scriptRequestNote({ direction: 'rtl' }), /right to left/);
 });
+
+test('with areas outside the panels in between, numbered lines still find their panel', () => {
+  const top = { x: 0, y: 0, width: 1, height: .4 }, left = { x: 0, y: .45, width: .5, height: .55 }, right = { x: .5, y: .45, width: .5, height: .55 };
+  const script = parseScript(JSON.stringify({ lines: [{ panel: 0, x: .3, y: .1, text: 'Up here.' }, { panel: 1, x: .9, y: .9, text: 'Left one.' }, { panel: 2, x: .7, y: .7, text: 'Right one.' }] }), { panelCount: 2, panelsKey: panelsKeyOf([left, right]) });
+  const steps = [top, { ...left }, { ...right }], texts = panel => linesForStep(script, { rects: steps, panel, panelsKey: panelsKeyOf([left, right]), numberedRects: [left, right] }).map(line => line.text);
+  assert.deepEqual(texts(0), ['Up here.'], 'a balloon outside every panel is read with the area it sits in');
+  assert.deepEqual(texts(1), ['Left one.'], 'the AI said panel 1, even if its spot looked elsewhere');
+  assert.deepEqual(texts(2), ['Right one.']);
+});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation, turnInputs } from '../src/reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, uncoveredRegions, pageReadingSteps, resolvePanelIndex, canSwipePages, decideSwipe, decideTapNavigation, turnInputs } from '../src/reader-interactions.js';
 
 test('a portrait comic fits entirely inside a short landscape viewport', () => {
   const result = wholePageFit({ imageWidth: 1800, imageHeight: 2700, availableWidth: 1000, availableHeight: 600 });
@@ -320,4 +320,41 @@ test('parts always stay inside the page, and unknown sizes give none', () => {
     assert.ok(parts.length <= 6);
     for (const part of parts) assert.ok(part.x >= 0 && part.y >= 0 && part.x + part.width <= 1 && part.y + part.height <= 1, 'parts stay inside the page');
   }
+});
+
+const grid = (cols, rows, drawing) => { const busy = new Uint8Array(cols * rows); for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) busy[row * cols + col] = drawing((col + .5) / cols, (row + .5) / rows) ? 1 : 0; return { busy, cols, rows }; };
+const strip = [[0, .665, .245, .335], [.245, .52, .117, .48], [.365, .52, .112, .48], [.48, .52, .122, .48], [.605, .52, .127, .48], [.735, .52, .122, .48], [.86, .52, .14, .48]].map(([x, y, width, height]) => ({ x, y, width, height }));
+
+test('drawing outside the panels found (a splash above them) becomes one more area to read', () => {
+  const regions = uncoveredRegions({ rects: strip, ...grid(48, 35, () => true) });
+  assert.equal(regions.length, 1, 'the small scrap beside the first panel is left out');
+  const [top] = regions;
+  assert.ok(top.x <= .001 && top.y <= .001 && top.width >= .99 && top.height > .45 && top.y + top.height < .56, JSON.stringify(top));
+});
+
+test('margins, gutters, small scraps and pages fully covered by panels add nothing', () => {
+  const full = [{ x: 0, y: 0, width: .5, height: 1 }, { x: .5, y: 0, width: .5, height: 1 }];
+  assert.deepEqual(uncoveredRegions({ rects: full, ...grid(48, 72, () => true) }), []);
+  const inner = [{ x: .05, y: .05, width: .9, height: .43 }, { x: .05, y: .52, width: .9, height: .43 }];
+  assert.deepEqual(uncoveredRegions({ rects: inner, ...grid(48, 72, (x, y) => x > .05 && x < .95 && y > .05 && y < .95) }), [], 'white margins and gutters are paper');
+  assert.deepEqual(uncoveredRegions({ rects: inner, ...grid(48, 72, (x, y) => (x > .05 && x < .95 && y > .05 && y < .95) || (x > .4 && x < .6 && y > .96)) }), [], 'a page number is too small');
+  assert.deepEqual(uncoveredRegions({ rects: inner, busy: new Uint8Array(3), cols: 48, rows: 72 }), [], 'a wrong grid gives nothing');
+});
+
+test('an L-shaped area is cut into bands, and a big title above the panels is kept', () => {
+  const panels = [{ x: 0, y: .3, width: 1, height: .7 }];
+  const regions = uncoveredRegions({ rects: panels, ...grid(48, 72, (x, y) => y < .27 && x > .1 && x < .9) });
+  assert.equal(regions.length, 1);
+  assert.ok(regions[0].x > .05 && regions[0].x + regions[0].width < .95 && regions[0].y + regions[0].height < .32, JSON.stringify(regions[0]));
+});
+
+test('a panel the detector missed and the splash above it are read in the comic\'s order', () => {
+  // A double page: a splash on top whose character breaks into the first strip
+  // panel, so neither was found; the other panels were.
+  const found = [[0, .686, .243, .314], [.367, .54, .111, .46], [.482, .54, .121, .46], [.607, .54, .126, .46], [.737, .54, .121, .46], [.862, .54, .138, .46]].map(([x, y, width, height]) => ({ x, y, width, height }));
+  const paper = (x, y) => (y > .525 && y < .54) || (y > .525 && y < .686 && x < .245) || (y > .54 && ((x > .243 && x < .25) || (x > .36 && x < .367) || (x > .478 && x < .482) || (x > .603 && x < .607) || (x > .733 && x < .737) || (x > .858 && x < .862)));
+  const steps = pageReadingSteps({ rects: found, ...grid(48, 36, (x, y) => !paper(x, y) || (y > .52 && y < .56 && x > .29 && x < .37)), imageWidth: 2400, imageHeight: 1800, availableWidth: 390, availableHeight: 750 });
+  const label = rect => found.includes(rect) ? `panel ${found.indexOf(rect) + 1}` : `new ${rect.x.toFixed(2)},${rect.y.toFixed(2)}`;
+  assert.deepEqual(steps.map(label), ['new 0.00,0.00', 'new 0.45,0.00', 'panel 1', 'new 0.25,0.53', 'panel 2', 'panel 3', 'panel 4', 'panel 5', 'panel 6']);
+  assert.equal(pageReadingSteps({ rects: found.slice(0, 1), busy: new Uint8Array(48 * 36), cols: 48, rows: 36, imageWidth: 2400, imageHeight: 1800, availableWidth: 390, availableHeight: 750 }).length, 1, 'plain paper around the panels adds nothing');
 });

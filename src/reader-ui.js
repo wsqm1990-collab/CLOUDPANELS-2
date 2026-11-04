@@ -1,5 +1,5 @@
 import { openComic, pageImageSize, DISPLAY_PIXELS } from './reader.js';
-import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
+import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, pageReadingSteps, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
@@ -262,7 +262,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const rtl = () => store.state.settings.readingDirection === 'rtl';
   const notify = () => onChange?.();
   const storedPanels = () => comic && currentPage >= 0 ? store.getPanels(comic.id, currentPage) : [];
-  const panels = () => guided && !editing && guidedFallbackPage === currentPage ? pageParts() : storedPanels();
+  const panels = () => guided && !editing && guidedFallbackPage === currentPage ? pageParts() : guided && !editing && guidedPlus() ? pageSteps() : storedPanels();
   const focusLabel = (n, count) => text().panelStatus(n, count);
   // Enhanced guided view: a page with no panels found is read in parts. The
   // parts follow the screen's shape and are never saved as the page's panels;
@@ -276,6 +276,46 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const key = `${imageWidth}x${imageHeight}:${Math.round(available.width)}x${Math.round(available.height)}:${direction}`;
     if (partsMemo.key !== key) partsMemo = { key, parts: readingParts({ imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, direction }) };
     return partsMemo.parts;
+  }
+  // Enhanced guided view: drawing outside the panels found (a splash behind
+  // them, a big title) is visited too, in reading order, big areas in parts,
+  // so no balloon is skipped. Nothing is saved; off, only the panels show.
+  let busyMemo = { key: '', grid: null }, stepsMemo = { key: '', steps: [] };
+  function busyGrid() {
+    const candidate = decodedPages.get(currentPage)?.candidate, drawable = candidate?.decodedImage;
+    if (!drawable?.complete || !(drawable.naturalWidth > 0) || !(drawable.naturalHeight > 0)) return null;
+    if (busyMemo.key === candidate.url) return busyMemo.grid;
+    const cols = 48, rows = clamp(Math.round(cols * drawable.naturalHeight / drawable.naturalWidth), 16, 96);
+    const canvas = document.createElement('canvas'); canvas.width = cols * 4; canvas.height = rows * 4;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    let data;
+    try { context.drawImage(drawable, 0, 0, canvas.width, canvas.height); data = context.getImageData(0, 0, canvas.width, canvas.height).data; }
+    catch { return null; } finally { canvas.width = canvas.height = 0; }
+    const busy = new Uint8Array(cols * rows), stride = cols * 4;
+    for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+      let low = 255, high = 0, sum = 0;
+      for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 4; dx++) {
+        const offset = ((row * 4 + dy) * stride + col * 4 + dx) * 4, light = .2126 * data[offset] + .7152 * data[offset + 1] + .0722 * data[offset + 2];
+        if (light < low) low = light; if (light > high) high = light; sum += light;
+      }
+      // Plain white or black paper is not drawing; anything else is.
+      busy[row * cols + col] = high - low <= 30 && (sum / 16 >= 225 || sum / 16 <= 35) ? 0 : 1;
+    }
+    busyMemo = { key: candidate.url, grid: { busy, cols, rows } };
+    return busyMemo.grid;
+  }
+  function pageSteps() {
+    const rects = storedPanels();
+    if (!rects.length || !imageWidth || !imageHeight) return rects;
+    const grid = busyGrid();
+    if (!grid) return rects;
+    const available = availableSize(), direction = rtl() ? 'rtl' : 'ltr';
+    const key = `${busyMemo.key}|${panelsKeyOf(rects)}|${Math.round(available.width)}x${Math.round(available.height)}|${direction}`;
+    if (stepsMemo.key === key) return stepsMemo.steps;
+    const steps = pageReadingSteps({ rects, ...grid, imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, direction });
+    stepsMemo = { key, steps };
+    return steps;
   }
   const partsPage = () => guided && !editing && guidedFallbackPage === currentPage && pageParts().length > 0;
   // Panels found on the page, or the parts of a page without them.
@@ -1183,7 +1223,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (serial !== mySession || pageSerial !== myPage || !guided) return;
       const count = panels().length;
       panel = resolvePanelIndex(selectedPanel, count); if (partsPage()) overview = panel === 0; loading = false; positionCommitted = true; updateControls(); layoutPage({ smooth: true }); persist(); normalStatus(); activity(false); wakeRestore();
-      if (rects.length) showHint(guidedLabels().detected(rects.length), 3500);
+      if (rects.length) showHint(guidedLabels().detected(count), 3500);
       else if (count) showHint(plusLabels().partsHint, 3500);
       else showHint(guidedLabels().fallback, 6500);
       schedulePrefetch();
@@ -1350,7 +1390,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (mine !== aloud.token || key !== aloud.key || !aloud.on) return;
     if (!fitHint.hidden && fitHint.textContent === labels.preparing) fitHint.hidden = true;
     aloudPrefetch((spread ? spreadPages[spreadPages.length - 1] : page) + 1);
-    const lines = linesForStep(script, { rects, panel: step.panel, overview: step.overview, panelsKey: guided && !partsStep ? panelsKeyOf(real) : '' });
+    const lines = linesForStep(script, { rects, panel: step.panel, overview: step.overview, panelsKey: guided && !partsStep ? panelsKeyOf(real) : '', numberedRects: real });
     if (lines.length) {
       const finished = await speaker.speak(lines, { language: script.language || navigator.language || '' });
       if (!finished || mine !== aloud.token || !aloud.on) return;
