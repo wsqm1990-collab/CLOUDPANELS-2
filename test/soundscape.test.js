@@ -52,3 +52,15 @@ test('a natural voice line plays over the music, which steps back meanwhile', as
   assert.equal(await scape.playVoice(samples, 24000, { rate: 1.12, gain: .8, effect: 'robot' }, 1), true);
   assert.equal(ctx.counts.voice, 1);
 });
+
+test('with the screen off allowed, a hum far below hearing keeps the sound running between lines', () => {
+  const ctx = fakeContext(), made = [], scape = createSoundscape({ context: ctx });
+  const original = ctx.createOscillator; ctx.createOscillator = () => { const node = original(); made.push(node); node.stopped = false; node.stop = () => { node.stopped = true; }; return node; };
+  const gains = [], originalGain = ctx.createGain; ctx.createGain = () => { const node = originalGain(); gains.push(node); return node; };
+  assert.equal(scape.keptAlive, false);
+  scape.keepAlive(true); scape.keepAlive(true);
+  const hum = made.filter(node => node.frequency.value === 30);
+  assert.equal(hum.length, 1, 'only one'); assert.equal(scape.keptAlive, true);
+  assert.ok(gains.some(node => Math.abs(node.gain.value - .0016) < 1e-9), 'about -56 dB');
+  scape.keepAlive(false); assert.equal(hum[0].stopped, true); assert.equal(scape.keptAlive, false);
+});

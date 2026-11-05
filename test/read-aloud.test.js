@@ -145,3 +145,55 @@ test('sound effects come with the lines of their panel only when asked for', () 
   assert.deepEqual(texts(false), ['O trem atrasou.']);
   assert.deepEqual(texts(true), ['BOOM', 'O trem atrasou.'], 'in reading order');
 });
+
+test('scene descriptions are kept only when asked for, always told by the narrator', () => {
+  const answer = JSON.stringify({ language: 'en-US', lines: [
+    { panel: 1, x: .5, y: .2, kind: 'scene', speaker: 'Ana', voice: 'woman', tone: 'shout', text: 'Ana runs  down a rainy street, looking back.' },
+    { panel: 1, x: .6, y: .2, kind: 'speech', speaker: 'Ana', voice: 'woman', tone: 'scared', text: 'Someone is following me!' },
+    { panel: 2, x: .3, y: .7, kind: 'scene', text: 'x'.repeat(500) },
+  ] });
+  const plain = parseScript(answer, { panelCount: 3 });
+  assert.deepEqual(plain.lines.map(line => line.kind), ['speech'], 'not asked for: left out');
+  assert.equal('described' in plain, false);
+  const described = parseScript(answer, { panelCount: 3, describe: true });
+  assert.equal(described.described, true);
+  assert.deepEqual(described.lines.map(line => line.kind), ['scene', 'speech', 'scene']);
+  assert.deepEqual({ ...described.lines[0] }, { panel: 1, x: .5, y: .2, kind: 'scene', tone: 'normal', voice: 'narrator', speaker: 'narrator', text: 'Ana runs down a rainy street, looking back.' });
+  assert.equal(described.lines[2].text.length, 300, 'kept short');
+  assert.deepEqual(utteranceSettings(described.lines[0]), utteranceSettings({ kind: 'caption', voice: 'narrator' }), 'said like a caption');
+});
+
+test('descriptions are asked for only when wanted; otherwise the request is exactly as before', () => {
+  const plain = scriptInstructions(), described = scriptInstructions({ describe: true });
+  assert.equal(scriptInstructions({ describe: false }), plain);
+  assert.ok(!/kind "scene"|Audio description/.test(plain), 'nothing about descriptions when not wanted');
+  assert.ok(/kind "scene"/.test(described) && /at most 20 words/.test(described) && /language of the lettering/.test(described) && /centre of that panel/.test(described));
+  assert.ok(described.startsWith(plain.split('\n')[0]));
+});
+
+test('a description opens its panel, and comes only when asked for', () => {
+  const script = { panelsKey: panelsKeyOf(panels), lines: [
+    { panel: 1, x: .5, y: .2, kind: 'speech', text: 'First words.' },
+    { panel: 1, x: .5, y: .22, kind: 'scene', text: 'A street at night.' },
+    { panel: 0, x: null, y: null, kind: 'scene', text: 'Rui waits on a platform.' },
+    { panel: 2, x: .25, y: .7, kind: 'speech', text: 'The train is late.' },
+    { panel: 3, x: .75, y: .75, kind: 'scene', text: 'An empty bench.' },
+  ] };
+  const step = (panel, scenes) => linesForStep(script, { rects: panels, panel, panelsKey: panelsKeyOf(panels), scenes }).map(line => line.text);
+  assert.deepEqual(step(0, false), ['First words.']);
+  assert.deepEqual(step(0, true), ['A street at night.', 'First words.'], 'the description comes first');
+  assert.deepEqual(step(1, true), ['Rui waits on a platform.', 'The train is late.'], 'one with no place opens the panel after it');
+  assert.deepEqual(step(2, true), ['An empty bench.'], 'a panel without text gets its description');
+  assert.deepEqual(step(2, false), []);
+  assert.deepEqual(linesForStep(script, { scenes: true }).map(line => line.text), script.lines.map(line => line.text), 'the whole page keeps the AI order');
+  assert.deepEqual(linesForStep(script, {}).map(line => line.kind), ['speech', 'speech']);
+});
+
+test('the request asks for descriptions only when told to', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, options) => { bodies.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ content: [{ type: 'text', text: JSON.stringify({ language: 'en', lines: [{ panel: 0, x: .5, y: .5, kind: 'scene', text: 'A quiet room.' }] }) }] }) }; };
+  const plain = await requestPageScript({ key: 'k', image: 'AAAA', fetchImpl });
+  const described = await requestPageScript({ key: 'k', image: 'AAAA', describe: true, fetchImpl });
+  assert.equal(bodies[0].system, scriptInstructions()); assert.equal(bodies[1].system, scriptInstructions({ describe: true }));
+  assert.deepEqual(plain.lines, []); assert.equal(described.described, true); assert.equal(described.lines[0].text, 'A quiet room.');
+});

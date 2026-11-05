@@ -4,7 +4,9 @@
 // own key) reads each page once; the result is kept on this device.
 
 export const READ_ALOUD_MODEL = 'claude-sonnet-5-5';
-const KINDS = new Set(['speech', 'thought', 'caption', 'sfx']);
+// "scene" lines (audio description, optional): what each panel shows, for
+// listening without looking (screen off). Only asked for when wanted.
+const KINDS = new Set(['speech', 'thought', 'caption', 'sfx', 'scene']);
 const TONES = new Set(['normal', 'shout', 'whisper', 'sad', 'angry', 'scared', 'laugh']);
 const VOICES = new Set(['narrator', 'man', 'woman', 'boy', 'girl', 'old man', 'old woman', 'creature', 'robot']);
 const MAX_LINES = 150;
@@ -14,15 +16,19 @@ export const AMBIENCES = Object.freeze(['none', 'city', 'night', 'rain', 'storm'
 export const SOUNDS = Object.freeze(['explosion', 'punch', 'slash', 'gunshot', 'gunfire', 'laser', 'zap', 'whoosh', 'web', 'crash', 'glass', 'thud', 'footsteps', 'knock', 'door', 'metal', 'thunder', 'splash', 'roar', 'alarm', 'beep', 'ring', 'engine', 'screech', 'magic', 'boing', 'pop', 'snap', 'heartbeat', 'fire', 'rumble', 'crunch']);
 const MOOD_SET = new Set(MOODS), AMBIENCE_SET = new Set(AMBIENCES), SOUND_SET = new Set(SOUNDS);
 
-/** What the AI is asked to do with one page. */
-export function scriptInstructions() {
+/**
+ * What the AI is asked to do with one page. With `describe`, it also writes a
+ * short description of every panel (audio description), as "scene" lines.
+ */
+export function scriptInstructions({ describe = false } = {}) {
+  const scene = describe ? '{"panel":1,"x":0.5,"y":0.2,"kind":"scene","text":"Batman crouches on a rooftop in the rain, watching the street below."},' : '';
   return [
     'You transcribe comic book pages for the read-aloud feature of a comic reader app.',
     'Look at the page and list the text a reader would read, in reading order: panel by panel, and within each panel balloon by balloon.',
     'Reply with JSON only (no other text, no code fence) in exactly this shape:',
-    '{"language":"en-US","mood":"tense","intensity":2,"ambience":"city","panels":[{"panel":2,"mood":"action","intensity":3}],"lines":[{"panel":1,"x":0.42,"y":0.18,"kind":"speech","speaker":"Batman","voice":"man","tone":"normal","text":"We need to go."},{"panel":2,"x":0.6,"y":0.55,"kind":"sfx","sound":"explosion","speaker":"","voice":"man","tone":"normal","text":"Kaboom"}]}',
+    `{"language":"en-US","mood":"tense","intensity":2,"ambience":"city","panels":[{"panel":2,"mood":"action","intensity":3}],"lines":[${scene}{"panel":1,"x":0.42,"y":0.18,"kind":"speech","speaker":"Batman","voice":"man","tone":"normal","text":"We need to go."},{"panel":2,"x":0.6,"y":0.55,"kind":"sfx","sound":"explosion","speaker":"","voice":"man","tone":"normal","text":"Kaboom"}]}`,
     'Rules:',
-    '- kind: speech (speech balloon), thought (thought balloon), caption (narration box) or sfx (sound effect lettering such as BOOM).',
+    `- kind: speech (speech balloon), thought (thought balloon), caption (narration box)${describe ? ', sfx (sound effect lettering such as BOOM) or scene (your description of a panel, see below).' : ' or sfx (sound effect lettering such as BOOM).'}`,
     '- text: the exact words, but in normal sentence case instead of ALL CAPITALS, joining words split across lines. Keep the language of the page. No quotation marks around it.',
     '- x and y: the centre of the balloon, caption or sound effect, as fractions of the page width and height (0 = left or top edge, 1 = right or bottom edge), two decimals.',
     '- panel: the number of the numbered outline it sits in, or 0 when the page has no numbered outlines or it sits outside them.',
@@ -37,7 +43,16 @@ export function scriptInstructions() {
     `- ambience: the background sound of the place, one of ${AMBIENCES.join(', ')}.`,
     '- panels: only for panels whose mood, intensity or ambience differ from the page, e.g. [{"panel":3,"mood":"action","intensity":3}]; otherwise [].',
     '- Leave out page numbers, credits, logos, signs and background writing that is not dialogue, a caption or a sound effect.',
-    '- A page without text still gets mood, intensity and ambience, with "lines":[] (and "language":"und" if nothing is written).',
+    describe
+      ? '- A page without text still gets mood, intensity and ambience, and its scene lines (and "language":"und" if nothing is written).'
+      : '- A page without text still gets mood, intensity and ambience, with "lines":[] (and "language":"und" if nothing is written).',
+    ...(describe ? [
+      'Audio description: the listener may not see the page (the screen may be off), so the lines also tell what each panel shows.',
+      '- At the start of every panel, before its other lines, add one line with kind "scene" (also for a panel without text): one short sentence of at most 20 words, present tense, saying what the panel shows and what happens: who is there, what they do, and where when the place changes.',
+      '- Write it in the language of the lettering (English if nothing is written). Use the same names as in speaker; describe anyone you cannot name in a few words ("a tall man in a red cape").',
+      '- Do not repeat what the balloons say, do not read the lettering, and do not guess what is not shown.',
+      '- A scene line has only panel, x, y, kind and text: the number of its panel, and as x and y the centre of that panel.',
+    ] : []),
   ].join('\n');
 }
 
@@ -57,8 +72,11 @@ export function panelsKeyOf(rects = []) {
 const fraction = value => { const number = Number(value); return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : null; };
 const word = (value, allowed, fallback) => { const text = String(value || '').trim().toLowerCase(); return allowed.has(text) ? text : fallback; };
 
-/** Turn the AI's reply into a checked page script. Throws when there is none. */
-export function parseScript(reply, { panelCount = 0, panelsKey = '' } = {}) {
+/**
+ * Turn the AI's reply into a checked page script. Throws when there is none.
+ * `describe`: it was asked for scene descriptions (kept as `described`).
+ */
+export function parseScript(reply, { panelCount = 0, panelsKey = '', describe = false } = {}) {
   const text = String(reply || ''), start = text.indexOf('{'), end = text.lastIndexOf('}');
   if (start < 0 || end <= start) throw Object.assign(new Error('The AI did not describe this page.'), { type: 'empty_answer' });
   let data;
@@ -76,14 +94,18 @@ export function parseScript(reply, { panelCount = 0, panelsKey = '' } = {}) {
     const words = String(raw.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 600);
     if (!words) continue;
     const kind = word(raw.kind, KINDS, 'speech');
+    // Descriptions only when they were asked for; always told by the narrator.
+    if (kind === 'scene' && !describe) continue;
     const panel = Number.isInteger(Number(raw.panel)) && Number(raw.panel) >= 1 && Number(raw.panel) <= panelCount ? Number(raw.panel) : 0;
-    const line = { panel, x: fraction(raw.x), y: fraction(raw.y), kind, tone: word(raw.tone, TONES, 'normal'),
-      voice: word(raw.voice, VOICES, kind === 'caption' ? 'narrator' : 'man'), speaker: String(raw.speaker || '').trim().slice(0, 80), text: words };
+    const line = kind === 'scene'
+      ? { panel, x: fraction(raw.x), y: fraction(raw.y), kind, tone: 'normal', voice: 'narrator', speaker: 'narrator', text: words.slice(0, 300) }
+      : { panel, x: fraction(raw.x), y: fraction(raw.y), kind, tone: word(raw.tone, TONES, 'normal'),
+        voice: word(raw.voice, VOICES, kind === 'caption' ? 'narrator' : 'man'), speaker: String(raw.speaker || '').trim().slice(0, 80), text: words };
     if (kind === 'sfx') line.sound = word(raw.sound, SOUND_SET, '') || classifySound(words);
     lines.push(line);
     if (lines.length >= MAX_LINES) break;
   }
-  return { v: 1, language, panelsKey: panelCount > 0 ? panelsKey : '', ...scene, lines };
+  return { v: 1, language, panelsKey: panelCount > 0 ? panelsKey : '', ...scene, lines, ...(describe ? { described: true } : {}) };
 }
 
 // Lettered sounds -> the sound effect that plays (when the AI did not say).
@@ -105,7 +127,8 @@ export function classifySound(text) {
 }
 
 // A page read before this feature has no mood: guess one from how people speak.
-function guessMood(lines) {
+function guessMood(all) {
+  const lines = all.filter(line => line.kind !== 'scene');
   if (!lines.length) return 'calm';
   const count = tone => lines.filter(line => line.tone === tone).length, loud = count('shout') + count('angry') + count('scared');
   if (lines.some(line => line.kind === 'sfx') && loud) return 'action';
@@ -141,25 +164,30 @@ function containing(rects, x, y) {
  * The lines to read for one reading step: every line of a whole page, or the
  * lines of one panel (or part). The AI's panel numbers are used when they were
  * made for these same panels; otherwise each line goes where its centre is.
- * Sound effects are left out unless `sounds` is set (they play, not read).
+ * Sound effects are left out unless `sounds` is set (they play, not read), and
+ * scene descriptions unless `scenes` is set (they come first in their panel).
  */
-export function linesForStep(script, { rects = [], panel = 0, overview = false, panelsKey = '', numberedRects = rects, sounds = false } = {}) {
-  const lines = (Array.isArray(script?.lines) ? script.lines : []).filter(line => sounds || line.kind !== 'sfx');
+export function linesForStep(script, { rects = [], panel = 0, overview = false, panelsKey = '', numberedRects = rects, sounds = false, scenes = false } = {}) {
+  const lines = (Array.isArray(script?.lines) ? script.lines : []).filter(line => (sounds || line.kind !== 'sfx') && (scenes || line.kind !== 'scene'));
   if (overview || !lines.length) return [];
   if (!rects.length) return lines;
   const numbered = Boolean(script.panelsKey) && script.panelsKey === panelsKey;
   // The steps can hold more than the numbered panels (areas outside them).
   const same = (a, b) => Boolean(a && b) && ['x', 'y', 'width', 'height'].every(name => Math.abs(a[name] - b[name]) < 1e-6);
-  let previous = 0;
-  return lines.filter(line => {
+  const places = lines.map(line => {
     let index = -1;
     if (numbered && line.panel >= 1 && line.panel <= numberedRects.length) index = rects.findIndex(rect => same(rect, numberedRects[line.panel - 1]));
-    if (index < 0) index = containing(rects, line.x, line.y);
-    // A line with no place stays with the line before it.
-    if (index < 0) index = previous;
-    previous = index;
-    return index === panel;
+    return index < 0 ? containing(rects, line.x, line.y) : index;
   });
+  // A description with no place belongs to the panel after it (it opens it).
+  for (let index = places.length - 1, next = -1; index >= 0; index--) {
+    if (places[index] >= 0) next = places[index]; else if (lines[index].kind === 'scene' && next >= 0) places[index] = next;
+  }
+  // Any other line with no place stays with the line before it.
+  let previous = 0;
+  for (let index = 0; index < places.length; index++) { if (places[index] < 0) places[index] = previous; previous = places[index]; }
+  const step = lines.filter((line, index) => places[index] === panel);
+  return scenes ? [...step.filter(line => line.kind === 'scene'), ...step.filter(line => line.kind !== 'scene')] : step;
 }
 
 /** The best device voice for a language (exact region first, nicer voices preferred). */
@@ -185,7 +213,7 @@ const PITCH = { narrator: .97, man: .9, woman: 1.12, boy: 1.24, girl: 1.3, 'old 
 /** How one line is spoken: a little faster for shouting, softer for whispers, and so on. */
 export function utteranceSettings(line = {}, speed = 1) {
   const [rate, pitch, volume] = TONE[line.tone] || TONE.normal;
-  const thought = line.kind === 'thought', caption = line.kind === 'caption';
+  const thought = line.kind === 'thought', caption = line.kind === 'caption' || line.kind === 'scene';
   const clamp = (value, low, high) => Math.round(Math.min(high, Math.max(low, value)) * 100) / 100;
   return {
     rate: clamp(rate * (thought ? .96 : 1) * (Number(speed) > 0 ? Number(speed) : 1) * (line.voice === 'robot' ? .95 : 1), .5, 2),
@@ -240,13 +268,13 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utterance = 
   };
 }
 
-/** Ask the AI for one page's script. `image` is a base64 JPEG. */
-export async function requestPageScript({ key, image, panelCount = 0, panelsKey = '', direction = 'ltr', signal, model = READ_ALOUD_MODEL, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
+/** Ask the AI for one page's script. `image` is a base64 JPEG; `describe` adds scene descriptions. */
+export async function requestPageScript({ key, image, panelCount = 0, panelsKey = '', direction = 'ltr', describe = false, signal, model = READ_ALOUD_MODEL, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
   if (!key) throw Object.assign(new Error('No AI key.'), { type: 'no_key' });
   const response = await fetchImpl('https://api.anthropic.com/v1/messages', {
     method: 'POST', signal, credentials: 'omit', referrerPolicy: 'no-referrer',
     headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-    body: JSON.stringify({ model, max_tokens: 4096, system: scriptInstructions(), messages: [{ role: 'user', content: [
+    body: JSON.stringify({ model, max_tokens: 4096, system: scriptInstructions({ describe }), messages: [{ role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } },
       { type: 'text', text: scriptRequestNote({ direction, panelCount }) },
     ] }] }),
@@ -257,7 +285,7 @@ export async function requestPageScript({ key, image, panelCount = 0, panelsKey 
   }
   const json = await response.json();
   const reply = (Array.isArray(json?.content) ? json.content : []).filter(block => block?.type === 'text').map(block => block.text).join('');
-  return parseScript(reply, { panelCount, panelsKey });
+  return parseScript(reply, { panelCount, panelsKey, describe });
 }
 
 /** A smaller copy of the page for the AI, with the panels outlined and numbered. */

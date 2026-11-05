@@ -411,6 +411,15 @@ test('voice speed starts at normal, stays between 0.75x and 1.5x and is kept', (
   const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
   assert.equal(restored.state.settings.readerVoiceSpeed, .75, 'backups carry it');
 });
+test('listening with the screen off and scene descriptions start off, and are kept', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerScreenOff, false); assert.equal(s.state.settings.readerDescribe, false);
+  s.setSettings({readerScreenOff: true}); assert.equal(s.state.settings.readerScreenOff, true); assert.equal(s.state.settings.readerDescribe, false);
+  s.setSettings({readerDescribe: 'yes'}); assert.equal(s.state.settings.readerDescribe, false, 'anything but true or false is ignored');
+  s.setSettings({readerDescribe: true, language: 'es'}); assert.equal(s.state.settings.readerScreenOff, true);
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerScreenOff, true); assert.equal(restored.state.settings.readerDescribe, true);
+});
 test('reading changes are written quickly, exactly as a full save would write them',async()=>{
  let persisted=null,writes=0;
  const backend={async read(){return persisted},async write(text){writes++;persisted=text}};

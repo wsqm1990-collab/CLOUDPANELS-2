@@ -137,3 +137,8 @@ test('without a voice speed set, every line is said exactly as before', () => {
     assert.equal(plan.speed, old, `${voice} ${tone} ${kind}`);
   }
 });
+
+test('the narrator tells scene descriptions at the calm pace of captions', () => {
+  assert.deepEqual(voicePlan({ voice: 'narrator', kind: 'scene', tone: 'normal' }, 498), voicePlan({ voice: 'narrator', kind: 'caption', tone: 'normal' }, 498));
+  assert.equal(voicePlan({ voice: 'narrator', kind: 'scene' }, 498, { speed: 1.5 }).speed, voicePlan({ voice: 'narrator', kind: 'caption' }, 498, { speed: 1.5 }).speed);
+});
