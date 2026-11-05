@@ -303,3 +303,46 @@ export function soundTokens(ps) {
   for (const ch of String(ps || '').normalize('NFD')) { const id = KOKORO_VOCAB[ch]; if (id !== undefined) out.push(id); }
   return out;
 }
+
+// ---- Piper voices (the light, fast ones) read espeak-style sounds ----
+// The same sounds as above, written the way those voices were taught.
+const ESPEAK = [['ɜɹ', 'ɜː'], ['əɹ', 'ɚ'], ['ɑɹ', 'ɑːɹ'], ['ɔɹ', 'ɔːɹ'], ['A', 'eɪ'], ['I', 'aɪ'], ['O', 'oʊ'], ['W', 'aʊ'], ['Y', 'ɔɪ'], ['Q', 'əʊ'], ['ʤ', 'dʒ'], ['ʧ', 'tʃ'], ['T', 'ɾ'], ['ᵊ', 'ə']];
+const VOWELISH = new Set('aeiouæɑɐɒɔəɛɜɪʊʌᵻɚ');
+export function toEspeak(ps) {
+  let s = String(ps || '');
+  for (const [from, to] of ESPEAK) s = s.split(from).join(to);
+  s = s.replace(/([ɑɔɜu])(?![ːɪ])/g, '$1ː');
+  // "ee" is long when stressed (sˈiː), short when not (sˈɪɾi).
+  let out = '';
+  for (let index = 0; index < s.length; index++) {
+    const ch = s[index]; out += ch;
+    if (ch !== 'i' || s[index + 1] === 'ː') continue;
+    for (let back = index - 1; back >= 0; back--) {
+      const before = s[back];
+      if (before === 'ˈ' || before === 'ˌ') { out += 'ː'; break; }
+      if (VOWELISH.has(before) || /[\s.,!?;:]/.test(before)) break;
+    }
+  }
+  return out.replace(/…/g, '...').replace(/\s*—\s*/g, ', ').replace(/[“”"()]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** Piper's symbol list ("symbol number" per line). */
+export function parsePiperTokens(text) {
+  const map = {};
+  for (const row of String(text || '').split('\n')) {
+    if (!row) continue;
+    const cut = row.lastIndexOf(' ');
+    if (cut < 0) continue;
+    const symbol = cut === 0 ? ' ' : row.slice(0, cut), id = Number(row.slice(cut + 1));
+    if (Number.isInteger(id)) map[symbol] = id;
+  }
+  return map;
+}
+
+/** Sounds -> Piper numbers: start, each symbol followed by a pause mark, end. */
+export function piperIds(ipa, map) {
+  const ids = [map['^']];
+  for (const ch of String(ipa || '').normalize('NFD')) { const id = map[ch]; if (id !== undefined) ids.push(id, map._); }
+  ids.push(map.$);
+  return ids;
+}

@@ -27,7 +27,7 @@ export function scriptInstructions() {
     '- x and y: the centre of the balloon, caption or sound effect, as fractions of the page width and height (0 = left or top edge, 1 = right or bottom edge), two decimals.',
     '- panel: the number of the numbered outline it sits in, or 0 when the page has no numbered outlines or it sits outside them.',
     '- speaker: the character speaking (their name if the page shows it, otherwise a short description such as "old man"); "narrator" for captions. Use the same name for the same character on every page.',
-    '- voice: one of narrator, man, woman, boy, girl, old man, old woman, creature, robot.',
+    '- voice: one of narrator, man, woman, boy, girl, old man, old woman, creature, robot. Use boy or girl only for young children; teenagers are man or woman. Old man and old woman are for the elderly.',
     '- tone: one of normal, shout, whisper, sad, angry, scared, laugh.',
     '- language: the BCP 47 code of the lettering, such as en-US, pt-BR or es-ES.',
     `- sound (sound effects only): what it sounds like, one of ${SOUNDS.join(', ')}.`,

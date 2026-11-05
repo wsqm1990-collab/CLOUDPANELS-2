@@ -1,12 +1,12 @@
 // Natural voices for read aloud (optional, English): a cast of free AI voices
-// that run on this device. Men sound like men, women like women, and every
-// character keeps the same voice. The voices are downloaded once.
+// that run on this device (Piper, light and fast: one model with hundreds of
+// voices). Men sound like men, women like women, and every character keeps
+// the same voice. The voices are downloaded once.
 
 export const TTS_FILES = Object.freeze([
-  { name: 'kokoro-v1.0-int8.onnx', size: 92361271 },
+  { name: 'piper-en_US-libritts_r-medium.onnx', size: 78529840 },
   { name: 'ort-wasm-simd-threaded.wasm', size: 12644565 },
-  { name: 'voices-en-v1.bin', size: 11489280 },
-  { name: 'voices-en-v1.json', size: 843 },
+  { name: 'piper-en_US-libritts_r-medium-tokens.txt', size: 954 },
   { name: 'lexicon-en-us-v1.txt', size: 4574576 },
 ]);
 export const TTS_BYTES = TTS_FILES.reduce((sum, file) => sum + file.size, 0);
@@ -25,41 +25,61 @@ export function naturalVoiceSupported(scope = globalThis) {
   return typeof scope.Worker === 'function' && typeof scope.WebAssembly === 'object' && Boolean(scope.AudioContext || scope.webkitAudioContext) && typeof scope.BigInt64Array === 'function';
 }
 
-// Best voices first: the first named characters get them.
+// Best voices first: the first named characters get them. The numbers are
+// voices of the model, picked for clear sound (men around 110-150 Hz, women
+// around 180-250 Hz).
 export const CAST = Object.freeze({
-  narrator: ['am_fenrir'],
-  man: ['am_michael', 'am_puck', 'bm_george', 'bm_fable', 'am_liam', 'bm_daniel'],
-  woman: ['af_heart', 'af_bella', 'af_sarah', 'bf_emma', 'af_aoede', 'af_kore', 'af_nova', 'bf_isabella'],
-  boy: ['am_eric', 'af_sky'],
-  girl: ['af_jessica', 'af_bella'],
-  'old man': ['bm_lewis', 'am_onyx'],
-  'old woman': ['af_alloy', 'bf_isabella'],
-  creature: ['am_onyx'],
-  robot: ['am_echo'],
+  narrator: [498],
+  man: [677, 334, 410, 784, 736, 752],
+  woman: [131, 46, 238, 312, 783, 567, 623],
+  boy: [602, 486],
+  girl: [693, 94],
+  'old man': [522],
+  'old woman': [433],
+  creature: [522],
+  robot: [410],
 });
 const GENERIC = /^(?:|narrator|man|woman|boy|girl|old man|old woman|creature|robot|voice|someone|unknown|crowd|people|men|women|guard|soldier|thug|cop|police|officer|kid|child)$/;
+const TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'doctor', 'prof', 'professor', 'aunt', 'uncle', 'captain', 'officer', 'agent', 'sir', 'lady', 'lord', 'king', 'queen', 'young', 'old', 'big', 'little', 'the', 'and', 'man', 'woman', 'boy', 'girl', 'guy', 'kid']);
+const FEMALE = new Set(['woman', 'girl', 'old woman']);
+const nameWords = name => name.replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(word => word.length >= 3 && !TITLES.has(word));
 
 /** Gives each character a voice and keeps it for the whole comic. */
 export function createCast() {
-  const given = new Map(), taken = new Map();
+  const given = new Map(), taken = new Map(), named = [];
+  function lookup(line = {}) {
+    const kind = CAST[line.voice] ? line.voice : line.kind === 'caption' ? 'narrator' : 'man';
+    const name = String(line.speaker || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (GENERIC.test(name)) {
+      const key = `${kind}|`;
+      if (!given.has(key)) given.set(key, { voice: CAST[kind][0], kind });
+      return given.get(key);
+    }
+    const key = `name|${name}`;
+    if (given.has(key)) return given.get(key);
+    // "Peter" and "Peter Parker", or "Mr. Osborn" and "Norman Osborn", are the
+    // same character: they keep the first voice (and its kind).
+    const words = nameWords(name), female = FEMALE.has(kind);
+    const match = named.find(entry => entry.female === female && ((words.length === 1 && entry.words.includes(words[0])) || (entry.words.length === 1 && words.includes(entry.words[0]))));
+    if (match) { given.set(key, match.cast); return match.cast; }
+    const pool = CAST[kind], used = taken.get(kind) || new Set();
+    const cast = { voice: pool.find(id => !used.has(id)) ?? pool[used.size % pool.length], kind };
+    used.add(cast.voice); taken.set(kind, used); given.set(key, cast);
+    named.push({ words, female, cast });
+    return cast;
+  }
   return {
-    voiceFor(line = {}) {
-      const kind = CAST[line.voice] ? line.voice : line.kind === 'caption' ? 'narrator' : 'man';
-      const name = String(line.speaker || '').trim().toLowerCase().replace(/\s+/g, ' ');
-      const key = `${kind}|${GENERIC.test(name) ? '' : name}`;
-      if (given.has(key)) return given.get(key);
-      const pool = CAST[kind], used = taken.get(kind) || new Set();
-      const voice = GENERIC.test(name) ? pool[0] : pool.find(id => !used.has(id)) || pool[used.size % pool.length];
-      used.add(voice); taken.set(kind, used); given.set(key, voice);
-      return voice;
-    },
-    reset() { given.clear(); taken.clear(); },
+    voiceFor: line => lookup(line).voice,
+    kindFor: line => lookup(line).kind,
+    /** How this line is said: the character's voice, at their pitch, in the line's tone. */
+    plan: (line = {}, options) => { const cast = lookup(line); return voicePlan({ ...line, voice: cast.kind }, cast.voice, options); },
+    reset() { given.clear(); taken.clear(); named.length = 0; },
   };
 }
 
-// How a line is said: pitch for children and creatures, pace and loudness by tone.
-const PITCH = { boy: 1.1, girl: 1.12, creature: .8, 'old man': .97, 'old woman': .98 };
-const TONE_SPEED = { normal: 1, shout: 1.08, angry: 1.05, scared: 1.14, sad: .88, whisper: .93, laugh: 1.05 };
+// How a line is said: a touch of pitch for children and creatures, pace and loudness by tone.
+const PITCH = { boy: 1.05, girl: 1.04, creature: .8, 'old man': .97, 'old woman': .98 };
+const TONE_SPEED = { normal: 1, shout: 1.08, angry: 1.05, scared: 1.12, sad: .88, whisper: .93, laugh: 1.05 };
 const TONE_GAIN = { normal: 1, shout: 1, angry: 1, scared: .95, sad: .82, whisper: .62, laugh: 1 };
 
 export function voicePlan(line = {}, voice, { speed = 1 } = {}) {
@@ -79,7 +99,7 @@ export function voiceEngineCount(scope = globalThis) {
 
 /** The voice engine on the main side: loads the workers, asks for lines, keeps recent ones. */
 export function createNaturalVoice({ base = ttsBase(), ortUrl = new URL('vendor/ort/ort.wasm.bundle.min.mjs', globalThis.document?.baseURI || globalThis.location?.href).href,
-  workerFactory = () => new Worker(new URL('tts-worker.js', globalThis.document?.baseURI || globalThis.location?.href), { type: 'module' }), files = TTS_FILES, keep = 80, engines = voiceEngineCount() } = {}) {
+  workerFactory = () => new Worker(new URL('tts-worker.js', globalThis.document?.baseURI || globalThis.location?.href), { type: 'module' }), files = TTS_FILES, keep = 80, engines = 1 } = {}) {
   let state = 'idle', failure = '', loading = null, nextId = 1;
   const progress = { loaded: 0, total: files.reduce((sum, file) => sum + file.size, 0), preparing: false };
   // A second engine only where the browser runs in 64-bit mode (32-bit Chrome cannot hold two).

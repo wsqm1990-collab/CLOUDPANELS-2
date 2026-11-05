@@ -18,7 +18,7 @@ test('every character keeps one voice; men, women and the narrator differ', () =
 test('tone and kind of voice set pace, pitch and loudness', () => {
   const shout = voicePlan({ tone: 'shout', voice: 'man' }, 'am_michael'), sad = voicePlan({ tone: 'sad', voice: 'woman' }, 'af_heart');
   assert.ok(shout.speed > 1 && sad.speed < 1 && sad.gain < shout.gain);
-  const girl = voicePlan({ voice: 'girl' }, 'af_jessica');
+  const girl = voicePlan({ voice: 'girl' }, CAST.girl[0]);
   assert.ok(girl.rate > 1 && Math.abs(girl.speed * girl.rate - 1) < .02, 'children are higher at the same pace');
   assert.equal(voicePlan({ voice: 'robot' }, 'am_echo').effect, 'robot');
   assert.equal(voicePlan({ voice: 'creature' }, 'am_onyx').effect, 'creature');
@@ -32,7 +32,7 @@ test('the voice files come from the website (also for the iPad app) and are size
   assert.equal(ttsBase({ protocol: 'https:', hostname: 'localhost', port: '' }, 'https://localhost/'), 'https://wsqm1990-collab.github.io/CLOUDPANELS-2/tts/', 'the Android app');
   assert.equal(ttsBase({ protocol: 'http:', hostname: '127.0.0.1', port: '8100', href: 'http://127.0.0.1:8100/' }, 'http://127.0.0.1:8100/'), 'http://127.0.0.1:8100/tts/');
   assert.equal(TTS_BYTES, TTS_FILES.reduce((sum, file) => sum + file.size, 0));
-  assert.ok(TTS_BYTES > 100e6 && TTS_BYTES < 130e6);
+  assert.ok(TTS_BYTES > 80e6 && TTS_BYTES < 110e6, String(TTS_BYTES));
   assert.equal(voiceEngineCount({ navigator: { hardwareConcurrency: 8, deviceMemory: 8, userAgent: 'Linux; Android 11' } }), 2);
   assert.equal(voiceEngineCount({ navigator: { hardwareConcurrency: 8, deviceMemory: 4, userAgent: 'Linux; Android 11' } }), 1);
   assert.equal(voiceEngineCount({ navigator: { hardwareConcurrency: 6, userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_0)' } }), 1, 'one on the iPad (3 GB)');
@@ -100,4 +100,19 @@ test('the voice engine asks the device for less memory, stepping down if refused
   smallerMemory(scope); assert.equal(scope.WebAssembly.Memory.cloudpanels, true, 'wrapped once');
   const none = { WebAssembly: { Memory: class { constructor() { throw new RangeError('no'); } } } };
   smallerMemory(none); assert.throws(() => new none.WebAssembly.Memory({ initial: 1, maximum: 65536, shared: true }), RangeError);
+});
+
+test('the same character keeps one voice even when the AI names them differently', () => {
+  const cast = createCast();
+  const peter = cast.voiceFor({ voice: 'man', speaker: 'Peter' });
+  assert.equal(cast.voiceFor({ voice: 'man', speaker: 'Peter Parker' }), peter, 'first name, then full name');
+  assert.equal(cast.voiceFor({ voice: 'boy', speaker: 'Peter' }), peter, 'marked as a boy on another page: still his voice');
+  assert.equal(cast.plan({ voice: 'boy', speaker: 'Peter', text: 'Hi.' }).rate, 1, '...and his pitch (no child pitch for him)');
+  const osborn = cast.voiceFor({ voice: 'man', speaker: 'Norman Osborn' });
+  assert.equal(cast.voiceFor({ voice: 'man', speaker: 'Mr. Osborn' }), osborn, 'titles are ignored');
+  assert.notEqual(cast.voiceFor({ voice: 'old man', speaker: 'Ben Parker' }), peter, 'two full names that only share a family name are two people');
+  const may = cast.voiceFor({ voice: 'woman', speaker: 'Aunt May' });
+  assert.ok(CAST.woman.includes(may));
+  assert.equal(cast.voiceFor({ voice: 'old woman', speaker: 'May' }), may, 'Aunt May and May');
+  assert.notEqual(cast.voiceFor({ voice: 'woman', speaker: 'Mary Parker' }), peter, 'a woman never takes a man\'s voice');
 });

@@ -1,12 +1,13 @@
-// Natural voices (optional): runs the free Kokoro voice model on this device,
-// away from the page so reading and turning pages stay smooth. The files are
-// downloaded once into this device's storage; nothing is sent anywhere.
-import { parseLexicon, createPhonemizer, chunkSounds, soundTokens } from './tts-text.js';
+// Natural voices (optional): runs a free, light voice model (Piper, many
+// voices in one) on this device, away from the page so reading and turning
+// pages stay smooth. The files are downloaded once into this device's storage;
+// nothing is sent anywhere.
+import { parseLexicon, createPhonemizer, chunkSounds, toEspeak, parsePiperTokens, piperIds } from './tts-text.js';
 import { smallerMemory } from './tts-memory.js';
 
-const CACHE = 'cloudpanels-voices-v1';
-const ROWS = 510, SIZE = 256;
-let failedWith = '', ready = null, session = null, ort = null, phonemizer = null, voicePack = null, names = null, voiceIndex = new Map();
+const CACHE = 'cloudpanels-voices-v2', OLD_CACHES = ['cloudpanels-voices-v1'];
+const RATE = 22050, NOISE = .333, NOISE_W = .333;
+let failedWith = '', ready = null, session = null, ort = null, phonemizer = null, symbols = null, names = null;
 const cancelled = new Set();
 let queue = Promise.resolve();
 
@@ -93,8 +94,17 @@ async function download(storage, base, file, progress) {
   return bytes.buffer;
 }
 
+// The first voices (about 121 MB) are no longer used: their space is given back.
+async function forgetOldVoices() {
+  for (const name of OLD_CACHES) {
+    try { if (self.caches) await caches.delete(name); } catch {}
+    try { await new Promise(resolve => { const request = indexedDB.deleteDatabase(name); request.onsuccess = request.onerror = request.onblocked = () => resolve(); }); } catch {}
+  }
+}
+
 async function load({ base, files, ortUrl }) {
   const started = performance.now();
+  void forgetOldVoices();
   const cache = await openStorage(base);
   const total = files.reduce((sum, file) => sum + (file.size || 0), 0), done = new Map();
   let lastPost = 0;
@@ -103,13 +113,12 @@ async function load({ base, files, ortUrl }) {
     const now = performance.now();
     if (now - lastPost > 120) { lastPost = now; post({ type: 'progress', loaded: [...done.values()].reduce((a, b) => a + b, 0), total }); }
   };
-  const byName = name => files.find(file => file.name.endsWith(name));
+  const byName = name => files.find(file => file.name.includes(name));
   // One file at a time keeps memory low on phones.
   const model = await download(cache, base, byName('.onnx'), progressFor(byName('.onnx')));
   const wasm = await download(cache, base, byName('.wasm'), progressFor(byName('.wasm')));
-  const pack = await download(cache, base, byName('.bin'), progressFor(byName('.bin')));
-  const index = await download(cache, base, byName('.json'), progressFor(byName('.json')));
-  const lexicon = await download(cache, base, byName('.txt'), progressFor(byName('.txt')));
+  const tokens = await download(cache, base, byName('tokens'), progressFor(byName('tokens')));
+  const lexicon = await download(cache, base, byName('lexicon'), progressFor(byName('lexicon')));
   post({ type: 'progress', loaded: total, total, preparing: true });
   smallerMemory();
   ort = await import(ortUrl);
@@ -119,52 +128,46 @@ async function load({ base, files, ortUrl }) {
   ort.env.logLevel = 'error';
   try { session = await ort.InferenceSession.create(new Uint8Array(model), { executionProviders: ['wasm'], graphOptimizationLevel: 'all' }); }
   catch (error) { throw new Error(/memory|RangeError|allocat/i.test(String(error?.message || error) + (error?.name || '')) ? 'This device did not have enough free memory for the voices. Close other apps and try again.' : `The voice engine could not start (${String(error?.message || error).slice(0, 120)}).`); }
-  names = {
-    tokens: session.inputNames.find(name => /token|input_ids/.test(name)) || session.inputNames[0],
-    style: session.inputNames.find(name => /style/.test(name)) || session.inputNames[1],
-    speed: session.inputNames.find(name => /speed/.test(name)) || session.inputNames[2],
-  };
-  voicePack = new Float32Array(pack);
-  const info = JSON.parse(new TextDecoder().decode(index));
-  voiceIndex = new Map(info.voices.map(voice => [voice.name, voice.offset / 4]));
+  const has = name => session.inputNames.includes(name);
+  names = { input: has('input') ? 'input' : session.inputNames[0], lengths: has('input_lengths') ? 'input_lengths' : session.inputNames[1], scales: has('scales') ? 'scales' : session.inputNames[2], speaker: has('sid') ? 'sid' : '' };
+  symbols = parsePiperTokens(new TextDecoder().decode(tokens));
   phonemizer = createPhonemizer(parseLexicon(new TextDecoder().decode(lexicon)));
-  return { ms: Math.round(performance.now() - started), voices: [...voiceIndex.keys()] };
-}
-
-function styleFor(voice, count) {
-  const start = voiceIndex.get(voice) ?? voiceIndex.values().next().value;
-  const row = Math.min(Math.max(count, 0), ROWS - 1);
-  return voicePack.slice(start + row * SIZE, start + (row + 1) * SIZE);
+  return { ms: Math.round(performance.now() - started) };
 }
 
 async function say({ id, text, voice, speed = 1 }) {
   if (cancelled.has(id)) { cancelled.delete(id); post({ type: 'skipped', id }); return; }
   const started = performance.now();
   const sounds = phonemizer.phonemize(text), pieces = chunkSounds(sounds), audio = [];
+  // These voices speak briskly: a little slower reads clearer on a phone.
+  const pace = 1.07 / Math.min(1.8, Math.max(.5, Number(speed) || 1));
   for (const piece of pieces) {
-    const tokens = soundTokens(piece);
-    if (!tokens.length) continue;
-    const ids = new BigInt64Array(tokens.length + 2);
-    tokens.forEach((token, index) => { ids[index + 1] = BigInt(token); });
+    const list = piperIds(toEspeak(piece), symbols);
+    if (list.length <= 2) continue;
+    const ids = BigInt64Array.from(list, BigInt);
     const feeds = {
-      [names.tokens]: new ort.Tensor('int64', ids, [1, ids.length]),
-      [names.style]: new ort.Tensor('float32', styleFor(voice, tokens.length), [1, SIZE]),
-      [names.speed]: new ort.Tensor('float32', new Float32Array([Math.min(1.8, Math.max(.5, Number(speed) || 1))]), [1]),
+      [names.input]: new ort.Tensor('int64', ids, [1, ids.length]),
+      [names.lengths]: new ort.Tensor('int64', BigInt64Array.from([BigInt(ids.length)]), [1]),
+      [names.scales]: new ort.Tensor('float32', new Float32Array([NOISE, pace, NOISE_W]), [3]),
     };
+    if (names.speaker) feeds[names.speaker] = new ort.Tensor('int64', BigInt64Array.from([BigInt(Math.max(0, Math.round(Number(voice) || 0)))]), [1]);
     const result = await session.run(feeds);
     const output = result[session.outputNames[0]];
     audio.push(new Float32Array(output.data));
     output.dispose?.();
     if (cancelled.has(id)) { cancelled.delete(id); post({ type: 'skipped', id }); return; }
   }
-  const gap = Math.round(24000 * .12), length = audio.reduce((sum, part) => sum + part.length, 0) + gap * Math.max(0, audio.length - 1);
+  const gap = Math.round(RATE * .12), length = audio.reduce((sum, part) => sum + part.length, 0) + gap * Math.max(0, audio.length - 1);
   const samples = new Float32Array(length);
   let offset = 0;
   for (const part of audio) { samples.set(part, offset); offset += part.length + gap; }
   // Soft edges: no click at the start or the end.
   const fade = Math.min(240, samples.length >> 2);
   for (let index = 0; index < fade; index++) { const k = index / fade; samples[index] *= k; samples[samples.length - 1 - index] *= k; }
-  post({ type: 'audio', id, samples, sampleRate: 24000, ms: Math.round(performance.now() - started), sounds }, [samples.buffer]);
+  // Each voice is brought to the same loudness.
+  let peak = 0; for (let index = 0; index < samples.length; index++) peak = Math.max(peak, Math.abs(samples[index]));
+  if (peak > 0) { const k = .9 / peak; for (let index = 0; index < samples.length; index++) samples[index] *= k; }
+  post({ type: 'audio', id, samples, sampleRate: RATE, ms: Math.round(performance.now() - started), sounds }, [samples.buffer]);
 }
 
 self.onmessage = event => {

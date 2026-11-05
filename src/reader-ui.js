@@ -7,7 +7,7 @@ import { stepReadingPosition, spreadPartners } from './reader-position.js';
 import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker, shrinkPage, fitInside } from './page-thumbnails.js';
 import { createKeepAwake } from './keep-awake.js';
 import { createSpeaker, linesForStep, panelsKeyOf, requestPageScript, pageImageForScript, scriptKey, ScriptDisk, sceneForStep } from './read-aloud.js';
-import { createNaturalVoice, createCast, voicePlan, naturalVoiceSupported, TTS_BYTES } from './natural-voice.js';
+import { createNaturalVoice, createCast, voicePlan, naturalVoiceSupported, TTS_BYTES, CAST } from './natural-voice.js';
 import { createSoundscape } from './soundscape.js';
 import { assistantStore, friendlyError } from './assistant.js';
 import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry, entryEdge, stripDrag, sideDragAction, sideStep } from './reader-gestures.js';
@@ -1378,7 +1378,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       await engine.load();
       const lines = [{ voice: 'man', speaker: 'test man', text: 'Hi! This is how the natural voices sound in your comics.' }, { voice: 'woman', speaker: 'test woman', text: 'And this is another voice, for the women in your stories.' }];
       for (const [index, line] of lines.entries()) {
-        const plan = voicePlan({ kind: 'speech', tone: 'normal', ...line }, index ? 'af_heart' : 'am_michael');
+        const plan = voicePlan({ kind: 'speech', tone: 'normal', ...line }, index ? CAST.woman[0] : CAST.man[0]);
         if (!index) showVoiceNote(extras.preparingVoices, 8000);
         const audio = await engine.synth(line.text, plan);
         if (aloud.on || !dialog.open) return;
@@ -1483,7 +1483,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         // Natural voices: the next page's first lines are made while this one plays.
         const voices = naturalOn() && /^en\b/i.test(script.language || '') ? natural : null;
         if (!voices || voices.state === 'failed' || !aloud.on || mine !== serial) return;
-        aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx').slice(0, 8).map(line => ({ text: line.text, plan: voicePlan(line, cast.voiceFor(line)) }));
+        aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx').slice(0, 8).map(line => ({ text: line.text, plan: cast.plan(line) }));
         voices.prepare(aloud.nextVoices);
       }).catch(() => {});
     }, () => {});
@@ -1557,7 +1557,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       try { await untilSettled(voices.load(), alive); } catch { return false; }
       if (!alive() || voices.state !== 'ready') return false;
     }
-    const plan = voicePlan(line, cast.voiceFor(line));
+    const plan = cast.plan(line);
     let audio;
     try { audio = await untilSettled(voices.synth(line.text, plan), alive); } catch { return false; }
     if (!alive() || !audio) return false;
@@ -1567,7 +1567,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function prepareVoices(script, voices, { rects, step, panelsKey, real }) {
     const wanted = [], steps = rects.length || 1;
     for (let index = rects.length ? step.panel : 0; index < steps; index++) {
-      for (const line of linesForStep(script, { rects, panel: index, overview: false, panelsKey, numberedRects: real })) wanted.push({ text: line.text, plan: voicePlan(line, cast.voiceFor(line)) });
+      for (const line of linesForStep(script, { rects, panel: index, overview: false, panelsKey, numberedRects: real })) wanted.push({ text: line.text, plan: cast.plan(line) });
     }
     voices.only([...wanted, ...aloud.nextVoices]);
     voices.prepare(wanted);

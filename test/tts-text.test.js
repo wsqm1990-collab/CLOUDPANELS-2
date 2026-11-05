@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseLexicon, createPhonemizer, normalizeText, numberWords, guessSounds, chunkSounds, soundTokens, KOKORO_VOCAB, MAX_TOKENS } from '../src/tts-text.js';
+import { parseLexicon, createPhonemizer, normalizeText, numberWords, guessSounds, chunkSounds, soundTokens, KOKORO_VOCAB, MAX_TOKENS, toEspeak, parsePiperTokens, piperIds } from '../src/tts-text.js';
 
 const lexicon = parseLexicon(readFileSync(new URL('../tts/lexicon-en-us-v1.txt', import.meta.url), 'utf8'));
 const g = createPhonemizer(lexicon);
@@ -56,4 +56,16 @@ test('long text is cut at sentence ends into pieces the model can take', () => {
   assert.equal(pieces.join(' ').replace(/\s+/g, ' '), sounds.replace(/\s+/g, ' '));
   assert.deepEqual(soundTokens('hˈɛ'), [50, 156, 86]);
   assert.deepEqual(soundTokens('ɐ̃'), [70, 17], 'nasal vowels split into vowel and tilde');
+});
+
+test('the light voices get the same sounds, written their way (espeak style)', () => {
+  assert.equal(toEspeak(g.phonemize('Later that night, Peter met his aunt at the old city lab.')), 'lˈeɪɾɚ ðæt nˈaɪt, pˈiːɾɚ mˈɛt hɪz ˈænt æt ði ˈoʊld sˈɪɾi lˈæb.');
+  assert.equal(toEspeak(g.phonemize('The water is better for the girl.')), 'ðə wˈɔːɾɚ ɪz bˈɛɾɚ fɔːɹ ðə ɡˈɜːl.');
+  assert.equal(toEspeak('bˈY'), 'bˈɔɪ', 'the oy sound stays short');
+  assert.equal(toEspeak('wˈAt — wˌʌt…'), 'wˈeɪt, wˌʌt...');
+  const tokens = parsePiperTokens(readFileSync(new URL('../tts/piper-en_US-libritts_r-medium-tokens.txt', import.meta.url), 'utf8'));
+  assert.equal(tokens[' '], 3); assert.equal(tokens['^'], 1); assert.equal(tokens.$, 2); assert.equal(tokens._, 0);
+  assert.deepEqual(piperIds('hˈi', tokens), [1, 20, 0, 120, 0, 21, 0, 2], 'start, each sound and a pause mark, end');
+  const ipa = toEspeak(g.phonemize("You're late! Where were you? With great power comes great responsibility."));
+  assert.ok([...ipa.normalize('NFD')].every(ch => tokens[ch] !== undefined), 'every sound is one the voices know: ' + ipa);
 });
