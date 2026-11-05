@@ -258,8 +258,10 @@ RARLab's UnRAR source code, used under the UnRAR license (extraction only). See
 vendor/unrar/license.txt.
 
 Natural voices (optional, downloaded only when switched on in Panel options):
-Kokoro-82M v1.0 voice model and voices — Apache License, Version 2.0 — https://github.com/hexgrad/kokoro
-(ONNX export from https://github.com/thewh1teagle/kokoro-onnx, MIT License).
+Piper voice "en_US libritts_r medium" (904 voices in one model) — Piper by the Rhasspy project
+(MIT License, https://github.com/rhasspy/piper), trained on the LibriTTS-R dataset (CC BY 4.0,
+http://www.openslr.org/141/); ONNX packaging from https://github.com/k2-fsa/sherpa-onnx
+(Apache License, Version 2.0). See tts/MODEL_CARD-piper-libritts_r.txt.
 misaki English pronunciation lists (us_gold, us_silver) — Apache License, Version 2.0 —
 https://github.com/hexgrad/misaki. See tts/LICENSE-misaki-Apache-2.0.txt.
 ONNX Runtime Web 1.24.0-dev — MIT License — Copyright (c) Microsoft Corporation —
