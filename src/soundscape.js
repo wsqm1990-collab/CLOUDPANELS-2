@@ -132,7 +132,7 @@ export const AMBIENCE = {
 
 /** The sound engine (one per reader). Give `context` to render offline. */
 export function createSoundscape({ context = null, make = () => { const Audio = globalThis.AudioContext || globalThis.webkitAudioContext; return new Audio({ latencyHint: 'playback' }); }, realtime = !context, onError = () => {} } = {}) {
-  let ctx = context, built = false, white = null, brown = null, timer = 0, sleep = 0, ducks = 0;
+  let ctx = context, built = false, white = null, brown = null, timer = 0, sleep = 0, ducks = 0, hum = null;
   let out, reverb, musicBus, musicWet, ambienceBus, sfxBus, voiceBus, voiceWet;
   const music = [], places = [], voices = new Set();
   const levels = { music: .55, ambience: .75, sfx: .75 };
@@ -497,6 +497,18 @@ export function createSoundscape({ context = null, make = () => { const Audio = 
     });
   }
   function stopVoices() { for (const entry of voices) { entry.stopped = true; try { entry.source.stop(); } catch {} } }
+  // Listening with the screen off: a 30 Hz hum far below hearing keeps the
+  // sound running between lines, so the phone does not put it to sleep.
+  function keepAlive(on) {
+    if (!on) { if (hum) { try { hum.node.stop(); hum.node.disconnect(); hum.level.disconnect(); } catch {} hum = null; } return; }
+    build();
+    if (hum) return;
+    try {
+      const node = ctx.createOscillator(), level = gain(.0016);
+      node.type = 'sine'; node.frequency.value = 30; node.connect(level); level.connect(ctx.destination); node.start();
+      hum = { node, level };
+    } catch { hum = null; }
+  }
   return {
     get context() { return ctx; },
     get active() { return built && (music.some(track => track.stopAt === null) || places.some(track => track.stopAt === null)); },
@@ -509,7 +521,8 @@ export function createSoundscape({ context = null, make = () => { const Audio = 
       try { if (ctx.state !== 'running') ctx.resume?.()?.catch?.(() => {}); } catch {}
       try { const silent = ctx.createBuffer(1, 1, ctx.sampleRate), source = ctx.createBufferSource(); source.buffer = silent; source.connect(ctx.destination); source.start(); } catch {}
     },
-    setScene, duck, playVoice, stopVoices, pump,
+    setScene, duck, playVoice, stopVoices, pump, keepAlive,
+    get keptAlive() { return Boolean(hum); },
     /** Plays a sound effect now (or at `at`); returns its length in seconds. */
     play(name, { intensity = 2, at } = {}) {
       if (!scene.effects) return 0;
@@ -523,8 +536,8 @@ export function createSoundscape({ context = null, make = () => { const Audio = 
       const now = ctx.currentTime;
       for (const track of [...music, ...places]) fadeTrack(track, now, fade);
       ducks = 0;
-      if (realtime) { clearTimeout(sleep); sleep = setTimeout(() => { if (!music.some(t => t.stopAt === null) && !places.some(t => t.stopAt === null) && !voices.size) { try { ctx.suspend?.()?.catch?.(() => {}); } catch {} } }, (fade + 2.5) * 1000); }
+      if (realtime) { clearTimeout(sleep); sleep = setTimeout(() => { if (!music.some(t => t.stopAt === null) && !places.some(t => t.stopAt === null) && !voices.size && !hum) { try { ctx.suspend?.()?.catch?.(() => {}); } catch {} } }, (fade + 2.5) * 1000); }
     },
-    close() { this.stop({ fade: .2 }); clearInterval(timer); timer = 0; if (realtime) { try { ctx?.close?.()?.catch?.(() => {}); } catch {} } ctx = context; built = false; music.length = 0; places.length = 0; },
+    close() { keepAlive(false); this.stop({ fade: .2 }); clearInterval(timer); timer = 0; if (realtime) { try { ctx?.close?.()?.catch?.(() => {}); } catch {} } ctx = context; built = false; music.length = 0; places.length = 0; },
   };
 }

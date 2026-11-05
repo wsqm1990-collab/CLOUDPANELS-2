@@ -9,6 +9,7 @@ import { createKeepAwake } from './keep-awake.js';
 import { createSpeaker, linesForStep, panelsKeyOf, requestPageScript, pageImageForScript, scriptKey, ScriptDisk, sceneForStep } from './read-aloud.js';
 import { createNaturalVoice, createCast, voicePlan, naturalVoiceSupported, TTS_BYTES, CAST } from './natural-voice.js';
 import { createSoundscape } from './soundscape.js';
+import { createBackgroundListening, backgroundListeningSupported } from './background-audio.js';
 import { assistantStore, friendlyError } from './assistant.js';
 import { rubberBand, inverseRubberBand, releaseVelocity, lockAxis, decidePageTurn, turnDuration, stepScroll, neighbourGeometry, entryEdge, stripDrag, sideDragAction, sideStep } from './reader-gestures.js';
 
@@ -199,9 +200,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   let currentURL, imageWidth = 0, imageHeight = 0, pageWidth = 0, draft = [], pointer, popup;
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetchTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
-  let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0, cameraFinish;
+  let analysisController, analysisGeneration = 0, analysisPending = false, guidedFallbackPage = -1, cameraFrame, cameraGeneration = 0, cameraFinish, cameraLand;
   let positionCommitted = false, overview = false, turning = false, guidedMode = 'whole', guidedFillFromBottom = false, spreadPages = [], lastTap, appFullscreenAsked = false;
-  const pageTransition = createPageTransition({ stage, wrap, image, overlay });
+  // With the screen off nothing is drawn, so pages change at once (no animation to wait for).
+  const pageTransition = createPageTransition({ stage, wrap, image, overlay, reducedMotion: () => document.visibilityState === 'hidden' || Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) });
   // Small pictures of the pages for the page navigator (kept on this device).
   const pageThumbs = new PageThumbnails();
   // They are made in a background worker, so a large page never stalls reading.
@@ -363,14 +365,23 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const musicOn = () => store.state.settings.readerMusic === true;
   const effectsOn = () => store.state.settings.readerSoundEffects === true;
   const voiceSpeed = () => { const value = Number(store.state.settings.readerVoiceSpeed); return value >= .75 && value <= 1.5 ? value : 1; };
+  // Listening without looking (optional, off at first): reading goes on with
+  // the screen off (Android), and the narrator says what each panel shows then
+  // (or always, with "Describe scenes with the screen on").
+  const screenOffOn = () => store.state.settings.readerScreenOff === true;
+  const describeOn = () => store.state.settings.readerDescribe === true;
+  const screenOffActive = () => readAloudEnabled() && screenOffOn() && backgroundListeningSupported();
+  const wantScenes = () => readAloudEnabled() && (describeOn() || screenOffActive());
+  const screenHidden = () => document.visibilityState === 'hidden';
+  const describingNow = () => describeOn() || (screenOffActive() && screenHidden());
   const speedText = value => `${String(Math.round(value * 100) / 100).replace('.', language() === 'en' ? '.' : ',')}×`;
   const extrasLabels = () => {
     const mb = Math.round(TTS_BYTES / 1e6);
     return language() === 'pt-BR'
-      ? { voices: 'Vozes naturais (inglês)', voicesNote: `Vozes de IA grátis, feitas neste aparelho, para quadrinhos em inglês: homens, mulheres e o narrador têm cada um a sua voz. Baixa cerca de ${mb} MB uma vez só (melhor no Wi‑Fi). Outros idiomas continuam com a voz do aparelho.`, music: 'Música de fundo', musicNote: 'Música que acompanha o clima de cada página (calma, tensa, ação…), feita neste aparelho. Grátis.', effects: 'Efeitos sonoros', effectsNote: 'Toca os sons escritos na página (BOOM, socos, tiros…) e o som do lugar (chuva, vento, cidade). Grátis.', downloading: n => `Preparando as vozes naturais… ${n}%`, preparingVoices: 'Preparando as vozes naturais…', voicesReady: 'Vozes naturais prontas.', voicesFailed: why => `As vozes naturais não iniciaram neste aparelho.${why ? ' ' + why : ''} Usando a voz do aparelho.`, onlyEnglish: 'As vozes naturais são para quadrinhos em inglês. Esta página usa a voz do aparelho.', statusIdle: 'Situação: ainda não baixadas.', statusLoading: n => `Situação: baixando… ${n}%`, statusPreparing: 'Situação: preparando…', statusReady: 'Situação: prontas.', statusFailed: why => `Situação: não iniciaram. ${why}`, test: 'Testar voz', speed: 'Velocidade da voz', speedNote: 'Vale para todas as vozes que leem os balões. 1× é a velocidade normal.' }
+      ? { voices: 'Vozes naturais (inglês)', voicesNote: `Vozes de IA grátis, feitas neste aparelho, para quadrinhos em inglês: homens, mulheres e o narrador têm cada um a sua voz. Baixa cerca de ${mb} MB uma vez só (melhor no Wi‑Fi). Outros idiomas continuam com a voz do aparelho.`, music: 'Música de fundo', musicNote: 'Música que acompanha o clima de cada página (calma, tensa, ação…), feita neste aparelho. Grátis.', effects: 'Efeitos sonoros', effectsNote: 'Toca os sons escritos na página (BOOM, socos, tiros…) e o som do lugar (chuva, vento, cidade). Grátis.', downloading: n => `Preparando as vozes naturais… ${n}%`, preparingVoices: 'Preparando as vozes naturais…', voicesReady: 'Vozes naturais prontas.', voicesFailed: why => `As vozes naturais não iniciaram neste aparelho.${why ? ' ' + why : ''} Usando a voz do aparelho.`, onlyEnglish: 'As vozes naturais são para quadrinhos em inglês. Esta página usa a voz do aparelho.', statusIdle: 'Situação: ainda não baixadas.', statusLoading: n => `Situação: baixando… ${n}%`, statusPreparing: 'Situação: preparando…', statusReady: 'Situação: prontas.', statusFailed: why => `Situação: não iniciaram. ${why}`, test: 'Testar voz', speed: 'Velocidade da voz', speedNote: 'Vale para todas as vozes que leem os balões. 1× é a velocidade normal.', screenOff: 'Continuar lendo com a tela apagada', screenOffNote: 'Bloqueie o celular e a leitura continua página após página, como um podcast, e o narrador conta o que aparece em cada quadro. Pause ou mude de página pela tela de bloqueio. Melhor com as vozes naturais (a voz do aparelho pode parar quando a tela apaga). A IA escreve as descrições: cerca de 25% a mais por página, e as páginas que ela já leu são lidas mais uma vez.', describe: 'Descrever as cenas com a tela acesa', describeNote: 'O narrador também conta o que aparece em cada quadro enquanto você olha. A IA escreve as descrições: cerca de 25% a mais por página.', mediaPage: (n, total) => `Página ${n} de ${total}` }
       : language() === 'es'
-        ? { voices: 'Voces naturales (inglés)', voicesNote: `Voces de IA gratis, hechas en este dispositivo, para cómics en inglés: hombres, mujeres y el narrador tienen cada uno su voz. Descarga unos ${mb} MB una sola vez (mejor con Wi‑Fi). Otros idiomas siguen con la voz del dispositivo.`, music: 'Música de fondo', musicNote: 'Música que sigue el ambiente de cada página (calma, tensión, acción…), hecha en este dispositivo. Gratis.', effects: 'Efectos de sonido', effectsNote: 'Reproduce los sonidos escritos en la página (BOOM, golpes, disparos…) y el sonido del lugar (lluvia, viento, ciudad). Gratis.', downloading: n => `Preparando las voces naturales… ${n}%`, preparingVoices: 'Preparando las voces naturales…', voicesReady: 'Voces naturales listas.', voicesFailed: why => `Las voces naturales no iniciaron en este dispositivo.${why ? ' ' + why : ''} Usando la voz del dispositivo.`, onlyEnglish: 'Las voces naturales son para cómics en inglés. Esta página usa la voz del dispositivo.', statusIdle: 'Estado: aún no descargadas.', statusLoading: n => `Estado: descargando… ${n}%`, statusPreparing: 'Estado: preparando…', statusReady: 'Estado: listas.', statusFailed: why => `Estado: no iniciaron. ${why}`, test: 'Probar voz', speed: 'Velocidad de la voz', speedNote: 'Vale para todas las voces que leen los globos. 1× es la velocidad normal.' }
-        : { voices: 'Natural voices (English)', voicesNote: `Free AI voices made on this device for English comics: men, women and the narrator each get their own voice. Downloads about ${mb} MB once (Wi‑Fi is best). Other languages keep the device voice.`, music: 'Background music', musicNote: 'Music that follows the mood of each page (calm, tense, action…), made on this device. Free.', effects: 'Sound effects', effectsNote: 'Plays the sounds written on the page (BOOM, punches, shots…) and the sound of the place (rain, wind, city). Free.', downloading: n => `Getting the natural voices ready… ${n}%`, preparingVoices: 'Getting the natural voices ready…', voicesReady: 'Natural voices ready.', voicesFailed: why => `The natural voices could not start on this device.${why ? ' ' + why : ''} Using the device voice.`, onlyEnglish: 'Natural voices are for English comics. This page uses the device voice.', statusIdle: 'Status: not downloaded yet.', statusLoading: n => `Status: downloading… ${n}%`, statusPreparing: 'Status: getting ready…', statusReady: 'Status: ready.', statusFailed: why => `Status: could not start. ${why}`, test: 'Test voice', speed: 'Voice speed', speedNote: 'For every voice that reads the balloons. 1× is the normal speed.' };
+        ? { voices: 'Voces naturales (inglés)', voicesNote: `Voces de IA gratis, hechas en este dispositivo, para cómics en inglés: hombres, mujeres y el narrador tienen cada uno su voz. Descarga unos ${mb} MB una sola vez (mejor con Wi‑Fi). Otros idiomas siguen con la voz del dispositivo.`, music: 'Música de fondo', musicNote: 'Música que sigue el ambiente de cada página (calma, tensión, acción…), hecha en este dispositivo. Gratis.', effects: 'Efectos de sonido', effectsNote: 'Reproduce los sonidos escritos en la página (BOOM, golpes, disparos…) y el sonido del lugar (lluvia, viento, ciudad). Gratis.', downloading: n => `Preparando las voces naturales… ${n}%`, preparingVoices: 'Preparando las voces naturales…', voicesReady: 'Voces naturales listas.', voicesFailed: why => `Las voces naturales no iniciaron en este dispositivo.${why ? ' ' + why : ''} Usando la voz del dispositivo.`, onlyEnglish: 'Las voces naturales son para cómics en inglés. Esta página usa la voz del dispositivo.', statusIdle: 'Estado: aún no descargadas.', statusLoading: n => `Estado: descargando… ${n}%`, statusPreparing: 'Estado: preparando…', statusReady: 'Estado: listas.', statusFailed: why => `Estado: no iniciaron. ${why}`, test: 'Probar voz', speed: 'Velocidad de la voz', speedNote: 'Vale para todas las voces que leen los globos. 1× es la velocidad normal.', screenOff: 'Seguir leyendo con la pantalla apagada', screenOffNote: 'Bloquea el teléfono y la lectura sigue página tras página, como un pódcast, y el narrador cuenta lo que muestra cada viñeta. Pausa o cambia de página desde la pantalla de bloqueo. Mejor con las voces naturales (la voz del dispositivo puede detenerse al apagarse la pantalla). La IA escribe las descripciones: cerca de un 25% más por página, y las páginas que ya leyó se leen una vez más.', describe: 'Describir las escenas con la pantalla encendida', describeNote: 'El narrador también cuenta lo que muestra cada viñeta mientras la miras. La IA escribe las descripciones: cerca de un 25% más por página.', mediaPage: (n, total) => `Página ${n} de ${total}` }
+        : { voices: 'Natural voices (English)', voicesNote: `Free AI voices made on this device for English comics: men, women and the narrator each get their own voice. Downloads about ${mb} MB once (Wi‑Fi is best). Other languages keep the device voice.`, music: 'Background music', musicNote: 'Music that follows the mood of each page (calm, tense, action…), made on this device. Free.', effects: 'Sound effects', effectsNote: 'Plays the sounds written on the page (BOOM, punches, shots…) and the sound of the place (rain, wind, city). Free.', downloading: n => `Getting the natural voices ready… ${n}%`, preparingVoices: 'Getting the natural voices ready…', voicesReady: 'Natural voices ready.', voicesFailed: why => `The natural voices could not start on this device.${why ? ' ' + why : ''} Using the device voice.`, onlyEnglish: 'Natural voices are for English comics. This page uses the device voice.', statusIdle: 'Status: not downloaded yet.', statusLoading: n => `Status: downloading… ${n}%`, statusPreparing: 'Status: getting ready…', statusReady: 'Status: ready.', statusFailed: why => `Status: could not start. ${why}`, test: 'Test voice', speed: 'Voice speed', speedNote: 'For every voice that reads the balloons. 1× is the normal speed.', screenOff: 'Keep reading with the screen off', screenOffNote: 'Lock the phone and the reading goes on page after page, like a podcast, and the narrator says what each panel shows. Pause or change page from the lock screen. Best with the natural voices (the device voice may stop when the screen turns off). The AI writes the descriptions: about 25% more per page, and pages it already read are read once more.', describe: 'Describe scenes with the screen on', describeNote: 'The narrator also says what each panel shows while you look at it. The AI writes the descriptions: about 25% more per page.', mediaPage: (n, total) => `Page ${n} of ${total}` };
   };
   const fullscreenSupported = () => (document.fullscreenEnabled !== false && typeof fullscreenTarget.requestFullscreen === 'function') || (document.webkitFullscreenEnabled !== false && typeof fullscreenTarget.webkitRequestFullscreen === 'function');
 
@@ -722,7 +733,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     });
   }
   function scrollToPosition(left, top, smooth = false) {
-    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const reduce = document.visibilityState === 'hidden' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     // The browser's own smooth scrolling could keep running after a page turn
     // and drag the new page down to its bottom. Our animation stops with any
     // touch or page change; a direct position also cancels a running one.
@@ -759,7 +770,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (editing) draft.forEach((rect, index) => overlay.append(drawRect(rect, index)));
     else if (guided && panelMode() && !overview && panels()[panel]) { focusRect = panels()[panel]; overlay.append(drawRect(focusRect, panel, true)); }
   }
-  function cancelCamera() { cameraGeneration++; if (cameraFrame) cancelAnimationFrame(cameraFrame); cameraFrame = undefined; cameraFinish = undefined; dialog.classList.remove('reader-guided-moving'); }
+  function cancelCamera() { cameraGeneration++; if (cameraFrame) cancelAnimationFrame(cameraFrame); cameraFrame = undefined; cameraFinish = undefined; cameraLand = undefined; dialog.classList.remove('reader-guided-moving'); }
   function layoutPage({ smooth = false, keepZoom = false, preserveWidthPosition = false, fromBottom = false, enter = 1, keepCenter = false } = {}) {
     if (!imageWidth || !imageHeight || currentPage < 0) return;
     stopMotion();
@@ -788,7 +799,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const targetX = rect.x + rect.width / 2, targetY = rect.y + rect.height / 2;
       const plus = guidedPlus(), litFrom = focusRect || wholePage();
       paintPanels();
-      const generation = cameraGeneration, identity = `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}`, reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const generation = cameraGeneration, identity = `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}`, reduce = document.visibilityState === 'hidden' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
       // Enhanced guided view: the lit part glides along with the camera
       // (zooming evenly) instead of vanishing while it moves.
       const glide = plus && smooth && !reduce ? overlay.querySelector('.panel-focus') || overlay.appendChild(drawRect(rect, panel, true)) : null;
@@ -803,7 +814,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (!smooth || reduce) { apply(1); syncGestureMode(); }
       else {
         const began = performance.now(), duration = plus ? glideDuration() : overview ? pageDuration() : 240; dialog.classList.add('reader-guided-moving');
-        const settle = () => { cameraFrame = undefined; cameraFinish = undefined; dialog.classList.remove('reader-guided-moving'); if (glide) paintPanels(); syncGestureMode(); };
+        const settle = () => { cameraFrame = undefined; cameraFinish = undefined; cameraLand = undefined; dialog.classList.remove('reader-guided-moving'); if (glide) paintPanels(); syncGestureMode(); };
         const frame = now => {
           if (generation !== cameraGeneration || identity !== `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}` || !dialog.open) return;
           const progress = Math.min(1, (now - began) / duration); apply(progress);
@@ -813,6 +824,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         // Enhanced guided view: touching the page while it glides lands the
         // camera at once, so the tap or swipe that follows works as usual.
         if (glide) cameraFinish = () => { if (generation !== cameraGeneration) return; cancelAnimationFrame(cameraFrame); apply(1); settle(); };
+        // The screen turned off mid-move: no more frames come, so it lands now.
+        cameraLand = () => { if (generation !== cameraGeneration) return; cancelAnimationFrame(cameraFrame); apply(1); settle(); };
       }
     } else {
       if (!keepZoom) {
@@ -1295,7 +1308,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const aloudToggle = popupButton(aloudRow, `${aloudText.title}: ${readAloudEnabled() ? aloudText.on : aloudText.off}`, () => {
       try { store.setSettings({ readerReadAloud: !readAloudEnabled() }); checkSaved(); observePersistence(); }
       catch (error) { statusMessage(error?.message || text().storage, true); return; }
-      hidePopup(); if (!readAloudEnabled()) { stopAloud(); natural?.dispose(); natural = null; } updateControls();
+      hidePopup(); if (!readAloudEnabled()) { stopAloud(); backgroundStop(); natural?.dispose(); natural = null; } updateControls();
       if (readAloudEnabled()) showVoiceNote(aloudText.ready, 5000);
     }, readAloudEnabled());
     aloudToggle.id = 'reader-read-aloud-toggle'; aloudToggle.setAttribute('aria-pressed', String(readAloudEnabled()));
@@ -1331,6 +1344,19 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         catch (error) { statusMessage(error?.message || text().storage, true); }
       });
       speedField.append(speedCaption, speedOutput, speedSlider); menu.append(speedNote, speedField);
+      // Listening without looking: with the screen off (phones), or always.
+      const listening = [['reader-describe-toggle', 'readerDescribe', extras.describe, extras.describeNote, describeOn]];
+      if (backgroundListeningSupported()) listening.unshift(['reader-screen-off-toggle', 'readerScreenOff', extras.screenOff, extras.screenOffNote, screenOffOn]);
+      for (const [id, setting, title, note, isOn] of listening) {
+        const listenNote = document.createElement('p'); listenNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;'; listenNote.textContent = note;
+        const listenRow = document.createElement('div'); listenRow.className = 'row'; menu.append(listenNote, listenRow);
+        const listenToggle = popupButton(listenRow, `${title}: ${isOn() ? aloudText.on : aloudText.off}`, () => {
+          try { store.setSettings({ [setting]: !isOn() }); checkSaved(); observePersistence(); }
+          catch (error) { statusMessage(error?.message || text().storage, true); return; }
+          hidePopup(); applyExtras(setting);
+        }, isOn());
+        listenToggle.id = id; listenToggle.setAttribute('aria-pressed', String(isOn()));
+      }
     }
   }
   // Switching the enhanced guided view takes effect on the page being read:
@@ -1409,6 +1435,37 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       else { natural?.dispose(); natural = null; voiceNotice = false; }
     }
     if (aloud.on && aloud.scene) { soundscape.resume(); soundscape.setScene(aloud.scene); }
+    if (setting === 'readerScreenOff') { if (aloud.on && screenOffActive()) backgroundStart(); else backgroundStop(); }
+  }
+  // Listening with the screen off: the lock screen shows the comic and its page,
+  // with play, pause and page buttons.
+  const background = createBackgroundListening();
+  function mediaInfo() {
+    const count = book?.pageCount || 0, page = (spreadPages.length > 1 ? spreadPages[0] : currentPage) + 1;
+    let artwork = [];
+    try { artwork = [{ src: new URL('icon-512.png', document.baseURI).href, sizes: '512x512', type: 'image/png' }]; } catch { /* No picture. */ }
+    return { title: comic?.metadata?.title || comic?.name || 'CloudPanels', subtitle: count && page > 0 ? extrasLabels().mediaPage(page, count) : '', artwork };
+  }
+  const mediaActions = {
+    play: () => { if (!aloud.on) startAloud(); },
+    pause: () => { if (aloud.on) stopAloud(); },
+    stop: () => { if (aloud.on) stopAloud(); },
+    nexttrack: () => turnWhileListening(1),
+    previoustrack: () => turnWhileListening(-1),
+  };
+  function backgroundStart() {
+    if (!screenOffActive()) return;
+    soundscape.resume(); soundscape.keepAlive(true);
+    background.start({ ...mediaInfo(), actions: mediaActions });
+  }
+  function backgroundStop() { soundscape.keepAlive(false); background.stop(); }
+  // Lock-screen page buttons: the page changes and reading goes on from its start.
+  function turnWhileListening(delta) {
+    if (!book || !comic || currentPage < 0 || loading || editing) return;
+    const last = spreadPages.length > 1 ? spreadPages[spreadPages.length - 1] : currentPage, target = delta > 0 ? last + 1 : currentPage - 1;
+    if (target < 0 || target >= book.pageCount) return;
+    hidePopup(); aloud.token++; aloud.key = ''; speaker.cancel(); soundscape.stopVoices();
+    void showPage(target, 0);
   }
   const aloudPosition = () => `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}:${guided}`;
   const aloudWait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -1435,12 +1492,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     startVoices(); aloud.noted = false;
     aloud.on = true; aloud.key = ''; aloud.token++;
     clearInterval(aloud.poll); aloud.poll = setInterval(aloudTick, 200);
+    backgroundStart();
     syncListenButtons(); aloudTick();
   }
   function stopAloud({ hint = '' } = {}) {
     const playing = aloud.on;
     aloud.on = false; aloud.key = ''; aloud.token++; clearInterval(aloud.poll); aloud.poll = undefined;
-    speaker.cancel(); soundscape.stop(); natural?.only([]); aloud.scene = null; aloud.nextVoices = []; syncListenButtons();
+    speaker.cancel(); soundscape.keepAlive(false); if (background.active) background.pause(); soundscape.stop(); natural?.only([]); aloud.scene = null; aloud.nextVoices = []; syncListenButtons();
     if (playing && hint) showVoiceNote(hint, 4000);
   }
   function aloudReady() {
@@ -1455,24 +1513,27 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     aloud.key = key; void aloudPlay(key);
   }
   // A page's script: from memory, from this device, or read once by the AI.
+  const scriptMemo = key => wantScenes() ? `${key}|scenes` : key;
   function aloudScript(page, { drawable, rects }) {
     const key = scriptKey(comic, page);
     if (!key) return Promise.reject(new Error(text().pageFailed));
-    const known = aloud.scripts.get(key);
+    const describe = wantScenes(), memo = scriptMemo(key);
+    const known = aloud.scripts.get(memo);
     if (known) return known;
     const promise = (async () => {
       const saved = await scriptDisk.get(key).catch(() => null);
-      if (saved) return saved;
+      // A page read before the descriptions were wanted is read once more for them.
+      if (saved && (saved.described || !describe)) return saved;
       if (!drawable?.complete || !(drawable.naturalWidth > 0)) throw new Error(text().pageFailed);
       const picture = pageImageForScript(drawable, rects), controller = new AbortController(), timer = setTimeout(() => controller.abort(), 90000);
       try {
-        const script = await requestPageScript({ key: assistantStore.key, image: picture, panelCount: rects.length, panelsKey: panelsKeyOf(rects), direction: rtl() ? 'rtl' : 'ltr', signal: controller.signal });
+        const script = await requestPageScript({ key: assistantStore.key, image: picture, panelCount: rects.length, panelsKey: panelsKeyOf(rects), direction: rtl() ? 'rtl' : 'ltr', describe, signal: controller.signal });
         void scriptDisk.put(key, script).catch(() => {});
         return script;
       } finally { clearTimeout(timer); }
     })();
-    aloud.scripts.set(key, promise);
-    promise.catch(() => { if (aloud.scripts.get(key) === promise) aloud.scripts.delete(key); });
+    aloud.scripts.set(memo, promise);
+    promise.catch(() => { if (aloud.scripts.get(memo) === promise) aloud.scripts.delete(memo); });
     if (aloud.scripts.size > 300) aloud.scripts.delete(aloud.scripts.keys().next().value);
     return promise;
   }
@@ -1480,7 +1541,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function aloudPrefetch(page) {
     if (!book || !comic || page < 0 || page >= book.pageCount || spreadActive()) return;
     const key = scriptKey(comic, page);
-    if (!key || aloud.scripts.has(key)) return;
+    if (!key || aloud.scripts.has(scriptMemo(key))) return;
     const entry = decodedEntry(page), mine = serial, id = comic.id;
     entry?.promise.then(async candidate => {
       if (mine !== serial || !aloud.on || comic?.id !== id) return;
@@ -1497,13 +1558,15 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         // Natural voices: the next page's first lines are made while this one plays.
         const voices = naturalOn() && /^en\b/i.test(script.language || '') ? natural : null;
         if (!voices || voices.state === 'failed' || !aloud.on || mine !== serial) return;
-        aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx').slice(0, 8).map(line => ({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) }));
+        const scenes = describingNow() && Boolean(script.described);
+        aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx' && (scenes || line.kind !== 'scene')).slice(0, 8).map(line => ({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) }));
         voices.prepare(aloud.nextVoices);
       }).catch(() => {});
     }, () => {});
   }
   async function aloudPlay(key) {
-    const mine = ++aloud.token; speaker.cancel(); soundscape.stopVoices(); keepAwake.activity();
+    // With the screen off allowed, listening does not keep the screen on.
+    const mine = ++aloud.token; speaker.cancel(); soundscape.stopVoices(); if (!screenOffActive()) keepAwake.activity();
     const labels = aloudLabels(), spread = spreadPages.length > 1, page = currentPage, pageId = spread ? spreadPages.join('+') : page;
     const real = spread ? [] : storedPanels(), rects = guided ? panels() : [], partsStep = partsPage(), step = { panel, overview };
     const waiting = setTimeout(() => { if (mine === aloud.token) showVoiceNote(labels.preparing, 60000); }, 350);
@@ -1517,7 +1580,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!voiceNote.hidden && voiceNote.textContent === labels.preparing) voiceNote.hidden = true;
     aloudPrefetch((spread ? spreadPages[spreadPages.length - 1] : page) + 1);
     const panelsKey = guided && !partsStep ? panelsKeyOf(real) : '', voiceLanguage = script.language || navigator.language || '';
-    const lines = linesForStep(script, { rects, panel: step.panel, overview: step.overview, panelsKey, numberedRects: real, sounds: effectsOn() });
+    // Scene descriptions: with the screen off (when allowed), or always if chosen.
+    const scenes = describingNow() && Boolean(script.described);
+    const lines = linesForStep(script, { rects, panel: step.panel, overview: step.overview, panelsKey, numberedRects: real, sounds: effectsOn(), scenes });
+    if (background.active) background.update(mediaInfo());
     // Extras: the music and background sound follow this panel (or page).
     if (musicOn() || effectsOn()) {
       const here = rects[step.panel], numbered = Boolean(script.panelsKey) && script.panelsKey === panelsKey;
@@ -1525,8 +1591,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       aloud.scene = sceneForStep(script, { panelNumber }); soundscape.setScene(aloud.scene);
     }
     const english = /^en\b/i.test(script.language || ''), voices = naturalOn() && english ? naturalEngine() : null;
-    if (naturalOn() && !english && !aloud.noted && script.lines.some(line => line.kind !== 'sfx')) { aloud.noted = true; showVoiceNote(extrasLabels().onlyEnglish, 6000); }
-    if (voices && voices.state !== 'failed') prepareVoices(script, voices, { rects, step, panelsKey, real });
+    if (naturalOn() && !english && !aloud.noted && script.lines.some(line => line.kind !== 'sfx' && (scenes || line.kind !== 'scene'))) { aloud.noted = true; showVoiceNote(extrasLabels().onlyEnglish, 6000); }
+    if (voices && voices.state !== 'failed') prepareVoices(script, voices, { rects, step, panelsKey, real, scenes });
     if (lines.length) {
       const finished = voices || effectsOn() ? await perform(lines, { mine, language: voiceLanguage, voices }) : await speakWithDevice(lines, voiceLanguage);
       if (!finished || mine !== aloud.token || !aloud.on) return;
@@ -1578,10 +1644,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     return soundscape.playVoice(audio.samples, audio.sampleRate, plan);
   }
   // Natural voices: this page's lines are made in reading order, from here on.
-  function prepareVoices(script, voices, { rects, step, panelsKey, real }) {
+  function prepareVoices(script, voices, { rects, step, panelsKey, real, scenes = false }) {
     const wanted = [], steps = rects.length || 1;
     for (let index = rects.length ? step.panel : 0; index < steps; index++) {
-      for (const line of linesForStep(script, { rects, panel: index, overview: false, panelsKey, numberedRects: real })) wanted.push({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) });
+      for (const line of linesForStep(script, { rects, panel: index, overview: false, panelsKey, numberedRects: real, scenes })) wanted.push({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) });
     }
     voices.only([...wanted, ...aloud.nextVoices]);
     voices.prepare(wanted);
@@ -1928,7 +1994,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const easeOut = 'cubic-bezier(.22,.8,.3,1)';
   let gesture, pinch, motion, pager, stretch = { x: 0, y: 0 };
   const touchPoints = new Map();
-  const reducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+  const reducedMotion = () => document.visibilityState === 'hidden' || Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
   function scrollLimits() { return { maxLeft: Math.max(0, stage.scrollWidth - stage.clientWidth), maxTop: Math.max(0, stage.scrollHeight - stage.clientHeight) }; }
   function clearStretch() { if (stretch.x || stretch.y) { stretch = { x: 0, y: 0 }; wrap.style.translate = ''; } }
   // Positions may lie past the edges while the page is stretched: the browser
@@ -2023,12 +2089,31 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const animation = node.animate([{ transform: `translate3d(${from}px,0,0)` }, { transform: `translate3d(${to}px,0,0)` }], { duration, easing: easeOut });
       p.animations.push(animation);
       animation.onfinish = animation.oncancel = () => resolve();
+      // Also when it is ended at once with the screen off (no events come then).
+      void animation.finished?.then?.(() => resolve(), () => resolve());
     });
   }
   async function pagerSettle(p, stageTo, duration) {
     const side = (p.physical || 1) * (p.width + PAGE_GAP);
     await Promise.all([animateTransform(stage, p.offset, stageTo, duration, p), animateTransform(neighbourLayer, p.offset + side, stageTo + side, duration, p)]);
     p.offset = stageTo;
+  }
+  // Two frames (the new page painted), or at once with the screen off, when no frames come.
+  function framesOrHidden() {
+    if (document.visibilityState === 'hidden') return Promise.resolve();
+    return new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; document.removeEventListener('visibilitychange', hidden); resolve(); };
+      const hidden = () => { if (document.visibilityState === 'hidden') finish(); };
+      document.addEventListener('visibilitychange', hidden);
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+    });
+  }
+  // The screen turned off while listening: whatever was moving ends at once.
+  function landMotion() {
+    cameraLand?.(); stopMotion();
+    if (pager) for (const animation of pager.animations) { try { animation.finish(); } catch { /* Already done. */ } }
+    if (pageTransition.active) pageTransition.cancel();
   }
   function pagerFinish(p) {
     if (!p || pager !== p) return;
@@ -2069,7 +2154,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // The new page sits exactly where the sliding copy shows it; swap them
     // once it is painted so nothing flickers.
     if (currentPage === p.index && typeof image.decode === 'function') { try { await Promise.race([image.decode(), new Promise(resolve => setTimeout(resolve, 350))]); } catch { /* Shown anyway. */ } }
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await framesOrHidden();
     pagerFinish(p);
   }
   // Taps, buttons and arrow keys: the same slide, when the page is ready.
@@ -2085,7 +2170,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     else {
       neighbourLayer.style.transform = 'translate3d(0,0,0)';
       if (style === 'fade' && typeof neighbourLayer.animate === 'function') {
-        await new Promise(resolve => { const fade = neighbourLayer.animate([{ opacity: 0 }, { opacity: 1 }], { duration: pageDuration(), easing: 'ease-out' }); p.animations.push(fade); fade.onfinish = fade.oncancel = () => resolve(); });
+        await new Promise(resolve => { const fade = neighbourLayer.animate([{ opacity: 0 }, { opacity: 1 }], { duration: pageDuration(), easing: 'ease-out' }); p.animations.push(fade); fade.onfinish = fade.oncancel = () => resolve(); void fade.finished?.then?.(() => resolve(), () => resolve()); });
       }
     }
     await pagerComplete(p);
@@ -2301,7 +2386,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }, true);
   function teardown({ closeDialog = true, notifyChange = true } = {}) {
     // Closing stops reading aloud; opening the next comic of the folder keeps it going.
-    if (closeDialog) { stopAloud(); natural?.dispose(); natural = null; } else { aloud.key = ''; aloud.token++; speaker.cancel(); soundscape.stopVoices(); }
+    if (closeDialog) { stopAloud(); backgroundStop(); natural?.dispose(); natural = null; } else { aloud.key = ''; aloud.token++; speaker.cancel(); soundscape.stopVoices(); }
     navigationTimer.reset(); navigationSessionShown = false; navigationPointerFocus = false; slideHintShown = false; keepAwake.stop(); thumbWorker.stop();
     const wasReading = Boolean(comic);
     if (comic && book && currentPage >= 0) persist(false, { observe: false });
@@ -2426,7 +2511,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const fullscreenFailed = () => { if (fullscreenRequest) finishFullscreenRequest(fullscreenRequest, true); };
   document.addEventListener('fullscreenerror', fullscreenFailed); document.addEventListener('webkitfullscreenerror', fullscreenFailed);
   window.addEventListener('pagehide', () => { if (comic) { persist(false, { observe: false }); observePersistence({ immediate: true }); } });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && aloud.on) stopAloud(); if (document.hidden && comic) { cancelPrefetch(); persist(false, { observe: false }); observePersistence({ immediate: true }); } else if (comic) schedulePrefetch(); });
+  document.addEventListener('visibilitychange', () => {
+    // Reading stops when the screen turns off, unless listening with the screen
+    // off is allowed: then it goes on, and any movement on the page lands at once.
+    const listening = aloud.on && screenOffActive();
+    if (document.hidden && aloud.on && !listening) stopAloud();
+    if (document.hidden && listening) landMotion();
+    if (document.hidden && comic) { if (!listening) cancelPrefetch(); persist(false, { observe: false }); observePersistence({ immediate: true }); } else if (comic) schedulePrefetch();
+  });
 
   const controller = {
     async open(value, source, { fromStart = false } = {}) {

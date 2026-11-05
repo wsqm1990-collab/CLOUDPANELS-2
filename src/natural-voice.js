@@ -84,7 +84,7 @@ const TONE_GAIN = { normal: 1, shout: 1, angry: 1, scared: .95, sad: .82, whispe
 
 export function voicePlan(line = {}, voice, { speed = 1 } = {}) {
   const rate = PITCH[line.voice] || 1, kind = line.kind;
-  const pace = (TONE_SPEED[line.tone] || 1) * (kind === 'thought' ? .96 : kind === 'caption' ? .97 : 1) * naturalSpeed(speed);
+  const pace = (TONE_SPEED[line.tone] || 1) * (kind === 'thought' ? .96 : kind === 'caption' || kind === 'scene' ? .97 : 1) * naturalSpeed(speed);
   const effect = line.voice === 'robot' ? 'robot' : line.voice === 'creature' ? 'creature' : line.tone === 'whisper' ? 'whisper' : kind === 'thought' ? 'thought' : '';
   return { voice, speed: Math.round(Math.min(2.6, Math.max(.5, pace / rate)) * 100) / 100, rate, gain: (TONE_GAIN[line.tone] || 1) * (kind === 'thought' ? .88 : 1), effect };
 }

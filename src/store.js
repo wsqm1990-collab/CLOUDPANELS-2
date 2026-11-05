@@ -21,7 +21,7 @@ const decimal = (value, fallback, min, max) => Number.isFinite(Number(value)) &&
 const newId = prefix => prefix + ':' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : now();
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -100,6 +100,10 @@ function settings(value, previous = defaultState().settings) {
     readerSoundEffects: typeof value.readerSoundEffects === 'boolean' ? value.readerSoundEffects : previous.readerSoundEffects === true,
     // How fast the voices read (0.75x to 1.5x, in steps of 0.05; 1x is normal).
     readerVoiceSpeed: Math.round(decimal(value.readerVoiceSpeed, previous.readerVoiceSpeed ?? 1, .75, 1.5) * 20) / 20,
+    // Listening without looking (optional, off at first): reading goes on with
+    // the screen off, telling what each panel shows; or describing it always.
+    readerScreenOff: typeof value.readerScreenOff === 'boolean' ? value.readerScreenOff : previous.readerScreenOff === true,
+    readerDescribe: typeof value.readerDescribe === 'boolean' ? value.readerDescribe : previous.readerDescribe === true,
     readerNavigationSeconds: [0, 3, 5, 8].includes(value.readerNavigationSeconds) ? value.readerNavigationSeconds : ([0, 3, 5, 8].includes(previous.readerNavigationSeconds) ? previous.readerNavigationSeconds : 3),
     readerSwipeResistance: [1, 2, 3, 4, 5].includes(value.readerSwipeResistance) ? value.readerSwipeResistance : ([1, 2, 3, 4, 5].includes(previous.readerSwipeResistance) ? previous.readerSwipeResistance : 3),
     readerPageAnimation: ['slide', 'fade', 'none'].includes(value.readerPageAnimation) ? value.readerPageAnimation : (['slide', 'fade', 'none'].includes(previous.readerPageAnimation) ? previous.readerPageAnimation : 'slide'),
