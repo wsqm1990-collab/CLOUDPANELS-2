@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCast, voicePlan, ttsBase, voiceEngineCount, naturalVoiceSupported, createNaturalVoice, TTS_FILES, TTS_BYTES, CAST } from '../src/natural-voice.js';
+import { createCast, voicePlan, naturalSpeed, ttsBase, voiceEngineCount, naturalVoiceSupported, createNaturalVoice, TTS_FILES, TTS_BYTES, CAST } from '../src/natural-voice.js';
 
 test('every character keeps one voice; men, women and the narrator differ', () => {
   const cast = createCast();
@@ -115,4 +115,25 @@ test('the same character keeps one voice even when the AI names them differently
   assert.ok(CAST.woman.includes(may));
   assert.equal(cast.voiceFor({ voice: 'old woman', speaker: 'May' }), may, 'Aunt May and May');
   assert.notEqual(cast.voiceFor({ voice: 'woman', speaker: 'Mary Parker' }), peter, 'a woman never takes a man\'s voice');
+});
+
+test('the voice speed setting makes every natural voice faster or slower', () => {
+  const cast = createCast(), line = { voice: 'man', speaker: 'Peter', tone: 'normal', text: 'Hi.' };
+  const normal = cast.plan(line), fast = cast.plan(line, { speed: 1.5 }), slow = cast.plan(line, { speed: .75 });
+  assert.equal(normal.speed, 1, 'at 1× nothing changes');
+  assert.equal(fast.speed, 2.14, 'the model is asked for more, so it really reads 1.5× as fast');
+  assert.equal(slow.speed, .65, 'and really 0.75× as fast');
+  assert.equal(fast.voice, normal.voice, 'same voice, only faster');
+  assert.ok(cast.plan(line, { speed: 1.25 }).speed > 1.25 && cast.plan(line, { speed: 1.25 }).speed < fast.speed);
+  assert.equal(cast.plan({ ...line, tone: 'scared' }, { speed: 1.5 }).speed, 2.4, 'tone still counts');
+  assert.equal(cast.plan({ ...line, voice: 'creature', speaker: 'Thing', tone: 'scared' }, { speed: 1.5 }).speed, 2.6, 'never beyond what still sounds right');
+});
+
+test('without a voice speed set, every line is said exactly as before', () => {
+  assert.equal(naturalSpeed(1), 1); assert.equal(naturalSpeed(), 1); assert.equal(naturalSpeed('x'), 1);
+  const tones = ['normal', 'shout', 'angry', 'scared', 'sad', 'whisper', 'laugh'], voices = ['man', 'woman', 'boy', 'girl', 'old man', 'old woman', 'creature', 'robot', 'narrator'];
+  for (const tone of tones) for (const voice of voices) for (const kind of ['speech', 'thought', 'caption']) {
+    const plan = voicePlan({ voice, tone, kind }, 1), old = Math.round(Math.min(1.6, Math.max(.6, ({ normal: 1, shout: 1.08, angry: 1.05, scared: 1.12, sad: .88, whisper: .93, laugh: 1.05 })[tone] * (kind === 'thought' ? .96 : kind === 'caption' ? .97 : 1) / (({ boy: 1.05, girl: 1.04, creature: .8, 'old man': .97, 'old woman': .98 })[voice] || 1))) * 100) / 100;
+    assert.equal(plan.speed, old, `${voice} ${tone} ${kind}`);
+  }
 });

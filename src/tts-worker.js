@@ -140,7 +140,7 @@ async function say({ id, text, voice, speed = 1 }) {
   const started = performance.now();
   const sounds = phonemizer.phonemize(text), pieces = chunkSounds(sounds), audio = [];
   // These voices speak briskly: a little slower reads clearer on a phone.
-  const pace = 1.07 / Math.min(1.8, Math.max(.5, Number(speed) || 1));
+  const pace = 1.07 / Math.min(2.6, Math.max(.4, Number(speed) || 1));
   for (const piece of pieces) {
     const list = piperIds(toEspeak(piece), symbols);
     if (list.length <= 2) continue;
