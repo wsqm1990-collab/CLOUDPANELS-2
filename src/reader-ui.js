@@ -362,13 +362,15 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const naturalOn = () => store.state.settings.readerNaturalVoice === true;
   const musicOn = () => store.state.settings.readerMusic === true;
   const effectsOn = () => store.state.settings.readerSoundEffects === true;
+  const voiceSpeed = () => { const value = Number(store.state.settings.readerVoiceSpeed); return value >= .75 && value <= 1.5 ? value : 1; };
+  const speedText = value => `${String(Math.round(value * 100) / 100).replace('.', language() === 'en' ? '.' : ',')}×`;
   const extrasLabels = () => {
     const mb = Math.round(TTS_BYTES / 1e6);
     return language() === 'pt-BR'
-      ? { voices: 'Vozes naturais (inglês)', voicesNote: `Vozes de IA grátis, feitas neste aparelho, para quadrinhos em inglês: homens, mulheres e o narrador têm cada um a sua voz. Baixa cerca de ${mb} MB uma vez só (melhor no Wi‑Fi). Outros idiomas continuam com a voz do aparelho.`, music: 'Música de fundo', musicNote: 'Música que acompanha o clima de cada página (calma, tensa, ação…), feita neste aparelho. Grátis.', effects: 'Efeitos sonoros', effectsNote: 'Toca os sons escritos na página (BOOM, socos, tiros…) e o som do lugar (chuva, vento, cidade). Grátis.', downloading: n => `Preparando as vozes naturais… ${n}%`, preparingVoices: 'Preparando as vozes naturais…', voicesReady: 'Vozes naturais prontas.', voicesFailed: why => `As vozes naturais não iniciaram neste aparelho.${why ? ' ' + why : ''} Usando a voz do aparelho.`, onlyEnglish: 'As vozes naturais são para quadrinhos em inglês. Esta página usa a voz do aparelho.', statusIdle: 'Situação: ainda não baixadas.', statusLoading: n => `Situação: baixando… ${n}%`, statusPreparing: 'Situação: preparando…', statusReady: 'Situação: prontas.', statusFailed: why => `Situação: não iniciaram. ${why}`, test: 'Testar voz' }
+      ? { voices: 'Vozes naturais (inglês)', voicesNote: `Vozes de IA grátis, feitas neste aparelho, para quadrinhos em inglês: homens, mulheres e o narrador têm cada um a sua voz. Baixa cerca de ${mb} MB uma vez só (melhor no Wi‑Fi). Outros idiomas continuam com a voz do aparelho.`, music: 'Música de fundo', musicNote: 'Música que acompanha o clima de cada página (calma, tensa, ação…), feita neste aparelho. Grátis.', effects: 'Efeitos sonoros', effectsNote: 'Toca os sons escritos na página (BOOM, socos, tiros…) e o som do lugar (chuva, vento, cidade). Grátis.', downloading: n => `Preparando as vozes naturais… ${n}%`, preparingVoices: 'Preparando as vozes naturais…', voicesReady: 'Vozes naturais prontas.', voicesFailed: why => `As vozes naturais não iniciaram neste aparelho.${why ? ' ' + why : ''} Usando a voz do aparelho.`, onlyEnglish: 'As vozes naturais são para quadrinhos em inglês. Esta página usa a voz do aparelho.', statusIdle: 'Situação: ainda não baixadas.', statusLoading: n => `Situação: baixando… ${n}%`, statusPreparing: 'Situação: preparando…', statusReady: 'Situação: prontas.', statusFailed: why => `Situação: não iniciaram. ${why}`, test: 'Testar voz', speed: 'Velocidade da voz', speedNote: 'Vale para todas as vozes que leem os balões. 1× é a velocidade normal.' }
       : language() === 'es'
-        ? { voices: 'Voces naturales (inglés)', voicesNote: `Voces de IA gratis, hechas en este dispositivo, para cómics en inglés: hombres, mujeres y el narrador tienen cada uno su voz. Descarga unos ${mb} MB una sola vez (mejor con Wi‑Fi). Otros idiomas siguen con la voz del dispositivo.`, music: 'Música de fondo', musicNote: 'Música que sigue el ambiente de cada página (calma, tensión, acción…), hecha en este dispositivo. Gratis.', effects: 'Efectos de sonido', effectsNote: 'Reproduce los sonidos escritos en la página (BOOM, golpes, disparos…) y el sonido del lugar (lluvia, viento, ciudad). Gratis.', downloading: n => `Preparando las voces naturales… ${n}%`, preparingVoices: 'Preparando las voces naturales…', voicesReady: 'Voces naturales listas.', voicesFailed: why => `Las voces naturales no iniciaron en este dispositivo.${why ? ' ' + why : ''} Usando la voz del dispositivo.`, onlyEnglish: 'Las voces naturales son para cómics en inglés. Esta página usa la voz del dispositivo.', statusIdle: 'Estado: aún no descargadas.', statusLoading: n => `Estado: descargando… ${n}%`, statusPreparing: 'Estado: preparando…', statusReady: 'Estado: listas.', statusFailed: why => `Estado: no iniciaron. ${why}`, test: 'Probar voz' }
-        : { voices: 'Natural voices (English)', voicesNote: `Free AI voices made on this device for English comics: men, women and the narrator each get their own voice. Downloads about ${mb} MB once (Wi‑Fi is best). Other languages keep the device voice.`, music: 'Background music', musicNote: 'Music that follows the mood of each page (calm, tense, action…), made on this device. Free.', effects: 'Sound effects', effectsNote: 'Plays the sounds written on the page (BOOM, punches, shots…) and the sound of the place (rain, wind, city). Free.', downloading: n => `Getting the natural voices ready… ${n}%`, preparingVoices: 'Getting the natural voices ready…', voicesReady: 'Natural voices ready.', voicesFailed: why => `The natural voices could not start on this device.${why ? ' ' + why : ''} Using the device voice.`, onlyEnglish: 'Natural voices are for English comics. This page uses the device voice.', statusIdle: 'Status: not downloaded yet.', statusLoading: n => `Status: downloading… ${n}%`, statusPreparing: 'Status: getting ready…', statusReady: 'Status: ready.', statusFailed: why => `Status: could not start. ${why}`, test: 'Test voice' };
+        ? { voices: 'Voces naturales (inglés)', voicesNote: `Voces de IA gratis, hechas en este dispositivo, para cómics en inglés: hombres, mujeres y el narrador tienen cada uno su voz. Descarga unos ${mb} MB una sola vez (mejor con Wi‑Fi). Otros idiomas siguen con la voz del dispositivo.`, music: 'Música de fondo', musicNote: 'Música que sigue el ambiente de cada página (calma, tensión, acción…), hecha en este dispositivo. Gratis.', effects: 'Efectos de sonido', effectsNote: 'Reproduce los sonidos escritos en la página (BOOM, golpes, disparos…) y el sonido del lugar (lluvia, viento, ciudad). Gratis.', downloading: n => `Preparando las voces naturales… ${n}%`, preparingVoices: 'Preparando las voces naturales…', voicesReady: 'Voces naturales listas.', voicesFailed: why => `Las voces naturales no iniciaron en este dispositivo.${why ? ' ' + why : ''} Usando la voz del dispositivo.`, onlyEnglish: 'Las voces naturales son para cómics en inglés. Esta página usa la voz del dispositivo.', statusIdle: 'Estado: aún no descargadas.', statusLoading: n => `Estado: descargando… ${n}%`, statusPreparing: 'Estado: preparando…', statusReady: 'Estado: listas.', statusFailed: why => `Estado: no iniciaron. ${why}`, test: 'Probar voz', speed: 'Velocidad de la voz', speedNote: 'Vale para todas las voces que leen los globos. 1× es la velocidad normal.' }
+        : { voices: 'Natural voices (English)', voicesNote: `Free AI voices made on this device for English comics: men, women and the narrator each get their own voice. Downloads about ${mb} MB once (Wi‑Fi is best). Other languages keep the device voice.`, music: 'Background music', musicNote: 'Music that follows the mood of each page (calm, tense, action…), made on this device. Free.', effects: 'Sound effects', effectsNote: 'Plays the sounds written on the page (BOOM, punches, shots…) and the sound of the place (rain, wind, city). Free.', downloading: n => `Getting the natural voices ready… ${n}%`, preparingVoices: 'Getting the natural voices ready…', voicesReady: 'Natural voices ready.', voicesFailed: why => `The natural voices could not start on this device.${why ? ' ' + why : ''} Using the device voice.`, onlyEnglish: 'Natural voices are for English comics. This page uses the device voice.', statusIdle: 'Status: not downloaded yet.', statusLoading: n => `Status: downloading… ${n}%`, statusPreparing: 'Status: getting ready…', statusReady: 'Status: ready.', statusFailed: why => `Status: could not start. ${why}`, test: 'Test voice', speed: 'Voice speed', speedNote: 'For every voice that reads the balloons. 1× is the normal speed.' };
   };
   const fullscreenSupported = () => (document.fullscreenEnabled !== false && typeof fullscreenTarget.requestFullscreen === 'function') || (document.webkitFullscreenEnabled !== false && typeof fullscreenTarget.webkitRequestFullscreen === 'function');
 
@@ -1317,6 +1319,18 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
           status.textContent = voiceStatus(); menu.append(status);
         }
       }
+      // Voice speed: for every voice (natural or the device's own).
+      const speedNote = document.createElement('p'); speedNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;'; speedNote.textContent = extras.speedNote;
+      const speedField = document.createElement('label'); speedField.className = 'reader-appearance-field reader-voice-speed';
+      const speedCaption = document.createElement('span'); speedCaption.textContent = extras.speed;
+      const speedOutput = document.createElement('output'); speedOutput.id = 'reader-voice-speed-value'; speedOutput.textContent = speedText(voiceSpeed());
+      const speedSlider = document.createElement('input'); speedSlider.id = 'reader-voice-speed'; speedSlider.type = 'range'; speedSlider.min = '.75'; speedSlider.max = '1.5'; speedSlider.step = '.05'; speedSlider.value = String(voiceSpeed()); speedSlider.setAttribute('aria-label', extras.speed);
+      speedSlider.addEventListener('input', () => { speedOutput.textContent = speedText(Number(speedSlider.value)); });
+      speedSlider.addEventListener('change', () => {
+        try { store.setSettings({ readerVoiceSpeed: Number(speedSlider.value) }); checkSaved(); observePersistence(); }
+        catch (error) { statusMessage(error?.message || text().storage, true); }
+      });
+      speedField.append(speedCaption, speedOutput, speedSlider); menu.append(speedNote, speedField);
     }
   }
   // Switching the enhanced guided view takes effect on the page being read:
@@ -1378,7 +1392,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       await engine.load();
       const lines = [{ voice: 'man', speaker: 'test man', text: 'Hi! This is how the natural voices sound in your comics.' }, { voice: 'woman', speaker: 'test woman', text: 'And this is another voice, for the women in your stories.' }];
       for (const [index, line] of lines.entries()) {
-        const plan = voicePlan({ kind: 'speech', tone: 'normal', ...line }, index ? CAST.woman[0] : CAST.man[0]);
+        const plan = voicePlan({ kind: 'speech', tone: 'normal', ...line }, index ? CAST.woman[0] : CAST.man[0], { speed: voiceSpeed() });
         if (!index) showVoiceNote(extras.preparingVoices, 8000);
         const audio = await engine.synth(line.text, plan);
         if (aloud.on || !dialog.open) return;
@@ -1483,7 +1497,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         // Natural voices: the next page's first lines are made while this one plays.
         const voices = naturalOn() && /^en\b/i.test(script.language || '') ? natural : null;
         if (!voices || voices.state === 'failed' || !aloud.on || mine !== serial) return;
-        aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx').slice(0, 8).map(line => ({ text: line.text, plan: cast.plan(line) }));
+        aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx').slice(0, 8).map(line => ({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) }));
         voices.prepare(aloud.nextVoices);
       }).catch(() => {});
     }, () => {});
@@ -1516,7 +1530,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (lines.length) {
       const finished = voices || effectsOn() ? await perform(lines, { mine, language: voiceLanguage, voices }) : await speakWithDevice(lines, voiceLanguage);
       if (!finished || mine !== aloud.token || !aloud.on) return;
-      await aloudWait(450);
+      await aloudWait(Math.round(450 / voiceSpeed()));
     } else await aloudWait(step.overview ? 900 : 1700);
     if (mine !== aloud.token || key !== aloud.key || !aloud.on) return;
     await aloudAdvance(key, mine);
@@ -1525,7 +1539,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   async function speakWithDevice(lines, language) {
     const lower = musicOn() || effectsOn();
     if (lower) soundscape.duck(true);
-    try { return await speaker.speak(lines, { language }); } finally { if (lower) soundscape.duck(false); }
+    try { return await speaker.speak(lines, { language, speed: voiceSpeed() }); } finally { if (lower) soundscape.duck(false); }
   }
   // With extras: sound effects play in their place, lines use the natural voices.
   async function perform(lines, { mine, language, voices }) {
@@ -1541,7 +1555,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const heard = voices && voices.state !== 'failed' ? await naturalLine(line, voices, alive) : false;
       if (!alive()) return false;
       if (!heard && !(await speakWithDevice([line], language))) return false;
-      if (index < lines.length - 1) await aloudWait(200);
+      if (index < lines.length - 1) await aloudWait(Math.round(200 / voiceSpeed()));
     }
     return alive();
   }
@@ -1557,7 +1571,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       try { await untilSettled(voices.load(), alive); } catch { return false; }
       if (!alive() || voices.state !== 'ready') return false;
     }
-    const plan = cast.plan(line);
+    const plan = cast.plan(line, { speed: voiceSpeed() });
     let audio;
     try { audio = await untilSettled(voices.synth(line.text, plan), alive); } catch { return false; }
     if (!alive() || !audio) return false;
@@ -1567,7 +1581,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function prepareVoices(script, voices, { rects, step, panelsKey, real }) {
     const wanted = [], steps = rects.length || 1;
     for (let index = rects.length ? step.panel : 0; index < steps; index++) {
-      for (const line of linesForStep(script, { rects, panel: index, overview: false, panelsKey, numberedRects: real })) wanted.push({ text: line.text, plan: cast.plan(line) });
+      for (const line of linesForStep(script, { rects, panel: index, overview: false, panelsKey, numberedRects: real })) wanted.push({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) });
     }
     voices.only([...wanted, ...aloud.nextVoices]);
     voices.prepare(wanted);

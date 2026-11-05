@@ -400,6 +400,17 @@ test('read aloud extras (natural voices, music, sound effects) start switched of
   for (const name of ['readerNaturalVoice', 'readerMusic', 'readerSoundEffects']) assert.equal(restored.state.settings[name], true, 'backups carry ' + name);
   s.setSettings({readerMusic: false}); assert.equal(s.state.settings.readerMusic, false); assert.equal(s.state.settings.readerSoundEffects, true);
 });
+test('voice speed starts at normal, stays between 0.75x and 1.5x and is kept', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerVoiceSpeed, 1);
+  s.setSettings({readerVoiceSpeed: 1.25}); assert.equal(s.state.settings.readerVoiceSpeed, 1.25);
+  s.setSettings({readerVoiceSpeed: 1.23}); assert.equal(s.state.settings.readerVoiceSpeed, 1.25, 'rounded to a step of 0.05');
+  s.setSettings({readerVoiceSpeed: 9}); assert.equal(s.state.settings.readerVoiceSpeed, 1.5);
+  s.setSettings({readerVoiceSpeed: .1}); assert.equal(s.state.settings.readerVoiceSpeed, .75);
+  s.setSettings({readerVoiceSpeed: 'fast'}); assert.equal(s.state.settings.readerVoiceSpeed, .75, 'anything else is ignored');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerVoiceSpeed, .75, 'backups carry it');
+});
 test('reading changes are written quickly, exactly as a full save would write them',async()=>{
  let persisted=null,writes=0;
  const backend={async read(){return persisted},async write(text){writes++;persisted=text}};
