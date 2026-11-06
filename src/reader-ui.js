@@ -7,7 +7,7 @@ import { stepReadingPosition, spreadPartners } from './reader-position.js';
 import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker, shrinkPage, fitInside, cropPage } from './page-thumbnails.js';
 import { toCropped, toWhole } from './page-crop.js';
 import { createKeepAwake } from './keep-awake.js';
-import { createSpeaker, linesForStep, panelsKeyOf, requestPageScript, pageImageForScript, scriptKey, ScriptDisk, sceneForStep } from './read-aloud.js';
+import { createSpeaker, linesForStep, panelsKeyOf, requestPageScript, pageImageForScript, scriptKey, ScriptDisk, sceneForStep, requestTranslations, balloonAt, TRANSLATE_NAMES } from './read-aloud.js';
 import { createNaturalVoice, createCast, voicePlan, naturalVoiceSupported, TTS_BYTES, CAST } from './natural-voice.js';
 import { createSoundscape } from './soundscape.js';
 import { createBackgroundListening, backgroundListeningSupported } from './background-audio.js';
@@ -174,6 +174,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const fitHint = document.createElement('div'); fitHint.className = 'reader-fit-hint'; fitHint.setAttribute('role', 'status'); fitHint.hidden = true; shell.append(fitHint);
   // Natural voice messages (download, ready, problems) get their own clearly visible place.
   const voiceNote = document.createElement('div'); voiceNote.className = 'reader-voice-note'; voiceNote.id = 'reader-voice-note'; voiceNote.setAttribute('role', 'status'); voiceNote.hidden = true; shell.append(voiceNote);
+  // Balloon translator (optional): pressing and holding a balloon shows its translation here.
+  const translationCard = document.createElement('div'); translationCard.className = 'reader-translation'; translationCard.id = 'reader-translation'; translationCard.setAttribute('role', 'status'); translationCard.hidden = true; shell.append(translationCard);
   let voiceNoteTimer;
   function showVoiceNote(message, duration = 5000) { clearTimeout(voiceNoteTimer); voiceNote.textContent = message; voiceNote.hidden = false; voiceNoteTimer = setTimeout(() => { voiceNote.hidden = true; }, duration); }
   buttons.fit.after(fillButton, panButton); shell.append(resumeButton); dialog.classList.add('reader-overlay-controls');
@@ -392,6 +394,20 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const wantScenes = () => readAloudEnabled() && (describeOn() || screenOffActive());
   const screenHidden = () => document.visibilityState === 'hidden';
   const describingNow = () => describeOn() || (screenOffActive() && screenHidden());
+  // Balloon translator (optional, off at first): press and hold a balloon.
+  const translateOn = () => store.state.settings.readerTranslate === true;
+  const translateTo = () => {
+    const chosen = store.state.settings.readerTranslateTo;
+    if (TRANSLATE_NAMES[chosen]) return chosen;
+    const device = String(navigator.language || '').toLowerCase();
+    return device.startsWith('pt') ? 'pt-BR' : device.startsWith('es') ? 'es' : 'en';
+  };
+  const translateLabels = () => language() === 'pt-BR'
+    ? { title: 'Traduzir balões', note: 'Segure o dedo em um balão para ver a tradução (com o texto original). Usa a IA do assistente, com a sua chave: quase nada se a página já foi lida em voz alta; senão, cerca de 1 centavo de dólar por página, uma vez só (fica guardado neste aparelho).', into: 'Traduzir para', working: 'Traduzindo…', none: 'Nenhum balão aqui. Segure o dedo em cima de um balão.', failed: why => `Não deu para traduzir agora.${why ? ' ' + why : ''}`, noKey: 'O tradutor usa a chave da IA do assistente. Adicione sua chave no Assistente primeiro.' }
+    : language() === 'es'
+      ? { title: 'Traducir globos', note: 'Mantén el dedo sobre un globo para ver la traducción (con el texto original). Usa la IA del asistente, con tu clave: casi nada si la página ya se leyó en voz alta; si no, cerca de 1 centavo de dólar por página, una sola vez (se guarda en este dispositivo).', into: 'Traducir a', working: 'Traduciendo…', none: 'No hay un globo aquí. Mantén el dedo sobre un globo.', failed: why => `No se pudo traducir ahora.${why ? ' ' + why : ''}`, noKey: 'El traductor usa la clave de IA del asistente. Añade tu clave en el Asistente primero.' }
+      : { title: 'Translate balloons', note: 'Press and hold a balloon to see it translated (with the original). Uses the assistant’s AI with your key: almost nothing if the page was read aloud; otherwise about 1 cent per page, once (kept on this device).', into: 'Translate into', working: 'Translating…', none: 'No balloon here. Press and hold on a balloon.', failed: why => `Could not translate right now.${why ? ' ' + why : ''}`, noKey: 'The translator uses the assistant’s AI key. Add your key in Assistant first.' };
+  const TRANSLATE_CHOICES = [['pt-BR', 'Português (Brasil)'], ['es', 'Español'], ['en', 'English']];
   const speedText = value => `${String(Math.round(value * 100) / 100).replace('.', language() === 'en' ? '.' : ',')}×`;
   const extrasLabels = () => {
     const mb = Math.round(TTS_BYTES / 1e6);
@@ -1387,6 +1403,26 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         listenToggle.id = id; listenToggle.setAttribute('aria-pressed', String(isOn()));
       }
     }
+    // Balloon translator: off unless chosen here, kept on this device.
+    const words = translateLabels(), translateNote = document.createElement('p'); translateNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    translateNote.textContent = words.note;
+    const translateRow = document.createElement('div'); translateRow.className = 'row'; menu.append(translateNote, translateRow);
+    const translateToggle = popupButton(translateRow, `${words.title}: ${translateOn() ? aloudText.on : aloudText.off}`, () => {
+      try { store.setSettings({ readerTranslate: !translateOn() }); checkSaved(); observePersistence(); }
+      catch (error) { statusMessage(error?.message || text().storage, true); return; }
+      hidePopup(); applyTranslate();
+    }, translateOn());
+    translateToggle.id = 'reader-translate-toggle'; translateToggle.setAttribute('aria-pressed', String(translateOn()));
+    if (translateOn()) {
+      const intoField = document.createElement('label'); intoField.className = 'reader-navigation-setting'; intoField.textContent = words.into;
+      const intoSelect = document.createElement('select'); intoSelect.id = 'reader-translate-to';
+      for (const [value, label] of TRANSLATE_CHOICES) { const option = document.createElement('option'); option.value = value; option.textContent = label; intoSelect.append(option); }
+      intoSelect.value = translateTo(); intoField.append(intoSelect); menu.append(intoField);
+      intoSelect.addEventListener('change', () => {
+        try { store.setSettings({ readerTranslateTo: intoSelect.value }); checkSaved(); observePersistence(); }
+        catch (error) { statusMessage(error?.message || text().storage, true); }
+      });
+    }
   }
   // Switching the enhanced guided view takes effect on the page being read:
   // a page without panels changes between parts and the whole page at once.
@@ -1797,6 +1833,77 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!voiceNote.hidden && voiceNote.textContent === aloudLabels().waiting) voiceNote.hidden = true;
     if (background.active) background.update(mediaInfo());
   }
+  // ---- Balloon translator: press and hold a balloon to read it translated ----
+  const translation = { token: 0, pages: new Map() };
+  function applyTranslate() { dialog.classList.toggle('reader-translate', translateOn()); if (!translateOn()) hideTranslation(); }
+  function hideTranslation() { translation.token++; translationCard.hidden = true; translationCard.replaceChildren(); }
+  function showTranslation({ translated = '', original = '', note = '' } = {}) {
+    const main = document.createElement('p'); main.className = 'reader-translation-text'; main.textContent = translated || note;
+    if (note) main.classList.add('reader-translation-note');
+    translationCard.replaceChildren(main);
+    if (original && original !== translated) { const source = document.createElement('p'); source.className = 'reader-translation-original'; source.textContent = original; translationCard.append(source); }
+    translationCard.hidden = false;
+  }
+  translationCard.addEventListener('click', hideTranslation);
+  // A page's lines with their translation: from read aloud (only the words are
+  // translated, very cheap), or the AI reads the page once and translates it.
+  function pageTranslations(pageId, target) {
+    const key = scriptKey(comic, pageId);
+    if (!key) return Promise.reject(new Error(text().pageFailed));
+    const memo = `${key}|${target}`;
+    if (translation.pages.has(memo)) return translation.pages.get(memo);
+    const picture = () => {
+      if (!image.complete || !(image.naturalWidth > 0)) throw new Error(text().pageFailed);
+      const real = spreadPages.length > 1 ? [] : storedPanels();
+      return { image: pageImageForScript(image, real), real };
+    };
+    const job = (async () => {
+      const known = aloud.scripts.get(key) || aloud.scripts.get(`${key}|scenes`);
+      let script = known ? await known.catch(() => null) : null;
+      if (!script) script = await scriptDisk.get(key).catch(() => null);
+      if (Array.isArray(script?.translations?.[target]) && script.translations[target].length === script.lines.length) return script;
+      const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 90000);
+      try {
+        if (script) {
+          const list = await requestTranslations({ key: assistantStore.key, lines: script.lines, language: target, signal: controller.signal });
+          script.translations = { ...(script.translations || {}), [target]: list };
+          void scriptDisk.put(key, script).catch(() => {});
+          return script;
+        }
+        const { image: shot, real } = picture();
+        const fresh = await requestPageScript({ key: assistantStore.key, image: shot, panelCount: real.length, panelsKey: panelsKeyOf(real), direction: rtl() ? 'rtl' : 'ltr', translate: target, characters: cast.known(30), signal: controller.signal });
+        void scriptDisk.put(key, fresh).catch(() => {});
+        return fresh;
+      } finally { clearTimeout(timer); }
+    })();
+    translation.pages.set(memo, job);
+    job.catch(() => { if (translation.pages.get(memo) === job) translation.pages.delete(memo); });
+    if (translation.pages.size > 200) translation.pages.delete(translation.pages.keys().next().value);
+    return job;
+  }
+  async function translateAt(clientX, clientY) {
+    const words = translateLabels();
+    if (!book || !comic || currentPage < 0 || loading) return;
+    try { navigator.vibrate?.(12); } catch { /* No vibration here. */ }
+    if (!assistantStore.key) { showTranslation({ note: words.noKey }); return; }
+    const box = image.getBoundingClientRect(), x = (clientX - box.left) / box.width, y = (clientY - box.top) / box.height;
+    if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) { showTranslation({ note: words.none }); return; }
+    const mine = ++translation.token, target = translateTo(), pageId = spreadPages.length > 1 ? spreadPages.join('+') : currentPage;
+    const waiting = setTimeout(() => { if (mine === translation.token) showTranslation({ note: words.working }); }, 150);
+    try {
+      const script = await pageTranslations(pageId, target);
+      if (mine !== translation.token) return;
+      const found = balloonAt(script, x, y, { aspect: imageHeight && imageWidth ? imageHeight / imageWidth : 1.5 });
+      if (!found) { showTranslation({ note: words.none }); return; }
+      const translated = script.translations?.[target]?.[found.index] || '';
+      showTranslation({ translated: translated || found.line.text, original: found.line.text });
+    } catch (error) {
+      if (mine !== translation.token) return;
+      showTranslation({ note: error?.type === 'no_key' ? words.noKey : words.failed(friendlyError(error, language()) || '') });
+    } finally { clearTimeout(waiting); }
+  }
+  // Long presses on the page belong to the translator (no system menu then).
+  stage.addEventListener('contextmenu', event => { if (translateOn()) event.preventDefault(); });
   for (const button of [listenButton, listenFloat]) button.addEventListener('click', () => { if (aloud.on) stopAloud(); else startAloud(); });
   function editToolbar() {
     const t = text(), menu = makePopup(t.edit);
@@ -1970,7 +2077,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const sessionAbort = () => request.abort(sessionController?.signal.reason);
     const activeSessionSignal = sessionController.signal;
     activeSessionSignal.addEventListener('abort', sessionAbort, { once: true });
-    hidePopup(); loading = true; activity(true); updateControls(); statusMessage(text().loadingPage(index + 1));
+    hidePopup(); hideTranslation(); loading = true; activity(true); updateControls(); statusMessage(text().loadingPage(index + 1));
     let candidate, snapshot, previousURL;
     // Pages kept in the decoded cache own their address; a two-page composite
     // belongs to this view only and is released when it is replaced.
@@ -2376,6 +2483,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   stage.addEventListener('pointerdown', event => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (!translationCard.hidden) hideTranslation();
     activePointers.add(event.pointerId);
     touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (touchPoints.size >= 2) { if (touchPoints.size === 2) beginPinch(); return; }
@@ -2391,6 +2499,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       limits, startX: raw(caught.x, limits.maxLeft, stage.clientWidth), startY: raw(caught.y, limits.maxTop, stage.clientHeight), caught: caughtMoving,
       session: serial, page: pageSerial, panel, guided, overview, scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop,
       atLeft: caught.x <= 6, atRight: caught.x >= limits.maxLeft - 6, canPanX: slideable() };
+    // Balloon translator: a finger held still on the page.
+    if (translateOn()) {
+      const g = gesture;
+      g.hold = setTimeout(() => {
+        if (gesture !== g || g.axis || g.distance > 10 || touchPoints.size > 1 || pinch) return;
+        g.held = true; void translateAt(g.x0, g.y0);
+      }, 520);
+    }
   });
   stage.addEventListener('pointermove', event => {
     if (touchPoints.has(event.pointerId)) touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -2400,6 +2516,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const now = performance.now(), dx = event.clientX - g.x0, dy = event.clientY - g.y0;
     g.samples.push({ t: now, x: event.clientX, y: event.clientY }); if (g.samples.length > 20) g.samples.shift();
     g.distance = Math.max(g.distance, Math.hypot(dx, dy));
+    if (g.hold && g.distance > 10) { clearTimeout(g.hold); g.hold = undefined; }
     // A swipe that began with a small vertical wobble is still a page turn:
     // if it soon becomes clearly sideways, undo the scroll and turn instead.
     if (g.axis === 'y' && !g.relocked && now - g.lockedAt < 260 && Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy) * 1.6 && !(isZoomed() || panMode) && (turnBy().swipe || g.canPanX)) {
@@ -2464,6 +2581,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!g || g.id !== event.pointerId) return;
     gesture = undefined;
     try { if (stage.hasPointerCapture?.(event.pointerId)) stage.releasePointerCapture(event.pointerId); } catch { /* Already released. */ }
+    // Held for the translator: nothing else happens when the finger lifts.
+    clearTimeout(g.hold); if (g.held) { suppressClicksUntil = performance.now() + 450; return; }
     const now = performance.now(), velocity = releaseVelocity(g.samples, now), dx = event.clientX - g.x0;
     if (g.axis === 'y' || g.axis === 'free' || g.axis === 'pan') { suppressClicksUntil = now + 450; glide(g.axis === 'y' ? 0 : -velocity.x, g.axis === 'pan' ? 0 : -velocity.y); return; }
     if (g.axis === 'strip') {
@@ -2491,14 +2610,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     touchPoints.delete(event.pointerId); activePointers.delete(event.pointerId);
     if (pinch) { if (touchPoints.size < 2) endPinch(); return; }
     const g = gesture; if (!g || g.id !== event.pointerId) return;
-    gesture = undefined; suppressClicksUntil = performance.now() + 600; settleGesture(g);
+    clearTimeout(g.hold); gesture = undefined; suppressClicksUntil = performance.now() + 600; settleGesture(g);
   });
   // A finger lifted outside the page (without capture) still ends its gesture.
   const forgetPointer = event => {
     if (!touchPoints.has(event.pointerId)) return;
     touchPoints.delete(event.pointerId); activePointers.delete(event.pointerId);
     if (pinch && touchPoints.size < 2) endPinch();
-    const g = gesture; if (g?.id === event.pointerId) { gesture = undefined; settleGesture(g); }
+    const g = gesture; if (g?.id === event.pointerId) { clearTimeout(g.hold); gesture = undefined; settleGesture(g); }
   };
   window.addEventListener('pointerup', forgetPointer); window.addEventListener('pointercancel', forgetPointer);
   window.addEventListener('blur', () => { touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; if (pinch?.frame) cancelAnimationFrame(pinch.frame); pinch = undefined; resetGesture(); });
@@ -2524,7 +2643,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     serial++; pageSerial++; pageTransition.cancel(); turning = false; overview = false; guidedMode = 'whole'; cancelAnalysis(); cancelCamera(); cancelPrefetch(); pageController?.abort(); sessionController?.abort();
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
-    comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
+    hideTranslation(); translation.pages.clear(); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
     clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; clearTimeout(voiceNoteTimer); voiceNote.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;
@@ -2659,6 +2778,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const pdf = /\.pdf$/i.test(source.name || value.name); statusMessage(pdf ? text().loadingPdf : text().loading);
       if (!dialog.open) dialog.showModal(); setImmersive(true); syncViewport(); activity(true, true); stage.focus({ preventScroll: true });
       if (keepAwakeEnabled()) keepAwake.start();
+      applyTranslate();
       const budget = clamp(Number(store.state.settings.cacheMiB) || 64, 16, 256) * MiB;
       rangeBuffer = new ReadingRangeBuffer(source, budget, currentSession.signal);
       try {

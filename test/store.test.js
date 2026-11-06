@@ -428,6 +428,14 @@ test('crop borders starts off and is kept', () => {
   const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
   assert.equal(restored.state.settings.readerCropBorders, true);
 });
+test('the balloon translator starts off, follows the device language until chosen, and is kept', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerTranslate, false); assert.equal(s.state.settings.readerTranslateTo, '');
+  s.setSettings({readerTranslate: true, readerTranslateTo: 'es'}); assert.equal(s.state.settings.readerTranslate, true); assert.equal(s.state.settings.readerTranslateTo, 'es');
+  s.setSettings({readerTranslateTo: 'klingon'}); assert.equal(s.state.settings.readerTranslateTo, 'es', 'only the offered languages');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerTranslate, true); assert.equal(restored.state.settings.readerTranslateTo, 'es');
+});
 test('reading changes are written quickly, exactly as a full save would write them',async()=>{
  let persisted=null,writes=0;
  const backend={async read(){return persisted},async write(text){writes++;persisted=text}};

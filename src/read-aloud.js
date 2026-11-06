@@ -15,18 +15,21 @@ export const MOODS = Object.freeze(['calm', 'happy', 'funny', 'romantic', 'sad',
 export const AMBIENCES = Object.freeze(['none', 'city', 'night', 'rain', 'storm', 'wind', 'indoors', 'fire', 'water', 'forest', 'space']);
 export const SOUNDS = Object.freeze(['explosion', 'punch', 'slash', 'gunshot', 'gunfire', 'laser', 'zap', 'whoosh', 'web', 'crash', 'glass', 'thud', 'footsteps', 'knock', 'door', 'metal', 'thunder', 'splash', 'roar', 'alarm', 'beep', 'ring', 'engine', 'screech', 'magic', 'boing', 'pop', 'snap', 'heartbeat', 'fire', 'rumble', 'crunch']);
 const MOOD_SET = new Set(MOODS), AMBIENCE_SET = new Set(AMBIENCES), SOUND_SET = new Set(SOUNDS);
+// Balloon translator (optional): the languages lines can be translated into.
+export const TRANSLATE_NAMES = Object.freeze({ 'pt-BR': 'Brazilian Portuguese', es: 'Spanish', en: 'English' });
 
 /**
  * What the AI is asked to do with one page. With `describe`, it also writes a
  * short description of every panel (audio description), as "scene" lines.
  */
-export function scriptInstructions({ describe = false } = {}) {
+export function scriptInstructions({ describe = false, translate = '' } = {}) {
   const scene = describe ? '{"panel":1,"x":0.5,"y":0.2,"kind":"scene","text":"Batman crouches on a rooftop in the rain, watching the street below."},' : '';
+  const into = TRANSLATE_NAMES[translate] || '';
   return [
     'You transcribe comic book pages for the read-aloud feature of a comic reader app.',
     'Look at the page and list the text a reader would read, in reading order: panel by panel, and within each panel balloon by balloon.',
     'Reply with JSON only (no other text, no code fence) in exactly this shape:',
-    `{"language":"en-US","mood":"tense","intensity":2,"ambience":"city","panels":[{"panel":2,"mood":"action","intensity":3}],"lines":[${scene}{"panel":1,"x":0.42,"y":0.18,"kind":"speech","speaker":"Batman","voice":"man","tone":"normal","text":"We need to go."},{"panel":2,"x":0.6,"y":0.55,"kind":"sfx","sound":"explosion","speaker":"","voice":"man","tone":"normal","text":"Kaboom"}]}`,
+    `{"language":"en-US","mood":"tense","intensity":2,"ambience":"city","panels":[{"panel":2,"mood":"action","intensity":3}],"lines":[${scene}{"panel":1,"x":0.42,"y":0.18,"kind":"speech","speaker":"Batman","voice":"man","tone":"normal","text":"We need to go."${into ? `,"translation":"(that line in ${into})"` : ''}},{"panel":2,"x":0.6,"y":0.55,"kind":"sfx","sound":"explosion","speaker":"","voice":"man","tone":"normal","text":"Kaboom"}]}`,
     'Rules:',
     `- kind: speech (speech balloon), thought (thought balloon), caption (narration box)${describe ? ', sfx (sound effect lettering such as BOOM) or scene (your description of a panel, see below).' : ' or sfx (sound effect lettering such as BOOM).'}`,
     '- text: the exact words, but in normal sentence case instead of ALL CAPITALS, joining words split across lines. Keep the language of the page. No quotation marks around it.',
@@ -43,6 +46,7 @@ export function scriptInstructions({ describe = false } = {}) {
     '- intensity: 1 (gentle), 2 or 3 (strongest).',
     `- ambience: the background sound of the place, one of ${AMBIENCES.join(', ')}.`,
     '- panels: only for panels whose mood, intensity or ambience differ from the page, e.g. [{"panel":3,"mood":"action","intensity":3}]; otherwise [].',
+    ...(into ? [`- translation (balloons and captions only): the line in ${into}, natural and short, as a comic in ${into} would say it, keeping names and the tone (slang stays slang).`] : []),
     '- Leave out page numbers, credits, logos, signs and background writing that is not dialogue, a caption or a sound effect.',
     describe
       ? '- A page without text still gets mood, intensity and ambience, and its scene lines (and "language":"und" if nothing is written).'
@@ -84,13 +88,13 @@ const word = (value, allowed, fallback) => { const text = String(value || '').tr
  * Turn the AI's reply into a checked page script. Throws when there is none.
  * `describe`: it was asked for scene descriptions (kept as `described`).
  */
-export function parseScript(reply, { panelCount = 0, panelsKey = '', describe = false } = {}) {
+export function parseScript(reply, { panelCount = 0, panelsKey = '', describe = false, translate = '' } = {}) {
   const text = String(reply || ''), start = text.indexOf('{'), end = text.lastIndexOf('}');
   if (start < 0 || end <= start) throw Object.assign(new Error('The AI did not describe this page.'), { type: 'empty_answer' });
   let data;
   try { data = JSON.parse(text.slice(start, end + 1)); } catch { throw Object.assign(new Error('The AI did not describe this page clearly.'), { type: 'empty_answer' }); }
   const language = /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(String(data?.language || '')) && data.language !== 'und' ? String(data.language) : '';
-  const lines = [];
+  const lines = [], translated = [];
   const intensityOf = value => { const number = Math.round(Number(value)); return number >= 1 && number <= 3 ? number : 0; };
   const scene = {
     mood: word(data?.mood, MOOD_SET, ''), intensity: intensityOf(data?.intensity), ambience: word(data?.ambience, AMBIENCE_SET, ''),
@@ -111,9 +115,11 @@ export function parseScript(reply, { panelCount = 0, panelsKey = '', describe = 
         voice: word(raw.voice, VOICES, kind === 'caption' ? 'narrator' : 'man'), speaker: String(raw.speaker || '').trim().slice(0, 80), text: words };
     if (kind === 'sfx') line.sound = word(raw.sound, SOUND_SET, '') || classifySound(words);
     lines.push(line);
+    translated.push(kind === 'sfx' || kind === 'scene' ? '' : String(raw.translation ?? '').replace(/\s+/g, ' ').trim().slice(0, 600));
     if (lines.length >= MAX_LINES) break;
   }
-  return { v: 1, language, panelsKey: panelCount > 0 ? panelsKey : '', ...scene, lines, ...(describe ? { described: true } : {}) };
+  return { v: 1, language, panelsKey: panelCount > 0 ? panelsKey : '', ...scene, lines, ...(describe ? { described: true } : {}),
+    ...(TRANSLATE_NAMES[translate] ? { translations: { [translate]: translated } } : {}) };
 }
 
 // Lettered sounds -> the sound effect that plays (when the AI did not say).
@@ -277,12 +283,12 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utterance = 
 }
 
 /** Ask the AI for one page's script. `image` is a base64 JPEG; `describe` adds scene descriptions. */
-export async function requestPageScript({ key, image, panelCount = 0, panelsKey = '', direction = 'ltr', describe = false, characters = [], signal, model = READ_ALOUD_MODEL, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
+export async function requestPageScript({ key, image, panelCount = 0, panelsKey = '', direction = 'ltr', describe = false, translate = '', characters = [], signal, model = READ_ALOUD_MODEL, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
   if (!key) throw Object.assign(new Error('No AI key.'), { type: 'no_key' });
   const response = await fetchImpl('https://api.anthropic.com/v1/messages', {
     method: 'POST', signal, credentials: 'omit', referrerPolicy: 'no-referrer',
     headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-    body: JSON.stringify({ model, max_tokens: 4096, system: scriptInstructions({ describe }), messages: [{ role: 'user', content: [
+    body: JSON.stringify({ model, max_tokens: 4096, system: scriptInstructions({ describe, translate }), messages: [{ role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } },
       { type: 'text', text: scriptRequestNote({ direction, panelCount, characters }) },
     ] }] }),
@@ -293,7 +299,52 @@ export async function requestPageScript({ key, image, panelCount = 0, panelsKey 
   }
   const json = await response.json();
   const reply = (Array.isArray(json?.content) ? json.content : []).filter(block => block?.type === 'text').map(block => block.text).join('');
-  return parseScript(reply, { panelCount, panelsKey, describe });
+  return parseScript(reply, { panelCount, panelsKey, describe, translate });
+}
+
+/**
+ * Balloon translator: the lines of a page already read, translated (text only,
+ * no picture, so it costs very little). Returns one translation per line, in
+ * order ('' for sound effects and scene descriptions).
+ */
+export async function requestTranslations({ key, lines = [], language = 'pt-BR', signal, model = READ_ALOUD_MODEL, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
+  if (!key) throw Object.assign(new Error('No AI key.'), { type: 'no_key' });
+  const into = TRANSLATE_NAMES[language] || TRANSLATE_NAMES['pt-BR'];
+  const wanted = lines.map((line, index) => ({ index, line })).filter(({ line }) => line && line.kind !== 'sfx' && line.kind !== 'scene' && String(line.text || '').trim());
+  const result = lines.map(() => '');
+  if (!wanted.length) return result;
+  const response = await fetchImpl('https://api.anthropic.com/v1/messages', {
+    method: 'POST', signal, credentials: 'omit', referrerPolicy: 'no-referrer',
+    headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+    body: JSON.stringify({ model, max_tokens: 2048, system: [
+      `You translate the balloons of a comic book page into ${into} for a reader who is learning the language of the comic.`,
+      `Reply with JSON only (no other text, no code fence): {"translations":["...","..."]}, one translation for each line given, in the same order.`,
+      `Translate naturally, as a comic in ${into} would say it, keeping names, the tone and slang. Explain nothing.`,
+    ].join('\n'), messages: [{ role: 'user', content: JSON.stringify(wanted.map(({ line }) => ({ speaker: String(line.speaker || ''), text: String(line.text) }))) }] }),
+  });
+  if (!response.ok) {
+    let detail = '', type = ''; try { const json = await response.json(); detail = json?.error?.message || ''; type = json?.error?.type || ''; } catch {}
+    throw Object.assign(new Error(detail || `HTTP ${response.status}`), { status: response.status, type });
+  }
+  const json = await response.json();
+  const reply = (Array.isArray(json?.content) ? json.content : []).filter(block => block?.type === 'text').map(block => block.text).join('');
+  const start = reply.indexOf('{'), end = reply.lastIndexOf('}');
+  let list = [];
+  try { list = JSON.parse(reply.slice(start, end + 1))?.translations; } catch { list = []; }
+  if (!Array.isArray(list) || !list.length) throw Object.assign(new Error('The AI did not translate this page.'), { type: 'empty_answer' });
+  wanted.forEach(({ index }, at) => { result[index] = String(list[at] ?? '').replace(/\s+/g, ' ').trim().slice(0, 600); });
+  return result;
+}
+
+/** The balloon nearest to a point of the page (fractions), or null if none is close. */
+export function balloonAt(script, x, y, { aspect = 1.5, reach = .2 } = {}) {
+  let best = null, nearest = Infinity;
+  (Array.isArray(script?.lines) ? script.lines : []).forEach((line, index) => {
+    if (!line || line.kind === 'sfx' || line.kind === 'scene' || line.x === null || line.y === null || !Number.isFinite(line.x) || !Number.isFinite(line.y)) return;
+    const distance = Math.hypot(line.x - x, (line.y - y) * aspect);
+    if (distance < nearest) { nearest = distance; best = { line, index }; }
+  });
+  return nearest <= reach ? best : null;
 }
 
 /** A smaller copy of the page for the AI, with the panels outlined and numbered. */

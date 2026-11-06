@@ -21,7 +21,7 @@ const decimal = (value, fallback, min, max) => Number.isFinite(Number(value)) &&
 const newId = prefix => prefix + ':' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : now();
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerTranslate: false, readerTranslateTo: '', readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -117,6 +117,9 @@ function settings(value, previous = defaultState().settings) {
     readerKeepAwake: typeof value.readerKeepAwake === 'boolean' ? value.readerKeepAwake : previous.readerKeepAwake !== false,
     // Crop borders (plain black or white margins cut off): optional, off at first.
     readerCropBorders: typeof value.readerCropBorders === 'boolean' ? value.readerCropBorders : previous.readerCropBorders === true,
+    // Balloon translator (press and hold a balloon): optional, off at first; '' = the device's language.
+    readerTranslate: typeof value.readerTranslate === 'boolean' ? value.readerTranslate : previous.readerTranslate === true,
+    readerTranslateTo: ['', 'pt-BR', 'es', 'en'].includes(value.readerTranslateTo) ? value.readerTranslateTo : (['pt-BR', 'es', 'en'].includes(previous.readerTranslateTo) ? previous.readerTranslateTo : ''),
     readerTurnMode: ['both', 'swipe', 'tap'].includes(value.readerTurnMode) ? value.readerTurnMode : (['both', 'swipe', 'tap'].includes(previous.readerTurnMode) ? previous.readerTurnMode : 'both'),
     spoilers: typeof value.spoilers === 'boolean' ? value.spoilers : previous.spoilers};
 }

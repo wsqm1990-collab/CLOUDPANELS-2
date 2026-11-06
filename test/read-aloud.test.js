@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseScript, linesForStep, pickVoice, utteranceSettings, panelsKeyOf, scriptKey, createSpeaker, requestPageScript, scriptRequestNote, scriptInstructions } from '../src/read-aloud.js';
+import { parseScript, linesForStep, pickVoice, utteranceSettings, panelsKeyOf, scriptKey, createSpeaker, requestPageScript, scriptRequestNote, scriptInstructions, requestTranslations, balloonAt } from '../src/read-aloud.js';
 
 const reply = JSON.stringify({ language: 'pt-BR', lines: [
   { panel: 1, x: .3, y: .1, kind: 'caption', speaker: 'narrator', voice: 'narrator', tone: 'normal', text: 'Mais tarde…' },
@@ -217,4 +217,38 @@ test('the AI is asked to follow balloon tails and keep one name per person', () 
   assert.ok(/follow its tail/.test(rules) && /check the tail of every balloon/.test(rules));
   assert.ok(/one name per person on every page, also when they appear in costume/.test(rules));
   assert.ok(/keeps the same voice on every page/.test(rules));
+});
+
+test('the translator: a page read with translations keeps them line by line, for its language only', () => {
+  const answer = JSON.stringify({ language: 'en-US', lines: [
+    { panel: 0, x: .2, y: .1, kind: 'speech', speaker: 'Al', voice: 'man', text: 'Hi  there!', translation: ' Olá! ' },
+    { panel: 0, x: .5, y: .5, kind: 'sfx', text: 'Boom', translation: 'Bum' },
+    { panel: 0, x: .8, y: .9, kind: 'caption', text: 'Later.' },
+  ] });
+  assert.deepEqual(parseScript(answer, { translate: 'pt-BR' }).translations, { 'pt-BR': ['Olá!', '', ''] });
+  assert.equal('translations' in parseScript(answer), false, 'not asked: nothing kept');
+  assert.equal('translations' in parseScript(answer, { translate: 'xx' }), false);
+  assert.equal(scriptInstructions({ translate: '' }), scriptInstructions(), 'without the translator the request is as before');
+  assert.ok(/translation \(balloons and captions only\): the line in Spanish/.test(scriptInstructions({ translate: 'es' })));
+});
+
+test('the translator: only the words of a page already read are sent, and come back in order', async () => {
+  let sent;
+  const fetchImpl = async (url, options) => { sent = JSON.parse(options.body); return { ok: true, json: async () => ({ content: [{ type: 'text', text: 'Here: {"translations":["Oi!","Mais tarde."]}' }] }) }; };
+  const lines = [{ kind: 'speech', speaker: 'Al', text: 'Hi!' }, { kind: 'sfx', text: 'Boom' }, { kind: 'scene', text: 'A street.' }, { kind: 'caption', speaker: 'narrator', text: 'Later.' }];
+  assert.deepEqual(await requestTranslations({ key: 'k', lines, language: 'pt-BR', fetchImpl }), ['Oi!', '', '', 'Mais tarde.']);
+  assert.ok(/into Brazilian Portuguese/.test(sent.system));
+  assert.deepEqual(JSON.parse(sent.messages[0].content), [{ speaker: 'Al', text: 'Hi!' }, { speaker: 'narrator', text: 'Later.' }], 'no picture, no sound effects');
+  await assert.rejects(requestTranslations({ key: '', lines }), error => error.type === 'no_key');
+  await assert.rejects(requestTranslations({ key: 'k', lines, fetchImpl: async () => ({ ok: true, json: async () => ({ content: [{ type: 'text', text: 'Sorry.' }] }) }) }), error => error.type === 'empty_answer');
+  assert.deepEqual(await requestTranslations({ key: 'k', lines: [{ kind: 'sfx', text: 'Boom' }], fetchImpl: () => { throw new Error('not asked'); } }), [''], 'nothing to translate: nothing asked');
+});
+
+test('the translator finds the balloon held down, or none when the finger is far from any', () => {
+  const script = { lines: [{ kind: 'speech', x: .2, y: .1, text: 'A' }, { kind: 'sfx', x: .5, y: .5, text: 'Boom' }, { kind: 'thought', x: .7, y: .8, text: 'B' }, { kind: 'speech', x: null, y: null, text: 'C' }] };
+  assert.equal(balloonAt(script, .25, .12).line.text, 'A');
+  assert.equal(balloonAt(script, .68, .75).index, 2);
+  assert.equal(balloonAt(script, .5, .5)?.line.text === 'Boom', false, 'sound effects are not balloons');
+  assert.equal(balloonAt(script, .95, .02, { aspect: 1.5 }), null);
+  assert.equal(balloonAt({}, .5, .5), null);
 });

@@ -81,7 +81,7 @@ test('next issue uses direct same-folder numeric filename order without changing
 });
 test('next issue skips unsupported files, keeps read issues, and has a stable ID tiebreak',()=>{
  const make=(id,name,format='cbz')=>({id,name,path:'Comics/'+name,source:'mega',format});
- const first=make('one','Story 1.cbz'),unsupported=make('two','Story 2.cbr','cbr');
+ const first=make('one','Story 1.cbz'),unsupported=make('two','Story 2.epub','epub');
  const third=make('a','Story 3.cbz'),thirdDuplicate=make('b','Story 3.cbz');
  third.status='finished';
  const catalog=[thirdDuplicate,unsupported,third,first];
@@ -176,4 +176,15 @@ test("a folder's covers: the comic being read first, then the next issues, then 
   const started = performance.now();
   for (let i = 0; i < 10; i++) coverPicks(big, {}, 12);
   assert.ok(performance.now() - started < 400, `took ${Math.round(performance.now() - started)} ms`);
+});
+
+test('the next issue can be a CBR or another archive the reader opens (not only CBZ)',()=>{
+ const make=(id,name,format)=>({id,name,path:'Comics/Saga/'+name,source:'mega',format});
+ const one=make('1','Saga 01.cbr','cbr'),two=make('2','Saga 02.cbr','cbr'),three=make('3','Saga 03.cb7','cb7'),four=make('4','Saga 04.cbz','cbz'),notes=make('5','Saga 05.txt','txt');
+ const catalog=[four,notes,two,three,one];
+ assert.equal(nextComicInFolder(catalog,one),two);
+ assert.equal(nextComicInFolder(catalog,two),three);
+ assert.equal(nextComicInFolder(catalog,three),four);
+ assert.equal(nextComicInFolder(catalog,four),null,'a text file is not a comic');
+ assert.equal(nextComicInFolder([one,{...two,format:undefined}],one)?.id,'2','the format can come from the name');
 });
