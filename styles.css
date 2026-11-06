@@ -716,3 +716,11 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 /* Natural voice messages (read aloud extras): always readable, above the bars. */
 .reader-voice-note{position:absolute;z-index:30;left:50%;top:calc(env(safe-area-inset-top, 0px) + 68px);transform:translateX(-50%);width:max-content;max-width:calc(100% - 32px);padding:10px 14px;border:1px solid #c5ef6259;border-radius:10px;background:#0b1520f5;color:#f1f6fb;font-size:13px;line-height:1.45;text-align:center;box-shadow:0 4px 18px #0009;pointer-events:none}
 .reader-voice-note[hidden]{display:none}
+
+/* Balloon translator (optional): the translation of a balloon held down. */
+.reader-translation{position:absolute;z-index:31;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 96px);transform:translateX(-50%);width:min(560px,calc(100% - 28px));padding:14px 16px;border:1px solid #c5ef6250;border-radius:14px;background:#0f1722f5;color:#f3f7fb;box-shadow:0 12px 40px #000a;text-align:left;line-height:normal}
+.reader-translation[hidden]{display:none}
+.reader-translation-text{margin:0;font-size:17px;line-height:1.45;font-weight:600;overflow-wrap:anywhere}
+.reader-translation-text.reader-translation-note{font-size:13px;font-weight:500;color:#dbe5ef}
+.reader-translation-original{margin:8px 0 0;font-size:12px;line-height:1.5;color:#9fb0c3;overflow-wrap:anywhere}
+.reader-translate #reader-image{-webkit-touch-callout:none}
