@@ -76,7 +76,8 @@ export function folderContents(comics,path=[],progress={}) {
   return {folders:[...folders.values()].sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})),comics:direct,descendants,
     count:descendants.length,readCount,unreadCount,readingCount,allRead:descendants.length>0&&readCount===descendants.length};
 }
-const readableComicFormats = new Set(['cbz', 'zip', 'pdf', 'jpg', 'jpeg', 'png', 'webp']);
+// Every kind of file the reader opens (CBR and the other archives too, as in the app's own list).
+const readableComicFormats = new Set(['cbz', 'zip', 'pdf', 'jpg', 'jpeg', 'png', 'webp', 'cbr', 'rar', 'cb7', '7z', 'cbt', 'tar']);
 const filenameOrder = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 /** The next readable direct sibling, regardless of library filters or read status. */
 export function nextComicInFolder(comics, current) {
