@@ -170,17 +170,56 @@ test('with many characters, no one speaks with the voice of someone in the same 
 
 test('man or woman is what most of a character\'s lines say; one slip changes nothing', () => {
   const cast = createCast(), say = (speaker, voice) => ({ kind: 'speech', speaker, voice, text: 'Hi.' });
-  cast.learn([say('Gwen', 'man')]);
+  const heard = lines => cast.learn(lines, { now: true });
+  heard([say('Gwen', 'man')]);
   assert.ok(CAST.man.includes(cast.voiceFor(say('Gwen', 'man'))), 'a wrong first guess...');
-  cast.learn([say('Gwen', 'woman'), say('Gwen', 'woman')]);
-  cast.learn([say('Gwen', 'woman')]);
+  heard([say('Gwen', 'woman'), say('Gwen', 'woman')]);
+  heard([say('Gwen', 'woman')]);
   assert.ok(CAST.woman.includes(cast.voiceFor(say('Gwen', 'man'))), '...is put right once most of her lines say woman');
   assert.equal(cast.kindFor(say('Gwen', 'man')), 'woman');
-  cast.learn([say('Peter', 'man'), say('Peter', 'man')]); const peter = cast.voiceFor(say('Peter', 'man'));
-  cast.learn([say('Peter', 'woman')]);
+  heard([say('Peter', 'man'), say('Peter', 'man')]); const peter = cast.voiceFor(say('Peter', 'man'));
+  heard([say('Peter', 'woman')]);
   assert.equal(cast.voiceFor(say('Peter', 'woman')), peter, 'one slip changes nothing');
   const page = [say('Ana', 'woman'), say('Ana', 'woman')];
   cast.learn(page); cast.learn(page); assert.equal(cast.known().find(person => person.name === 'Ana').voice, 'woman', 'a page counts once');
+});
+
+test('a voice never changes while its page is heard, and a character\'s age never changes once heard', () => {
+  const cast = createCast(), say = (speaker, voice = 'man') => ({ kind: 'speech', speaker, voice, text: 'Hi.' });
+  const page = [say('Norman Osborn'), say('Peter Parker'), say('Norman Osborn')];
+  cast.learn(page); cast.learn(page, { now: true });
+  const norman = cast.voiceFor(page[0]);
+  // The AI reads the next two pages while this one plays, and calls him "old man" there, then "man" again.
+  const next = [1, 2, 3, 4].map(() => say('Norman Osborn', 'old man')), after = [1, 2, 3, 4, 5, 6].map(() => say('Norman Osborn'));
+  cast.learn(next);
+  assert.equal(cast.voiceFor(page[2]), norman, 'same voice for the rest of the page being heard');
+  cast.learn(after);
+  assert.equal(cast.voiceFor(page[2]), norman, 'still the same voice');
+  cast.learn(next, { now: true });
+  assert.equal(cast.voiceFor(next[0]), norman, 'the next page: "old man" there does not change the voice of a man already heard');
+  assert.equal(cast.kindFor(next[0]), 'man');
+  // Before anyone heard her, what most of her lines say counts.
+  const ahead = [say('Aunt May', 'woman'), say('Aunt May', 'old woman'), say('Aunt May', 'old woman')];
+  cast.learn(ahead); cast.learn(ahead, { now: true });
+  assert.equal(cast.kindFor(ahead[0]), 'old woman');
+  assert.ok(CAST['old woman'].includes(cast.voiceFor(ahead[0])));
+});
+
+test('a name two characters share goes to the one who spoke last, and never ties a family together', () => {
+  const cast = createCast(), say = speaker => ({ kind: 'speech', speaker, voice: 'man', text: 'Hi.' });
+  const one = [say('Harry Osborn'), say('Peter Parker')], two = [say('Norman Osborn'), say('Mr. Osborn'), say('Harry Osborn'), say('Osborn')];
+  cast.learn(one, { now: true }); cast.learn(two, { now: true });
+  const harry = cast.voiceFor(one[0]), norman = cast.voiceFor(two[0]), peter = cast.voiceFor(one[1]);
+  assert.notEqual(harry, norman);
+  assert.equal(cast.voiceFor(two[1]), norman, '"Mr. Osborn" right after Norman spoke is Norman');
+  assert.equal(cast.voiceFor(two[3]), harry, '"Osborn" right after Harry spoke is Harry');
+  assert.equal(cast.voiceFor(say('Harry Osborn')), harry, 'Harry keeps his own voice');
+  const three = [say('Mr. Parker'), say('Ben Parker')];
+  cast.learn(three, { now: true });
+  assert.equal(cast.voiceFor(three[0]), peter, '"Mr. Parker" is Peter, the only Parker so far');
+  assert.notEqual(cast.voiceFor(three[1]), peter, 'and Uncle Ben is still someone else');
+  cast.reset(); cast.learn(one, { now: true });
+  assert.equal(cast.known().length, 2, 'a new comic starts from no one, even with pages heard before');
 });
 
 test('the AI gets the characters met so far, most recent first, with their longest name', () => {

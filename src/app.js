@@ -8,6 +8,7 @@ import {createCloudSync, syncReadingPositions} from './cloud-sync.js';
 import {OfflineLibrary} from './offline.js';
 import {streamToCbz,verifyCbz} from './convert.js';
 import {clearArchiveListings} from './reader.js';
+import {aloudEvents,interruptedListening,noteAloud} from './aloud-log.js';
 import {assistantStore,buildLibraryIndex,libraryBrief,libraryTools,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder, coverPicks} from './app-helpers.js';
 
@@ -52,6 +53,9 @@ Object.assign(copy.es,{viewLabel:'Vista',viewGrid:'Cuadrícula',viewRacks:'Estan
 Object.assign(copy.en,{syncPaused:'Sync between devices is paused while it is being fixed. Nothing is written to your MEGA. To move your reading to another device, use Export backup here and Import backup on the other device.',diagTitle:'Diagnostics',diagDetail:'If something fails, copy this report and send it to whoever is fixing the app. It contains error messages only — no passwords, keys or comic files.',diagCopy:'Copy report',diagCopied:'Report copied.',diagEmpty:'No problems recorded.'});
 Object.assign(copy['pt-BR'],{syncPaused:'A sincronização entre aparelhos está pausada enquanto é corrigida. Nada é gravado no seu MEGA. Para levar sua leitura para outro aparelho, use Exportar backup aqui e Importar backup no outro.',diagTitle:'Diagnóstico',diagDetail:'Se algo falhar, copie este relatório e envie para quem está corrigindo o app. Ele contém só mensagens de erro — nenhuma senha, chave ou arquivo de quadrinho.',diagCopy:'Copiar relatório',diagCopied:'Relatório copiado.',diagEmpty:'Nenhum problema registrado.'});
 
+Object.assign(copy.en,{megaConnecting:'Connecting to MEGA… the story opens in a moment.',resumeListening:'The phone closed CloudPanels while it was reading aloud. This is the same page: tap Listen to go on.'});
+Object.assign(copy['pt-BR'],{megaConnecting:'Conectando ao MEGA… a história abre em instantes.',resumeListening:'O celular fechou o CloudPanels enquanto ele lia em voz alta. Esta é a mesma página: toque em Ouvir para continuar.'});
+Object.assign(copy.es,{megaConnecting:'Conectando con MEGA… la historia se abre enseguida.',resumeListening:'El teléfono cerró CloudPanels mientras leía en voz alta. Esta es la misma página: toca Escuchar para seguir.'});
 // ---- Diagnostics: a small local log of errors the user can copy and send ----
 const DIAG_KEY='cloudpanels-diagnostics-v1';
 function scrub(text,limit=600){return String(text||'').replace(/sk-ant-[A-Za-z0-9_\-]+/g,'[key]').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/https?:\/\/[^\s"')]+/g,u=>u.split('?')[0].replace(/\/[^/]{24,}/g,'/[id]')).slice(0,limit);}
@@ -82,19 +86,39 @@ window.addEventListener('error',event=>diag('window',event.error||event.message)
 window.addEventListener('unhandledrejection',event=>diag('promise',event.reason));
 window.addEventListener('cloudpanels-error',event=>diag(event.detail?.where||'reader',event.detail?.error,event.detail?.extra));
 function diagnosticsEntries(){try{const list=JSON.parse(localStorage.getItem(DIAG_KEY)||'[]');return Array.isArray(list)?list:[];}catch{return [];}}
-// Problems recorded, plus the speed report of this session (timings and counts only).
-function diagnosticsReport(){
+// Problems recorded (newest first), what read aloud did (newest first) and
+// the speed report of this session (timings and counts only). Short enough to
+// paste into a chat: the newest parts come first and the oldest are left out.
+function diagnosticsReport(limit=14000){
   const speed={};
   try{
     const nav=performance.getEntriesByType?.('navigation')?.[0],state=store?.state||{},connection=navigator.connection;
     Object.assign(speed,{uptime:Math.round(performance.now()),cpu:navigator.hardwareConcurrency||null,memoryGB:navigator.deviceMemory||null,
-      network:connection?{type:connection.effectiveType||'',rtt:connection.rtt??null,mbps:connection.downlink??null}:null,
-      page:nav?{responseStart:Math.round(nav.responseStart),responseEnd:Math.round(nav.responseEnd),interactive:Math.round(nav.domInteractive),loaded:Math.round(nav.domContentLoadedEventEnd),fromWorker:nav.workerStart>0}:null,
+      network:connection?{type:connection.effectiveType||'',rtt:connection.rtt??null,mbps:connection.downlink??null,saveData:Boolean(connection.saveData)}:null,
+      page:nav?{type:nav.type||'',responseStart:Math.round(nav.responseStart),responseEnd:Math.round(nav.responseEnd),interactive:Math.round(nav.domInteractive),loaded:Math.round(nav.domContentLoadedEventEnd),fromWorker:nav.workerStart>0}:null,
+      discarded:Boolean(document.wasDiscarded),
       files:(performance.getEntriesByType?.('resource')||[]).filter(entry=>/\/(app\.js|styles\.css|thumb-worker\.js|chunk-[\w-]+\.js)$/.test(entry.name)).map(entry=>[entry.name.split('/').pop(),Math.round(entry.startTime),Math.round(entry.duration),entry.transferSize??null]),
       library:{comics:state.comics?.length||0,positions:Object.keys(state.progress||{}).length,panels:Object.keys(state.panels||{}).length,bookmarks:state.bookmarks?.length||0,retired:Object.keys(state.retired||{}).length,offline:offline?.ids?.size||0,mega:mega?.connected||false,sync:cloud?.signedIn||false},
       counts:perf.counts,marks:perf.marks,work:perf.work,long:perf.long,stalls:perf.stalls});
   }catch(error){speed.error=String(error?.message||error).slice(0,200);}
-  return JSON.stringify({app:'CloudPanels',version:document.querySelector('.sidebar-version span')?.textContent||'',ua:navigator.userAgent,speed,entries:diagnosticsEntries()});
+  // The many "library checked" notes say little: only the latest three stay.
+  let checks=0;
+  const entries=diagnosticsEntries().slice().reverse().filter(entry=>entry?.where!=='library-check'||++checks<=3)
+    .map(entry=>({...entry,stack:entry?.stack?String(entry.stack).split(' | ').slice(0,2).join(' | '):undefined}));
+  const report={app:'CloudPanels',version:document.querySelector('.sidebar-version span')?.textContent||'',ua:navigator.userAgent,aloud:aloudEvents().slice().reverse(),entries,speed};
+  let text=JSON.stringify(report);
+  // Too long: first the speed details and the error details are shortened,
+  // then the oldest problems and diary lines are left out.
+  const shorten=[()=>{for(const key of ['work','long','stalls','marks','files'])if(Array.isArray(speed[key]))speed[key]=speed[key].slice(-12);},
+    ()=>{for(const entry of report.entries){delete entry.stack;if(entry.extra)entry.extra=String(entry.extra).slice(0,300);}}];
+  for(let round=0;text.length>limit&&round<80;round++){
+    if(round<shorten.length)shorten[round]();
+    else if(round%2&&report.entries.length>8)report.entries=report.entries.slice(0,Math.max(8,Math.floor(report.entries.length*.8)));
+    else if(report.aloud.length>20)report.aloud=report.aloud.slice(0,Math.max(20,Math.floor(report.aloud.length*.8)));
+    else{for(const key of ['marks','work','long','stalls','files'])delete speed[key];if(report.entries.length>4)report.entries.pop();else if(report.aloud.length>4)report.aloud.pop();else break;}
+    text=JSON.stringify(report);
+  }
+  return text;
 }
 let appReady=false,persistenceErrorPending=false;
 const accounts = getNativeAccounts();
@@ -639,7 +663,7 @@ async function runOfflineQueue(){
 }
 function toggleOffline(comic){
   if(offline.has(comic.id)){offline.remove(comic.id).then(()=>{toast(t('offlineRemoved'));mainDirty=true;queueMainRefresh();}).catch(()=>toast(t('storageError')));return;}
-  if(comic.source==='mega'&&!mega.connected){toast(t('reconnect'));openConnection();return;}
+  if(comic.source==='mega'&&!mega.connected){void megaReady().then(ready=>{if(!ready){toast(t('reconnect'));openConnection();return;}offlineQueue.push(comic);void runOfflineQueue();});return;}
   offlineQueue.push(comic);void runOfflineQueue();
 }
 function saveFolderOffline(comics){
@@ -745,7 +769,7 @@ async function openComic(comic) {
   opening=true;
   covers.setForegroundBusy(true);pauseCoverRequests();
   try{
-    if(comic.source==='mega'&&!mega.connected&&!offline.has(comic.id)){toast(t('reconnect'));openConnection();return;}
+    if(comic.source==='mega'&&!mega.connected&&!offline.has(comic.id)&&!(await megaReady())){toast(t('reconnect'));openConnection();return;}
     if(comic.source==='local'&&!localFiles.has(comic.id)&&!offline.has(comic.id)){pendingLocalId=comic.id;toast(t('selectAgain'));document.querySelector('#file-input').click();return;}
     const source=await resolveSource(comic);
     if(modal.open)closeModal();
@@ -991,7 +1015,7 @@ function renderSettings() {
     settingRow(t('clearBuffer'),formatBytes(reader.bufferedBytes||0),action(t('clearBuffer'),()=>{reader.clearBuffer();demoFiles.clear();clearArchiveListings();toast(t('bufferCleared'));render();},'button secondary compact')),
     settingRow(t('clearCovers'),t('coversDetail'),action(t('clearCovers'),async()=>{releaseCoverView();await covers.clear();await reader.clearThumbnails?.();toast(t('coversCleared'));render();},'button secondary compact')),
     cloud.configured?cloudSyncRow():element('div',{class:'settings-row'},element('div',{},element('h3',{text:t('syncTitle')}),text(t('syncDetail')),element('p',{class:'muted','data-sync-status':'1',text:syncStatusText(),style:'margin-top:6px;color:var(--lime,#c5ef62)'})),action(t('syncNow'),()=>{if(!mega.canSync){toast(t('syncNeedsAccount'));return;}void syncWithMega({pull:true,announce:true});},'button secondary compact')),
-    settingRow(t('diagTitle'),diagnosticsEntries().length?t('diagDetail'):t('diagEmpty'),action(t('diagCopy'),async()=>{const report=diagnosticsReport();try{await navigator.clipboard.writeText(report);toast(t('diagCopied'));}catch{const {body}=openModal(t('diagTitle'));const area=element('textarea',{class:'input',rows:12,readonly:true});area.value=report;body.append(area);area.select();}},'button secondary compact')),
+    settingRow(t('diagTitle'),diagnosticsEntries().length||aloudEvents().length?t('diagDetail'):t('diagEmpty'),action(t('diagCopy'),async()=>{const report=diagnosticsReport();try{await navigator.clipboard.writeText(report);toast(t('diagCopied'));}catch{const {body}=openModal(t('diagTitle'));const area=element('textarea',{class:'input',rows:12,readonly:true});area.value=report;body.append(area);area.select();}},'button secondary compact')),
     offline.available?settingRow(t('offlineStorage'),t('offlineStorageDetail',{count:offline.ids.size,size:formatBytes(offline.totalBytes)}),action(t('clearOffline'),async()=>{for(const id of [...offline.ids.keys()])await offline.remove(id).catch(()=>{});toast(t('offlineCleared'));render();},'button secondary compact',{disabled:!offline.ids.size})):'');
   main.append(settings,element('section',{class:'card section'},element('h3',{text:t('backup')}),text(t('backupDetail')),element('div',{class:'row',style:'margin-top:17px'},action(t('exportBackup'),exportBackup),action(t('importBackup'),importBackup))),
     element('section',{class:'card section'},element('h3',{text:t('cloudConnection')}),text(t('cloudConnectionDetail')),element('div',{class:'row',style:'margin-top:17px'},action(mega.connected?t('manageMega'):t('connectMega'),openConnection,'button primary'),mega.connected?action(t('disconnect'),disconnect,'button secondary'):null)),
@@ -1023,17 +1047,43 @@ async function restoreRememberedConnection() {
       await mega.restoreRememberedSession(saved.connection);
       if(saved.folder?.id){try{await mega.children(saved.folder.id);}catch{rememberedConnection.folder=null;}}
       if(Array.isArray(saved.browsePath)&&saved.browsePath.length<=64&&saved.browsePath.every(part=>typeof part==='string'&&part.length<=512))folderPath=saved.browsePath.slice();
+      restoreAttempts=0;
       libraryMode='folders';refreshHeader();mainDirty=true;queueMainRefresh();
       void syncWithMega({pull:true});
       // The tree was just loaded fresh: bring the library up to date with it.
       void refreshLibrary({reloadTree:false});
     }catch(error){
       diag('mega-restore',error);
-      if(['LOGIN','ACCESS','SESSION_INPUT'].includes(error?.code)){try{await sessionVault.clearSession();}catch{}rememberedConnection=null;}
-      toast(t('reconnect'));
+      if(['LOGIN','ACCESS','SESSION_INPUT'].includes(error?.code)){try{await sessionVault.clearSession();}catch{}rememberedConnection=null;toast(t('reconnect'));}
+      // No connection for a moment (a weak signal, a phone just woken up): tried again quietly.
+      else if(!(['NETWORK','TREE'].includes(error?.code)&&restoreAgainLater()))toast(t('reconnect'));
     }finally{restoringConnection=null;perf.end('mega-restore');}
   })();
   return restoringConnection;
+}
+// MEGA could not be reached when the app opened: it is tried again a few
+// times, and opening a story waits for it instead of asking to reconnect.
+let restoreAttempts=0,restoreTimer=null;
+function restoreAgainLater(){
+  if(restoreTimer||restoreAttempts>=4)return false;
+  const delay=[3000,8000,20000,45000][restoreAttempts++];
+  restoreTimer=setTimeout(()=>{restoreTimer=null;void restoreRememberedConnection();},delay);
+  return true;
+}
+function restoreNow(){
+  if(mega.connected||restoringConnection||!rememberedConnection)return restoringConnection;
+  clearTimeout(restoreTimer);restoreTimer=null;
+  return restoreRememberedConnection();
+}
+async function megaReady(){
+  if(mega.connected)return true;
+  if(!restoringConnection&&restoreTimer)void restoreNow();
+  if(!restoringConnection)return false;
+  toast(t('megaConnecting'));
+  await restoringConnection;
+  // It failed once more and another try is waiting: that try now.
+  if(!mega.connected&&restoreTimer)await restoreNow();
+  return mega.connected;
 }
 async function lockAccount() {
   reader.close();
@@ -1385,6 +1435,7 @@ function refreshLibrary({announce=false,reloadTree=true}={}){
 // in the MEGA app) quietly brings the library up to date.
 let hiddenSince=0;
 function cameBack(){
+  if(!mega.connected&&rememberedConnection&&!restoringConnection){restoreAttempts=0;void restoreNow();}
   // Back from another app (for example after moving folders in the MEGA app):
   // check MEGA again, unless the library was checked just a moment ago.
   // While a comic is open this waits until it is closed: reloading MEGA's list
@@ -1410,4 +1461,25 @@ function syncStatusText(){
 }
 function refreshSyncStatus(){for(const node of document.querySelectorAll('[data-sync-status]'))node.textContent=syncStatusText();}
 if(navigator.onLine===false)window.addEventListener('online',()=>{if(!mega.connected)void restoreRememberedConnection();},{once:true});else void restoreRememberedConnection();
+window.addEventListener('online',()=>{if(!mega.connected&&rememberedConnection&&!restoringConnection){restoreAttempts=0;void restoreNow();}});
+// The phone closed the app while it was reading aloud: noted for Diagnostics;
+// if the screen was off, the same comic opens again at its page (once MEGA is
+// there), so listening goes on with one tap.
+const interrupted=interruptedListening();
+if(interrupted){
+  noteAloud('app was closed while reading aloud',{minutesAgo:Math.round((Date.now()-interrupted.at)/60000),page:interrupted.page,screenOff:Boolean(interrupted.hidden),discarded:Boolean(document.wasDiscarded),start:performance.getEntriesByType?.('navigation')?.[0]?.type||''});
+  if(interrupted.hidden&&Date.now()-interrupted.at<2*3600000)void resumeInterrupted(interrupted);
+}
+async function resumeInterrupted(beat){
+  const comic=store.state.comics.find(item=>item.id===beat.id);
+  // Only comics that open without asking anything (MEGA, or saved on this device).
+  if(!comic||!(comic.source==='mega'||comic.source==='demo'||offline.has(comic.id))||document.querySelector('#reader').open||modal.open)return;
+  if(comic.source==='mega'&&!offline.has(comic.id)){
+    for(let tries=0;tries<50&&!restoringConnection&&!mega.connected;tries++)await new Promise(resolve=>setTimeout(resolve,100));
+    if(!(await megaReady()))return;
+  }
+  if(document.querySelector('#reader').open||modal.open)return;
+  await openComic(comic);
+  if(document.querySelector('#reader').open)reader.notice?.(t('resumeListening'),15000);
+}
 if(store.lastError||persistenceErrorPending)toast(t('storageLoadedError'));

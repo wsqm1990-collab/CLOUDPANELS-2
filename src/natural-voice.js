@@ -55,12 +55,18 @@ const nameWords = name => name.replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(
  *   time (never someone in the same scene).
  * - Man or woman is what most of their lines say: one slip by the AI changes
  *   nothing, and a wrong first guess is put right once the story shows it.
+ *   Once heard, a character's age (man, old man, boy) never changes.
+ * - Voices only change when a page starts, never while it is heard: the
+ *   pages the AI reads ahead count, but on their own page.
+ * - A name two characters share ("Osborn": Norman and Harry) goes to the one
+ *   who spoke last.
  * - Nameless people have voices of their own.
- * `learn(lines)` takes in a page as soon as it is read, before it is heard.
+ * `learn(lines)` takes in a page as soon as it is read, before it is heard;
+ * `learn(lines, { now: true })` when it starts being heard.
  */
 export function createCast() {
-  let clock = 0;
-  const people = [], byName = new Map(), learned = new WeakSet();
+  let clock = 0, learned = new WeakSet(), started = new WeakSet(), fixed = new WeakMap();
+  const people = [], byName = new Map();
   const clean = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
   const kindOf = line => CAST[line.voice] ? line.voice : line.kind === 'caption' ? 'narrator' : 'man';
   const narrated = line => line.voice === 'narrator' || line.kind === 'scene' || (line.kind === 'caption' && (GENERIC.test(clean(line.speaker)) || clean(line.speaker) === 'narrator'));
@@ -77,33 +83,42 @@ export function createCast() {
   function decide(person) {
     let leader = person.kind, top = person.votes.get(leader) || 0;
     for (const [kind, count] of person.votes) if (count > top) { leader = kind; top = count; }
-    if (leader !== person.kind && top >= (person.votes.get(person.kind) || 0) + 2) {
-      person.kind = leader;
-      if (!(CAST[leader] || []).includes(person.voice) || person.extra) assign(person);
-    }
+    if (leader === person.kind) return;
+    // Before their first page is heard: what most of their lines say. After:
+    // only a clear man/woman mistake is put right, never their age.
+    if (person.spoke && (FEMALE.has(leader) === FEMALE.has(person.kind) || top < (person.votes.get(person.kind) || 0) + 2)) return;
+    person.kind = leader;
+    if (!(CAST[leader] || []).includes(person.voice) || person.extra) assign(person);
   }
   function personFor(line) {
     const kind = kindOf(line), name = clean(line.speaker);
     if (GENERIC.test(name)) {
       const key = `extra|${kind}|${name}`;
       let extra = byName.get(key);
-      if (!extra) { extra = { extra: true, kind, votes: new Map([[kind, 1]]), heard: 0, names: [], aliases: [] }; people.push(extra); byName.set(key, extra); assign(extra); }
+      if (!extra) { extra = { extra: true, kind, votes: new Map([[kind, 1]]), heard: 0, last: 0, names: [], aliases: [] }; people.push(extra); byName.set(key, extra); assign(extra); }
       return extra;
     }
-    let person = byName.get(name);
-    if (person) return person;
+    const known = byName.get(name);
+    if (known) return known;
     // "Peter" and "Peter Parker", or "Mr. Osborn" and "Norman Osborn", are the
-    // same character (of the same sex): they keep one voice.
+    // same character (of the same sex): they keep one voice. A name that fits
+    // more than one ("Osborn": Norman and Harry) goes to the one who spoke last.
     const words = nameWords(name), female = FEMALE.has(kind);
-    person = people.find(other => !other.extra && FEMALE.has(other.kind) === female && other.aliases.some(alias => (words.length === 1 && alias.includes(words[0])) || (alias.length === 1 && words.includes(alias[0]))));
-    if (person) { person.aliases.push(words); person.names.push(String(line.speaker).trim()); byName.set(name, person); return person; }
-    person = { extra: false, kind, votes: new Map([[kind, 1]]), heard: 0, names: [String(line.speaker).trim()], aliases: [words] };
+    const fits = people.filter(other => !other.extra && FEMALE.has(other.kind) === female && other.aliases.some(alias => (words.length === 1 && alias.includes(words[0])) || (alias.length === 1 && words.includes(alias[0]))));
+    if (fits.length) {
+      const person = fits.reduce((best, other) => other.last > best.last || (other.last === best.last && other.heard > best.heard) ? other : best);
+      // A fuller name of one character becomes theirs; a short one ("Osborn")
+      // stays open, so it never ties two people of one family together.
+      if (fits.length === 1 && words.length > 1) { person.aliases.push(words); person.names.push(String(line.speaker).trim()); byName.set(name, person); }
+      return person;
+    }
+    const person = { extra: false, kind, votes: new Map([[kind, 1]]), heard: 0, last: 0, names: [String(line.speaker).trim()], aliases: [words] };
     people.push(person); byName.set(name, person); assign(person);
     return person;
   }
   function lookup(line = {}) {
     if (narrated(line)) return { voice: CAST.narrator[0], kind: 'narrator' };
-    const person = personFor(line);
+    const person = fixed.get(line) || personFor(line);
     person.heard = ++clock;
     return person;
   }
@@ -112,26 +127,39 @@ export function createCast() {
     kindFor: line => lookup(line).kind,
     /** How this line is said: the character's voice, at their pitch, in the line's tone. */
     plan: (line = {}, options) => { const who = lookup(line); return voicePlan({ ...line, voice: who.kind }, who.voice, options); },
-    /** A page just read by the AI: who speaks on it, and as man or woman (counted once per page). */
-    learn(lines = []) {
-      if (!Array.isArray(lines) || learned.has(lines)) return;
-      learned.add(lines);
-      const seen = new Set();
-      for (const line of lines) {
-        if (!line || line.kind === 'sfx' || narrated(line) || GENERIC.test(clean(line.speaker))) continue;
-        // A character met just now already counts this line.
-        const before = people.length, person = personFor(line);
-        if (people.length === before) person.votes.set(kindOf(line), (person.votes.get(kindOf(line)) || 0) + 1);
-        seen.add(person); person.heard = ++clock;
+    /**
+     * A page just read by the AI: who speaks on it, and as man or woman
+     * (counted once per page). With `now` (the page starts being heard): who
+     * says each line is settled, in reading order, and stays so on this page.
+     */
+    learn(lines = [], { now = false } = {}) {
+      if (!Array.isArray(lines)) return;
+      if (!learned.has(lines)) {
+        learned.add(lines);
+        for (const line of lines) {
+          if (!line || line.kind === 'sfx' || narrated(line) || GENERIC.test(clean(line.speaker))) continue;
+          // A character met just now already counts this line.
+          const before = people.length, person = personFor(line);
+          if (people.length === before) person.votes.set(kindOf(line), (person.votes.get(kindOf(line)) || 0) + 1);
+          person.heard = ++clock;
+        }
       }
-      for (const person of seen) decide(person);
+      if (!now || started.has(lines)) return;
+      started.add(lines);
+      const speaking = new Set();
+      for (const line of lines) {
+        if (!line || line.kind === 'sfx' || narrated(line)) continue;
+        const person = personFor(line);
+        person.last = ++clock; fixed.set(line, person); speaking.add(person);
+      }
+      for (const person of speaking) { decide(person); person.spoke = true; }
     },
     /** The characters met so far (most recent first), for the AI to keep names and voices. */
     known(limit = 30) {
       return people.filter(person => !person.extra).sort((a, b) => b.heard - a.heard).slice(0, limit)
         .map(person => ({ name: person.names.reduce((best, name) => name.length > best.length ? name : best, ''), voice: person.kind }));
     },
-    reset() { people.length = 0; byName.clear(); clock = 0; },
+    reset() { people.length = 0; byName.clear(); clock = 0; learned = new WeakSet(); started = new WeakSet(); fixed = new WeakMap(); },
   };
 }
 
