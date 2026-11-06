@@ -197,3 +197,24 @@ test('the request asks for descriptions only when told to', async () => {
   assert.equal(bodies[0].system, scriptInstructions()); assert.equal(bodies[1].system, scriptInstructions({ describe: true }));
   assert.deepEqual(plain.lines, []); assert.equal(described.described, true); assert.equal(described.lines[0].text, 'A quiet room.');
 });
+
+test('the AI is told who was met before, so names and voices stay the same page after page', async () => {
+  const plain = scriptRequestNote({ panelCount: 2 });
+  assert.equal(scriptRequestNote({ panelCount: 2, characters: [] }), plain, 'nobody met yet: as before');
+  const note = scriptRequestNote({ panelCount: 2, characters: [{ name: 'Peter Parker', voice: 'man' }, { name: 'Mary (Jane);', voice: 'woman' }, { name: ' ', voice: 'man' }, { name: 'Unit 7', voice: 'dragon' }] });
+  assert.ok(note.startsWith(plain));
+  assert.ok(note.includes('Characters met on the pages before (name and voice): Peter Parker (man); Mary Jane (woman); Unit 7 (man).'), note);
+  assert.ok(/use exactly that name; keep their voice unless this page clearly shows it is wrong/.test(note));
+  const many = scriptRequestNote({ characters: Array.from({ length: 50 }, (_, i) => ({ name: `Person ${i}`, voice: 'woman' })) });
+  assert.equal((many.match(/\(woman\)/g) || []).length, 30, 'at most 30');
+  let sent = '';
+  await requestPageScript({ key: 'k', image: 'AAAA', characters: [{ name: 'Gwen', voice: 'woman' }], fetchImpl: async (url, options) => { sent = JSON.parse(options.body).messages[0].content[1].text; return { ok: true, json: async () => ({ content: [{ type: 'text', text: '{"lines":[]}' }] }) }; } });
+  assert.ok(sent.includes('Gwen (woman)'));
+});
+
+test('the AI is asked to follow balloon tails and keep one name per person', () => {
+  const rules = scriptInstructions();
+  assert.ok(/follow its tail/.test(rules) && /check the tail of every balloon/.test(rules));
+  assert.ok(/one name per person on every page, also when they appear in costume/.test(rules));
+  assert.ok(/keeps the same voice on every page/.test(rules));
+});

@@ -26,54 +26,112 @@ export function naturalVoiceSupported(scope = globalThis) {
 }
 
 // Best voices first: the first named characters get them. The numbers are
-// voices of the model, picked for clear sound (men around 110-150 Hz, women
-// around 180-250 Hz).
+// voices of the model, each checked by listening back with speech recognition
+// (two sentences understood word for word) and by pitch: men 89-140 Hz,
+// women 170-245 Hz, never in between, spread out so they sound different.
 export const CAST = Object.freeze({
   narrator: [498],
-  man: [677, 334, 410, 784, 736, 752],
-  woman: [131, 46, 238, 312, 783, 567, 623],
+  man: [677, 334, 410, 784, 736, 752, 478, 895, 225, 700, 521, 673, 724, 303, 489, 269],
+  woman: [131, 46, 238, 312, 783, 567, 623, 285, 439, 853, 449, 343, 149, 65, 80, 57],
   boy: [602, 486],
   girl: [693, 94],
-  'old man': [522],
-  'old woman': [433],
-  creature: [522],
-  robot: [410],
+  'old man': [522, 547],
+  'old woman': [433, 165],
+  creature: [629],
+  robot: [385],
 });
+// Nameless people ("a guard", "woman", the crowd) have voices of their own, so
+// they never sound like a named character; two different ones differ.
+export const EXTRAS = Object.freeze({ man: [86, 812], woman: [178, 20] });
 const GENERIC = /^(?:|narrator|man|woman|boy|girl|old man|old woman|creature|robot|voice|someone|unknown|crowd|people|men|women|guard|soldier|thug|cop|police|officer|kid|child)$/;
 const TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'doctor', 'prof', 'professor', 'aunt', 'uncle', 'captain', 'officer', 'agent', 'sir', 'lady', 'lord', 'king', 'queen', 'young', 'old', 'big', 'little', 'the', 'and', 'man', 'woman', 'boy', 'girl', 'guy', 'kid']);
 const FEMALE = new Set(['woman', 'girl', 'old woman']);
 const nameWords = name => name.replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(word => word.length >= 3 && !TITLES.has(word));
 
-/** Gives each character a voice and keeps it for the whole comic. */
+/**
+ * Gives each character a voice and keeps it for the whole comic.
+ * - Every named character gets a voice no one else in the story has, while
+ *   there are enough; then the voice of someone not heard for the longest
+ *   time (never someone in the same scene).
+ * - Man or woman is what most of their lines say: one slip by the AI changes
+ *   nothing, and a wrong first guess is put right once the story shows it.
+ * - Nameless people have voices of their own.
+ * `learn(lines)` takes in a page as soon as it is read, before it is heard.
+ */
 export function createCast() {
-  const given = new Map(), taken = new Map(), named = [];
-  function lookup(line = {}) {
-    const kind = CAST[line.voice] ? line.voice : line.kind === 'caption' ? 'narrator' : 'man';
-    const name = String(line.speaker || '').trim().toLowerCase().replace(/\s+/g, ' ');
-    if (GENERIC.test(name)) {
-      const key = `${kind}|`;
-      if (!given.has(key)) given.set(key, { voice: CAST[kind][0], kind });
-      return given.get(key);
+  let clock = 0;
+  const people = [], byName = new Map(), learned = new WeakSet();
+  const clean = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const kindOf = line => CAST[line.voice] ? line.voice : line.kind === 'caption' ? 'narrator' : 'man';
+  const narrated = line => line.voice === 'narrator' || line.kind === 'scene' || (line.kind === 'caption' && (GENERIC.test(clean(line.speaker)) || clean(line.speaker) === 'narrator'));
+  function assign(person) {
+    const pool = (person.extra && EXTRAS[person.kind]) || CAST[person.kind] || CAST.man;
+    const holders = voice => people.filter(other => other !== person && other.voice === voice);
+    let voice = pool.find(id => !holders(id).length);
+    if (voice === undefined) {
+      let quietest = Infinity;
+      for (const id of pool) { const recent = Math.max(...holders(id).map(other => other.heard)); if (recent < quietest) { quietest = recent; voice = id; } }
     }
-    const key = `name|${name}`;
-    if (given.has(key)) return given.get(key);
+    person.voice = voice ?? pool[0];
+  }
+  function decide(person) {
+    let leader = person.kind, top = person.votes.get(leader) || 0;
+    for (const [kind, count] of person.votes) if (count > top) { leader = kind; top = count; }
+    if (leader !== person.kind && top >= (person.votes.get(person.kind) || 0) + 2) {
+      person.kind = leader;
+      if (!(CAST[leader] || []).includes(person.voice) || person.extra) assign(person);
+    }
+  }
+  function personFor(line) {
+    const kind = kindOf(line), name = clean(line.speaker);
+    if (GENERIC.test(name)) {
+      const key = `extra|${kind}|${name}`;
+      let extra = byName.get(key);
+      if (!extra) { extra = { extra: true, kind, votes: new Map([[kind, 1]]), heard: 0, names: [], aliases: [] }; people.push(extra); byName.set(key, extra); assign(extra); }
+      return extra;
+    }
+    let person = byName.get(name);
+    if (person) return person;
     // "Peter" and "Peter Parker", or "Mr. Osborn" and "Norman Osborn", are the
-    // same character: they keep the first voice (and its kind).
+    // same character (of the same sex): they keep one voice.
     const words = nameWords(name), female = FEMALE.has(kind);
-    const match = named.find(entry => entry.female === female && ((words.length === 1 && entry.words.includes(words[0])) || (entry.words.length === 1 && words.includes(entry.words[0]))));
-    if (match) { given.set(key, match.cast); return match.cast; }
-    const pool = CAST[kind], used = taken.get(kind) || new Set();
-    const cast = { voice: pool.find(id => !used.has(id)) ?? pool[used.size % pool.length], kind };
-    used.add(cast.voice); taken.set(kind, used); given.set(key, cast);
-    named.push({ words, female, cast });
-    return cast;
+    person = people.find(other => !other.extra && FEMALE.has(other.kind) === female && other.aliases.some(alias => (words.length === 1 && alias.includes(words[0])) || (alias.length === 1 && words.includes(alias[0]))));
+    if (person) { person.aliases.push(words); person.names.push(String(line.speaker).trim()); byName.set(name, person); return person; }
+    person = { extra: false, kind, votes: new Map([[kind, 1]]), heard: 0, names: [String(line.speaker).trim()], aliases: [words] };
+    people.push(person); byName.set(name, person); assign(person);
+    return person;
+  }
+  function lookup(line = {}) {
+    if (narrated(line)) return { voice: CAST.narrator[0], kind: 'narrator' };
+    const person = personFor(line);
+    person.heard = ++clock;
+    return person;
   }
   return {
     voiceFor: line => lookup(line).voice,
     kindFor: line => lookup(line).kind,
     /** How this line is said: the character's voice, at their pitch, in the line's tone. */
-    plan: (line = {}, options) => { const cast = lookup(line); return voicePlan({ ...line, voice: cast.kind }, cast.voice, options); },
-    reset() { given.clear(); taken.clear(); named.length = 0; },
+    plan: (line = {}, options) => { const who = lookup(line); return voicePlan({ ...line, voice: who.kind }, who.voice, options); },
+    /** A page just read by the AI: who speaks on it, and as man or woman (counted once per page). */
+    learn(lines = []) {
+      if (!Array.isArray(lines) || learned.has(lines)) return;
+      learned.add(lines);
+      const seen = new Set();
+      for (const line of lines) {
+        if (!line || line.kind === 'sfx' || narrated(line) || GENERIC.test(clean(line.speaker))) continue;
+        // A character met just now already counts this line.
+        const before = people.length, person = personFor(line);
+        if (people.length === before) person.votes.set(kindOf(line), (person.votes.get(kindOf(line)) || 0) + 1);
+        seen.add(person); person.heard = ++clock;
+      }
+      for (const person of seen) decide(person);
+    },
+    /** The characters met so far (most recent first), for the AI to keep names and voices. */
+    known(limit = 30) {
+      return people.filter(person => !person.extra).sort((a, b) => b.heard - a.heard).slice(0, limit)
+        .map(person => ({ name: person.names.reduce((best, name) => name.length > best.length ? name : best, ''), voice: person.kind }));
+    },
+    reset() { people.length = 0; byName.clear(); clock = 0; },
   };
 }
 
@@ -174,21 +232,23 @@ export function createNaturalVoice({ base = ttsBase(), ortUrl = new URL('vendor/
     spawn(true);
     return promise;
   }
-  function request(message) {
+  function request(message, { urgent = false } = {}) {
     const job = { ...message, id: nextId++ };
     job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
     if (state === 'failed') { job.reject(new Error(failure)); return job; }
-    queue.push(job);
+    if (urgent) queue.unshift(job); else queue.push(job);
     if (state === 'idle') load().catch(() => {});
     dispatch();
     return job;
   }
   const lineKey = (text, plan) => `${plan.voice}|${plan.speed}|${text}`;
-  /** The audio of one line (asked once; later calls share it). */
-  function synth(text, plan) {
+  // A line waiting in the queue goes to its front (the one about to be heard).
+  function hurry(job) { const at = queue.indexOf(job); if (at > 0) { queue.splice(at, 1); queue.unshift(job); } }
+  /** The audio of one line (asked once; later calls share it). `urgent`: it is needed now, so it is made first. */
+  function synth(text, plan, { urgent = false } = {}) {
     const key = lineKey(text, plan), known = lines.get(key);
-    if (known) { lines.delete(key); lines.set(key, known); return known.promise; }
-    const job = request({ type: 'say', text, voice: plan.voice, speed: plan.speed });
+    if (known) { lines.delete(key); lines.set(key, known); if (urgent) hurry(known.job); return known.promise; }
+    const job = request({ type: 'say', text, voice: plan.voice, speed: plan.speed }, { urgent });
     const entry = { job, promise: job.promise };
     job.promise.catch(() => { if (lines.get(key) === entry) lines.delete(key); });
     lines.set(key, entry);
@@ -207,7 +267,12 @@ export function createNaturalVoice({ base = ttsBase(), ortUrl = new URL('vendor/
     get state() { return state; }, get failure() { return failure; }, get progress() { return { ...progress }; }, get engines() { return pool.filter(member => member.ready).length; },
     load, synth, only,
     sounds: text => request({ type: 'sounds', text }).promise,
-    prepare(list) { for (const { text, plan } of list) synth(text, plan).catch(() => {}); },
+    /** Lines to make ahead; with `first`, before anything else waiting (this page before the next). */
+    prepare(list, { first = false } = {}) {
+      const jobs = [];
+      for (const { text, plan } of list) { synth(text, plan).catch(() => {}); const entry = lines.get(lineKey(text, plan)); if (entry) jobs.push(entry.job); }
+      if (first) for (const job of jobs.reverse()) { const at = queue.indexOf(job); if (at >= 0) { queue.splice(at, 1); queue.unshift(job); } }
+    },
     onChange(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     dispose() {
       for (const member of pool.splice(0)) { try { member.worker.terminate(); } catch {} member.job?.reject(aborted()); }
