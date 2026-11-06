@@ -2,6 +2,7 @@
 // the device: from a page the reader already has decoded, or, for a page shown
 // in the navigator's strip, by fetching just that page. They stay in this
 // browser's storage (never in MEGA), so they appear at once the next time.
+import { findBorders } from './page-crop.js';
 const MiB = 1024 * 1024;
 const MAX_BYTES = 128 * 1024;
 const abortError = () => new DOMException('Thumbnail cancelled.', 'AbortError');
@@ -92,18 +93,18 @@ export function createThumbnailWorker({ factory = () => new Worker(new URL('thum
     try { worker = factory(); } catch { worker = null; }
     if (!worker) { unsupported = true; return null; }
     worker.onmessage = event => {
-      const { id, blob, width, height, unsupported: cannot } = event.data || {};
+      const { id, blob, width, height, box, nothing, unsupported: cannot } = event.data || {};
       if (cannot) { unsupported = true; stop(); return; }
       timeouts = 0;
       const job = jobs.get(id);
-      job?.finish(blob instanceof Blob && blob.size > 0 && blob.size <= job.maxBytes ? { blob, width, height } : null);
+      job?.finish(nothing ? { nothing: true } : blob instanceof Blob && blob.size > 0 && blob.size <= job.maxBytes ? { blob, width, height, ...(box ? { box } : {}) } : null);
     };
     worker.onerror = worker.onmessageerror = () => { unsupported = true; stop(); };
     return worker;
   }
   // maxBytes/jobTimeoutMs: larger for a readable copy of a big page than for a
   // thumbnail. resize: the output size, which the browser may decode at directly.
-  function run(blob, { signal, maxWidth = 340, maxHeight = 224, quality = .72, maxBytes = MAX_BYTES, timeoutMs: jobTimeoutMs = timeoutMs, resize } = {}) {
+  function run(blob, { signal, maxWidth = 340, maxHeight = 224, quality = .72, maxBytes = MAX_BYTES, timeoutMs: jobTimeoutMs = timeoutMs, resize, crop = false } = {}) {
     return new Promise(resolve => {
       if (signal?.aborted || unsupported || !(blob instanceof Blob) || !blob.size || blob.size > 48 * MiB) { resolve(null); return; }
       const current = start(); if (!current) { resolve(null); return; }
@@ -121,7 +122,7 @@ export function createThumbnailWorker({ factory = () => new Worker(new URL('thum
       // that never answers twice in a row is not used again.
       timer = setTimeout(() => { finish(null); if (++timeouts >= 2) unsupported = true; stop(); }, jobTimeoutMs);
       signal?.addEventListener('abort', cancel, { once: true });
-      try { current.postMessage({ id, blob, maxWidth, maxHeight, quality, ...(resize ? { resize } : {}) }); } catch { finish(null); }
+      try { current.postMessage({ id, blob, maxWidth, maxHeight, quality, ...(resize ? { resize } : {}), ...(crop ? { crop: true } : {}) }); } catch { finish(null); }
     });
   }
   return {
@@ -148,6 +149,45 @@ export function fitInside(size, maxWidth, maxHeight) {
   if (!(size?.width > 0) || !(size?.height > 0)) return null;
   const scale = Math.min(1, maxWidth / size.width, maxHeight / size.height);
   return { width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) };
+}
+
+/**
+ * Crop borders: the page without its plain black or white margins, as
+ * { blob, width, height, box } (box: the part kept, as fractions of the page),
+ * or null when it has none worth cutting (or it could not be done).
+ */
+export async function cropPage(blob, { worker, signal, quality = .94, onThisThread = cropOnThisThread } = {}) {
+  if (!(blob instanceof Blob) || !blob.size) return null;
+  if (worker && !worker.unsupported) {
+    const made = await worker.make(blob, { signal, crop: true, quality, maxBytes: 48 * MiB, timeoutMs: 60000 });
+    if (made?.nothing) return null;
+    if (made?.blob && made.box) return made;
+    check(signal);
+  }
+  return onThisThread(blob, { quality, signal });
+}
+async function cropOnThisThread(blob, { quality = .94, signal } = {}) {
+  if (typeof globalThis.createImageBitmap !== 'function' || typeof document === 'undefined') return null;
+  let bitmap, small, canvas;
+  try {
+    bitmap = await globalThis.createImageBitmap(blob);
+    check(signal);
+    const width = bitmap.width, height = bitmap.height, scale = Math.min(1, 360 / Math.max(width, height));
+    small = document.createElement('canvas'); small.width = Math.max(1, Math.round(width * scale)); small.height = Math.max(1, Math.round(height * scale));
+    const look = small.getContext('2d', { willReadFrequently: true });
+    if (!look) return null;
+    look.drawImage(bitmap, 0, 0, small.width, small.height);
+    const box = findBorders(look.getImageData(0, 0, small.width, small.height));
+    if (!box) return null;
+    const sx = Math.round(box.x * width), sy = Math.round(box.y * height), sw = Math.max(1, Math.round(box.width * width)), sh = Math.max(1, Math.round(box.height * height));
+    canvas = document.createElement('canvas'); canvas.width = sw; canvas.height = sh;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) return null;
+    context.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+    const result = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+    return result ? { blob: result, width: sw, height: sh, box: { x: sx / width, y: sy / height, width: sw / width, height: sh / height } } : null;
+  } catch { return null; }
+  finally { bitmap?.close?.(); if (small) small.width = small.height = 0; if (canvas) canvas.width = canvas.height = 0; }
 }
 
 /** A readable copy of a page too big to show directly: at most 16 megapixels
