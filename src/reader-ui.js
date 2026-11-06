@@ -4,7 +4,8 @@ import { analyzePagePanels } from './panel-analyzer.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
 import { stepReadingPosition, spreadPartners } from './reader-position.js';
-import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker, shrinkPage, fitInside } from './page-thumbnails.js';
+import { PageThumbnails, pageThumbnailComicKey, createThumbnailWorker, shrinkPage, fitInside, cropPage } from './page-thumbnails.js';
+import { toCropped, toWhole } from './page-crop.js';
 import { createKeepAwake } from './keep-awake.js';
 import { createSpeaker, linesForStep, panelsKeyOf, requestPageScript, pageImageForScript, scriptKey, ScriptDisk, sceneForStep } from './read-aloud.js';
 import { createNaturalVoice, createCast, voicePlan, naturalVoiceSupported, TTS_BYTES, CAST } from './natural-voice.js';
@@ -200,6 +201,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   // Pages actually shown, and pages (or next comics) that could not be opened:
   // read aloud tells a failed try (no connection) from a real move.
   let shownSerial = 0, pageErrors = 0;
+  // Crop borders (optional): the part of the whole page shown (null: all of it).
+  // Panels are kept as parts of the whole page and turned into parts of the
+  // shown page here, so they stay right with the option on or off.
+  let currentCrop = null, cropMemo = { source: null, box: null, rects: [] };
   let currentURL, imageWidth = 0, imageHeight = 0, pageWidth = 0, draft = [], pointer, popup;
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetchTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
@@ -272,7 +277,17 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const baseFeatureText = () => FEATURE_STRINGS[language()] || FEATURE_STRINGS.en;
   const rtl = () => store.state.settings.readingDirection === 'rtl';
   const notify = () => onChange?.();
-  const storedPanels = () => comic && currentPage >= 0 ? store.getPanels(comic.id, currentPage) : [];
+  const storedPanels = () => {
+    if (!comic || currentPage < 0) return [];
+    const source = store.getPanels(comic.id, currentPage);
+    if (!currentCrop) return source;
+    if (cropMemo.source !== source || cropMemo.box !== currentCrop) cropMemo = { source, box: currentCrop, rects: shownPanels(source, currentCrop) };
+    return cropMemo.rects;
+  };
+  const cropBordersOn = () => store.state.settings.readerCropBorders === true;
+  // Whole-page panels as parts of a cropped page (one lying only in the cut margin is left out).
+  const shownPanels = (rects, box) => box ? rects.map(rect => toCropped(rect, box)).filter(rect => rect.width > .01 && rect.height > .01) : rects;
+  const wholePanels = (rects, box) => box ? rects.map(rect => toWhole(rect, box)) : rects;
   const panels = () => guided && !editing && guidedFallbackPage === currentPage ? pageParts() : guided && !editing && guidedPlus() ? pageSteps() : storedPanels();
   const focusLabel = (n, count) => text().panelStatus(n, count);
   // Enhanced guided view: a page with no panels found is read in parts. The
@@ -1209,10 +1224,21 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       try { store.setSettings({ readerTurnMode: turnSelect.value }); checkSaved(); observePersistence(); notify(); }
       catch (error) { statusMessage(error?.message || text().storage, true); }
     });
-    menu.append(backgrounds, turnField, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
+    // Crop borders: off unless chosen here; the page is shown again at once.
+    const cropField = document.createElement('label'); cropField.className = 'reader-navigation-setting';
+    cropField.textContent = language() === 'pt-BR' ? 'Cortar bordas: tira as margens pretas ou brancas em volta da página, para o desenho ficar maior' : language() === 'es' ? 'Recortar bordes: quita los márgenes negros o blancos alrededor de la página, para ver el dibujo más grande' : 'Crop borders: cuts off plain black or white margins around the page, so the art is bigger';
+    const cropSelect = document.createElement('select'); cropSelect.id = 'reader-crop-borders';
+    for (const [value, label] of [['off', language() === 'pt-BR' ? 'Não' : 'Off'], ['on', language() === 'pt-BR' ? 'Sim' : language() === 'es' ? 'Sí' : 'On']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; cropSelect.append(option); }
+    cropSelect.value = cropBordersOn() ? 'on' : 'off'; cropField.append(cropSelect);
+    cropSelect.addEventListener('change', () => {
+      saveAppearance({ readerCropBorders: cropSelect.value === 'on' });
+      if (!book || currentPage < 0) return;
+      clearDecoded(); void showPage(currentPage, panel, { targetOverview: overview });
+    });
+    menu.append(backgrounds, cropField, turnField, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
   }
   function savePanelLayout(rects) {
-    try { store.setPanels(comic.id, currentPage, rects); checkSaved(); observePersistence(); notify(); if (storageWarning) statusMessage('', true); return !storageWarning; }
+    try { store.setPanels(comic.id, currentPage, wholePanels(rects, currentCrop)); checkSaved(); observePersistence(); notify(); if (storageWarning) statusMessage('', true); return !storageWarning; }
     catch (error) { statusMessage(error?.message || text().storage, true); return false; }
   }
   function cancelAnalysis() {
@@ -1234,7 +1260,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       // A manually saved layout that appeared during analysis takes precedence.
       if (!force && storedPanels().length) { guidedMode = 'panels'; guidedFallbackPage = -1; return storedPanels(); }
       if (result.confidence === 'high' && result.panels?.length) {
-        store.setPanels(id, page, result.panels); checkSaved(); observePersistence(); notify();
+        store.setPanels(id, page, wholePanels(result.panels, currentCrop)); checkSaved(); observePersistence(); notify();
         guidedMode = 'panels'; guidedFallbackPage = -1; return storedPanels();
       }
       // Never replace manual corrections with an uncertain result or a made-up
@@ -1564,11 +1590,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         if (guided && !store.getPanels(id, page).length) {
           try {
             const result = await analyzePagePanels(candidate.decodedImage, { direction: rtl() ? 'rtl' : 'ltr' });
-            if (mine === serial && comic?.id === id && result.confidence === 'high' && result.panels?.length && !store.getPanels(id, page).length) { store.setPanels(id, page, result.panels); checkSaved(); observePersistence(); }
+            if (mine === serial && comic?.id === id && result.confidence === 'high' && result.panels?.length && !store.getPanels(id, page).length) { store.setPanels(id, page, wholePanels(result.panels, candidate.crop)); checkSaved(); observePersistence(); }
           } catch { /* The page is shown without them, as before. */ }
         }
         if (mine !== serial || !aloud.on || comic?.id !== id) throw abortError();
-        return aloudScript(page, { drawable: candidate.decodedImage, rects: store.getPanels(id, page) });
+        return aloudScript(page, { drawable: candidate.decodedImage, rects: shownPanels(store.getPanels(id, page), candidate.crop) });
       });
       aloud.prefetching.set(memo, pending);
       const done = () => { if (aloud.prefetching.get(memo) === pending) aloud.prefetching.delete(memo); };
@@ -1869,7 +1895,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       controller.signal.throwIfAborted();
       const blob = await readablePage(original, controller.signal);
       controller.signal.throwIfAborted();
-      const candidate = await decodedURL(blob, controller.signal);
+      // Crop borders (optional): plain black or white margins are cut off, in the background.
+      const trimmed = cropBordersOn() ? await cropPage(blob, { worker: thumbWorker, signal: controller.signal }).catch(() => null) : null;
+      controller.signal.throwIfAborted();
+      const candidate = await decodedURL(trimmed?.blob || blob, controller.signal);
+      if (trimmed?.box) candidate.crop = trimmed.box;
       if (mySession !== serial || controller.signal.aborted) { disposeCandidate(candidate); throw abortError(); }
       entry.candidate = candidate; return candidate;
     })().finally(() => activeSession.signal.removeEventListener('abort', cancel));
@@ -1974,7 +2004,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       currentURL = candidate.url; pendingURLs.delete(candidate.url);
       image.src = currentURL; showImage(true); image.alt = spreadPages.length > 1 ? `${text().pageOf(index + 1, activeBook.pageCount)} + ${index + 2}` : text().pageOf(index + 1, activeBook.pageCount);
       imageWidth = candidate.width; imageHeight = candidate.height;
-      currentPage = index; shownSerial++; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
+      currentPage = index; shownSerial++; currentCrop = candidate.crop || null; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
       layoutPage({ fromBottom, enter: direction });
       if (guided) {
         await obtainPagePanels({ signal: request.signal, imageElement: candidate.decodedImage });
@@ -2494,7 +2524,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     serial++; pageSerial++; pageTransition.cancel(); turning = false; overview = false; guidedMode = 'whole'; cancelAnalysis(); cancelCamera(); cancelPrefetch(); pageController?.abort(); sessionController?.abort();
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
-    comic = undefined; currentPage = -1; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
+    comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
     clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; clearTimeout(voiceNoteTimer); voiceNote.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;

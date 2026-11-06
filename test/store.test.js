@@ -420,6 +420,14 @@ test('listening with the screen off and scene descriptions start off, and are ke
   const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
   assert.equal(restored.state.settings.readerScreenOff, true); assert.equal(restored.state.settings.readerDescribe, true);
 });
+test('crop borders starts off and is kept', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerCropBorders, false);
+  s.setSettings({readerCropBorders: true}); assert.equal(s.state.settings.readerCropBorders, true);
+  s.setSettings({readerCropBorders: 'yes', language: 'es'}); assert.equal(s.state.settings.readerCropBorders, true, 'anything but true or false is ignored');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerCropBorders, true);
+});
 test('reading changes are written quickly, exactly as a full save would write them',async()=>{
  let persisted=null,writes=0;
  const backend={async read(){return persisted},async write(text){writes++;persisted=text}};
