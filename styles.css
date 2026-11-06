@@ -712,6 +712,21 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .reader-listen[aria-pressed="true"]{border-color:#c4ef76;color:#c4ef76}
 .reader-listen-float{position:absolute;z-index:16;top:max(10px,env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));display:none;align-items:center;gap:6px;min-height:44px;padding:9px 12px;border:1px solid #e1eaf13b;border-radius:9px;background:#09111ad9;color:#eef4fa;font-size:11px;font-weight:550;box-shadow:0 2px 10px #0005;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
 .reader-dialog.reader-immersive .reader-listen-float:not([hidden]){display:inline-flex}
+/* Lock (padlock next to Listen) and the lock screen while listening. */
+.reader-lock-float{top:calc(max(10px,env(safe-area-inset-top)) + 54px);padding:9px 11px}
+.reader-lock-button svg,.reader-lock-float svg{width:16px;height:16px}
+@media (max-width:480px){.reader-lock-button span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.reader-lock-button{padding-inline:12px}}
+.reader-lock{position:fixed;inset:0;z-index:2147483000;background:#000;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+.reader-lock[hidden]{display:none!important}
+.reader-lock-info{position:absolute;left:12%;top:30%;max-width:76%;color:#ffffff4a;font-size:13px;line-height:1.5;pointer-events:none;transition:left 3s ease,top 3s ease;text-shadow:0 1px 3px #000}
+.reader-lock-info p{margin:0}
+.reader-lock-title{font-weight:650;color:#ffffff5c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reader-lock-hint{margin-top:10px!important;font-size:12px;color:#ffffff3d}
+.reader-lock-ring{position:absolute;left:50%;top:50%;width:92px;height:92px;margin:-46px 0 0 -46px;opacity:0;pointer-events:none;transform:rotate(-90deg)}
+.reader-lock-ring-track{fill:none;stroke:#ffffff26;stroke-width:5}
+.reader-lock-ring-fill{fill:none;stroke:#c4ef76;stroke-width:5;stroke-linecap:round;stroke-dasharray:213.7;stroke-dashoffset:213.7}
+.reader-lock-holding .reader-lock-ring{opacity:1}
+.reader-lock-holding .reader-lock-ring-fill{stroke-dashoffset:0;transition:stroke-dashoffset 2s linear}
 
 /* Natural voice messages (read aloud extras): always readable, above the bars. */
 .reader-voice-note{position:absolute;z-index:30;left:50%;top:calc(env(safe-area-inset-top, 0px) + 68px);transform:translateX(-50%);width:max-content;max-width:calc(100% - 32px);padding:10px 14px;border:1px solid #c5ef6259;border-radius:10px;background:#0b1520f5;color:#f1f6fb;font-size:13px;line-height:1.45;text-align:center;box-shadow:0 4px 18px #0009;pointer-events:none}
