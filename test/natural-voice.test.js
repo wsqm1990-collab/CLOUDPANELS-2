@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCast, voicePlan, naturalSpeed, ttsBase, voiceEngineCount, naturalVoiceSupported, createNaturalVoice, TTS_FILES, TTS_BYTES, CAST } from '../src/natural-voice.js';
+import { createCast, voicePlan, naturalSpeed, ttsBase, voiceEngineCount, naturalVoiceSupported, createNaturalVoice, TTS_FILES, TTS_BYTES, CAST, EXTRAS } from '../src/natural-voice.js';
 
 test('every character keeps one voice; men, women and the narrator differ', () => {
   const cast = createCast();
@@ -10,7 +10,8 @@ test('every character keeps one voice; men, women and the narrator differ', () =
   assert.equal(cast.voiceFor({ voice: 'man', speaker: '  peter ' }), peter, 'the same name keeps its voice');
   assert.ok(CAST.man.includes(peter) && CAST.woman.includes(mj) && CAST.narrator.includes(narrator));
   assert.ok(!CAST.man.includes(narrator), 'the narrator never sounds like one of the men');
-  assert.equal(cast.voiceFor({ voice: 'man', speaker: 'guard' }), CAST.man[0], 'nameless extras share the first voice');
+  const guard = cast.voiceFor({ voice: 'man', speaker: 'guard' });
+  assert.ok(EXTRAS.man.includes(guard) && guard !== peter && guard !== harry, 'nameless people have a voice of their own');
   assert.equal(cast.voiceFor({ voice: 'dragon', speaker: 'X' }), CAST.man[2], 'unknown kinds read as a man');
   cast.reset(); assert.equal(cast.voiceFor({ voice: 'man', speaker: 'Harry' }), CAST.man[0], 'a new comic starts over');
 });
@@ -141,4 +142,77 @@ test('without a voice speed set, every line is said exactly as before', () => {
 test('the narrator tells scene descriptions at the calm pace of captions', () => {
   assert.deepEqual(voicePlan({ voice: 'narrator', kind: 'scene', tone: 'normal' }, 498), voicePlan({ voice: 'narrator', kind: 'caption', tone: 'normal' }, 498));
   assert.equal(voicePlan({ voice: 'narrator', kind: 'scene' }, 498, { speed: 1.5 }).speed, voicePlan({ voice: 'narrator', kind: 'caption' }, 498, { speed: 1.5 }).speed);
+});
+
+test('nameless people never sound like a named character', () => {
+  const cast = createCast();
+  const thug = cast.voiceFor({ voice: 'man', speaker: 'thug' }), peter = cast.voiceFor({ voice: 'man', speaker: 'Peter' });
+  assert.notEqual(thug, peter, 'the nameless thug does not take the hero\'s voice');
+  const mary = cast.voiceFor({ voice: 'woman', speaker: 'Mary' }), woman = cast.voiceFor({ voice: 'woman', speaker: 'woman' });
+  assert.notEqual(mary, woman);
+  assert.equal(cast.voiceFor({ voice: 'man', speaker: 'guard' }), cast.voiceFor({ voice: 'man', speaker: 'Guard' }), 'the same nameless person keeps a voice');
+  const scene = createCast();
+  assert.notEqual(scene.voiceFor({ voice: 'man', speaker: 'soldier' }), scene.voiceFor({ voice: 'man', speaker: 'thug' }), 'a soldier and a thug talking to each other differ');
+  assert.ok(EXTRAS.man.includes(cast.voiceFor({ voice: 'man', speaker: 'crowd' })), 'more nameless people share those voices');
+  for (const kind of ['man', 'woman']) for (const id of EXTRAS[kind]) assert.ok(!Object.values(CAST).some(pool => pool.includes(id)), `${id} is only for nameless people`);
+});
+
+test('with many characters, no one speaks with the voice of someone in the same scene', () => {
+  const cast = createCast(), names = ['Ben', 'Otto', 'Max', 'Eddie', 'Flash', 'Harry', 'Norman', 'Herman', 'Adrian', 'Quentin', 'Sergei', 'Aleksei', 'Mac', 'Wilson', 'Mark', 'Dmitri', 'Felix', 'Victor', 'Lonnie', 'Martin'];
+  for (let page = 0; page < names.length; page += 2) {
+    const lines = ['Peter', names[page], names[page + 1]].map(speaker => ({ kind: 'speech', voice: 'man', speaker, text: 'Hi.' }));
+    cast.learn(lines);
+    const voices = lines.map(line => cast.voiceFor(line));
+    assert.equal(new Set(voices).size, 3, `page ${page / 2 + 1}: ${voices}`);
+  }
+  assert.ok(CAST.man.includes(cast.voiceFor({ voice: 'man', speaker: 'Peter' })), 'everyone still a man\'s voice');
+});
+
+test('man or woman is what most of a character\'s lines say; one slip changes nothing', () => {
+  const cast = createCast(), say = (speaker, voice) => ({ kind: 'speech', speaker, voice, text: 'Hi.' });
+  cast.learn([say('Gwen', 'man')]);
+  assert.ok(CAST.man.includes(cast.voiceFor(say('Gwen', 'man'))), 'a wrong first guess...');
+  cast.learn([say('Gwen', 'woman'), say('Gwen', 'woman')]);
+  cast.learn([say('Gwen', 'woman')]);
+  assert.ok(CAST.woman.includes(cast.voiceFor(say('Gwen', 'man'))), '...is put right once most of her lines say woman');
+  assert.equal(cast.kindFor(say('Gwen', 'man')), 'woman');
+  cast.learn([say('Peter', 'man'), say('Peter', 'man')]); const peter = cast.voiceFor(say('Peter', 'man'));
+  cast.learn([say('Peter', 'woman')]);
+  assert.equal(cast.voiceFor(say('Peter', 'woman')), peter, 'one slip changes nothing');
+  const page = [say('Ana', 'woman'), say('Ana', 'woman')];
+  cast.learn(page); cast.learn(page); assert.equal(cast.known().find(person => person.name === 'Ana').voice, 'woman', 'a page counts once');
+});
+
+test('the AI gets the characters met so far, most recent first, with their longest name', () => {
+  const cast = createCast(), say = (speaker, voice) => ({ kind: 'speech', speaker, voice, text: 'Hi.' });
+  cast.learn([say('Peter', 'man'), say('Mary Jane', 'woman'), say('guard', 'man'), { kind: 'caption', speaker: 'narrator', voice: 'narrator', text: 'Later.' }]);
+  cast.learn([say('Peter Parker', 'man')]);
+  assert.deepEqual(cast.known(), [{ name: 'Peter Parker', voice: 'man' }, { name: 'Mary Jane', voice: 'woman' }]);
+  assert.equal(cast.known(1).length, 1);
+});
+
+test('robots and creatures have voices no one else has', () => {
+  for (const kind of ['robot', 'creature']) for (const id of CAST[kind]) {
+    for (const [other, pool] of Object.entries(CAST)) if (other !== kind) assert.ok(!pool.includes(id), `${kind} ${id} also in ${other}`);
+  }
+});
+
+test('the line about to be heard is made first; this page before the next', async () => {
+  const { made, factory } = fakeWorkers({ slow: 20 });
+  const engine = createNaturalVoice({ workerFactory: factory, base: 'x:/', ortUrl: 'x:/o', engines: 1 });
+  const plan = voicePlan({}, 677);
+  await engine.load();
+  engine.prepare(['Next page one.', 'Next page two.', 'Next page three.'].map(text => ({ text, plan })));
+  engine.prepare(['This page one.', 'This page two.'].map(text => ({ text, plan })), { first: true });
+  await engine.synth('Needed now.', plan, { urgent: true });
+  const said = made[0].posted.filter(message => message.type === 'say').map(message => message.text);
+  assert.deepEqual(said.slice(0, 3), ['Next page one.', 'Needed now.', 'This page one.'], 'the one already started finishes, then the urgent line, then this page');
+  engine.dispose();
+});
+
+test('every voice is in one list only, and there are many of each', () => {
+  const all = [...Object.values(CAST), ...Object.values(EXTRAS)].flat();
+  assert.equal(new Set(all).size, all.length, 'no voice in two lists');
+  assert.ok(CAST.man.length >= 16 && CAST.woman.length >= 16);
+  assert.ok(all.every(id => Number.isInteger(id) && id >= 0 && id < 904));
 });

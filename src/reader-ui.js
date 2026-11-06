@@ -197,6 +197,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   quickPosition.append(quickPage, quickPanel); quickNavigation.append(quickButtons.prev, quickPosition, quickButtons.next); shell.append(quickNavigation);
   let book, comic, rangeBuffer, sessionController, pageController;
   let serial = 0, pageSerial = 0, currentPage = -1, panel = 0, guided = false, loading = false, editing = false;
+  // Pages actually shown, and pages (or next comics) that could not be opened:
+  // read aloud tells a failed try (no connection) from a real move.
+  let shownSerial = 0, pageErrors = 0;
   let currentURL, imageWidth = 0, imageHeight = 0, pageWidth = 0, draft = [], pointer, popup;
   let storageWarning = '', lastStatus = '', errorStatus = false, retryPage;
   let immersive = false, panMode = false, prefetchTimer, restoreTimer, hintTimer, fullscreenOwned = false, fullscreenRequest;
@@ -355,10 +358,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const guidedPlus = () => store.state.settings.readerGuidedPlus === true;
   // Read aloud (optional, off unless switched on in Panel options).
   const aloudLabels = () => language() === 'pt-BR'
-    ? { title: 'Leitura em voz alta', on: 'Ligada', off: 'Desligada', note: 'Lê os balões em voz alta com a voz deste aparelho e passa sozinha para o próximo quadro. A IA do assistente lê cada página uma vez (alguns centavos por página, na sua chave) e guarda neste aparelho. Desligada, nada muda.', listen: 'Ouvir', pause: 'Pausar', ready: 'Toque em Ouvir para começar', preparing: 'Lendo os balões desta página…', noKey: 'A leitura em voz alta usa a chave da IA do assistente. Adicione sua chave no Assistente primeiro.', noVoice: 'Este aparelho não consegue ler em voz alta.', finished: 'Leitura em voz alta terminada.' }
+    ? { title: 'Leitura em voz alta', on: 'Ligada', off: 'Desligada', note: 'Lê os balões em voz alta com a voz deste aparelho e passa sozinha para o próximo quadro. A IA do assistente lê cada página uma vez (alguns centavos por página, na sua chave) e guarda neste aparelho. Desligada, nada muda.', listen: 'Ouvir', pause: 'Pausar', ready: 'Toque em Ouvir para começar', preparing: 'Lendo os balões desta página…', noKey: 'A leitura em voz alta usa a chave da IA do assistente. Adicione sua chave no Assistente primeiro.', noVoice: 'Este aparelho não consegue ler em voz alta.', finished: 'Leitura em voz alta terminada.', waiting: 'Sem conexão. Esperando a internet voltar para continuar…', connectionLost: 'A leitura parou: a internet não voltou. Toque em Ouvir para tentar de novo.' }
     : language() === 'es'
-      ? { title: 'Lectura en voz alta', on: 'Activada', off: 'Desactivada', note: 'Lee los globos en voz alta con la voz de este dispositivo y pasa sola a la siguiente viñeta. La IA del asistente lee cada página una vez (unos céntimos por página, con tu clave) y la guarda en este dispositivo. Desactivada, nada cambia.', listen: 'Escuchar', pause: 'Pausa', ready: 'Toca Escuchar para empezar', preparing: 'Leyendo los globos de esta página…', noKey: 'La lectura en voz alta usa la clave de IA del asistente. Añade tu clave en el Asistente primero.', noVoice: 'Este dispositivo no puede leer en voz alta.', finished: 'Lectura en voz alta terminada.' }
-      : { title: 'Read aloud', on: 'On', off: 'Off', note: 'Reads the balloons out loud with this device’s voice and moves on to the next panel by itself. The assistant’s AI reads each page once (a few cents per page, with your key) and keeps it on this device. Off, nothing changes.', listen: 'Listen', pause: 'Pause', ready: 'Tap Listen to start', preparing: 'Reading this page’s balloons…', noKey: 'Read aloud uses the assistant’s AI key. Add your key in Assistant first.', noVoice: 'This device can’t read aloud.', finished: 'Read aloud finished.' };
+      ? { title: 'Lectura en voz alta', on: 'Activada', off: 'Desactivada', note: 'Lee los globos en voz alta con la voz de este dispositivo y pasa sola a la siguiente viñeta. La IA del asistente lee cada página una vez (unos céntimos por página, con tu clave) y la guarda en este dispositivo. Desactivada, nada cambia.', listen: 'Escuchar', pause: 'Pausa', ready: 'Toca Escuchar para empezar', preparing: 'Leyendo los globos de esta página…', noKey: 'La lectura en voz alta usa la clave de IA del asistente. Añade tu clave en el Asistente primero.', noVoice: 'Este dispositivo no puede leer en voz alta.', finished: 'Lectura en voz alta terminada.', waiting: 'Sin conexión. Esperando a que vuelva internet para seguir…', connectionLost: 'La lectura se detuvo: internet no volvió. Toca Escuchar para intentarlo de nuevo.' }
+      : { title: 'Read aloud', on: 'On', off: 'Off', note: 'Reads the balloons out loud with this device’s voice and moves on to the next panel by itself. The assistant’s AI reads each page once (a few cents per page, with your key) and keeps it on this device. Off, nothing changes.', listen: 'Listen', pause: 'Pause', ready: 'Tap Listen to start', preparing: 'Reading this page’s balloons…', noKey: 'Read aloud uses the assistant’s AI key. Add your key in Assistant first.', noVoice: 'This device can’t read aloud.', finished: 'Read aloud finished.', waiting: 'No connection. Waiting for the internet to come back to go on…', connectionLost: 'Read aloud stopped: the internet did not come back. Tap Listen to try again.' };
   const readAloudEnabled = () => store.state.settings.readerReadAloud === true;
   // Read aloud extras (optional, each off unless switched on in Panel options).
   const naturalOn = () => store.state.settings.readerNaturalVoice === true;
@@ -1372,7 +1375,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const PLAY_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></svg>';
   const PAUSE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>';
   const speaker = createSpeaker(), scriptDisk = new ScriptDisk();
-  const aloud = { on: false, key: '', token: 0, poll: undefined, scripts: new Map(), scene: null, noted: false, nextVoices: [] };
+  const aloud = { on: false, key: '', token: 0, poll: undefined, scripts: new Map(), prefetching: new Map(), scene: null, noted: false, nextVoices: [], nextScript: null, current: null };
   // Extras: music and sounds made on the device, and natural (AI) voices.
   const soundscape = createSoundscape(), cast = createCast();
   let natural = null, castComic = '', voiceNotice = false;
@@ -1457,6 +1460,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!screenOffActive()) return;
     soundscape.resume(); soundscape.keepAlive(true);
     background.start({ ...mediaInfo(), actions: mediaActions });
+    // The whole comic comes to this device's memory now (up to 300 MB), so the
+    // pages no longer need the internet while the screen is off.
+    try { void rangeBuffer?.loadWhole?.().catch?.(() => {}); } catch { /* Pages are read as before. */ }
   }
   function backgroundStop() { soundscape.keepAlive(false); background.stop(); }
   // Lock-screen page buttons: the page changes and reading goes on from its start.
@@ -1467,7 +1473,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     hidePopup(); aloud.token++; aloud.key = ''; speaker.cancel(); soundscape.stopVoices();
     void showPage(target, 0);
   }
-  const aloudPosition = () => `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}:${guided}`;
+  const aloudPosition = () => `${serial}:${shownSerial}:${currentPage}:${panel}:${overview}:${guided}`;
   const aloudWait = ms => new Promise(resolve => setTimeout(resolve, ms));
   let listenState = '';
   function syncListenButtons() {
@@ -1489,7 +1495,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // The tap that starts reading is what lets the device play music and voices.
     if (musicOn() || effectsOn() || naturalOn()) { soundscape.music = musicOn(); soundscape.effects = effectsOn(); soundscape.resume(); }
     if (comic.id !== castComic) { cast.reset(); castComic = comic.id; }
-    startVoices(); aloud.noted = false;
+    startVoices(); aloud.noted = false; aloud.toldWaiting = false;
     aloud.on = true; aloud.key = ''; aloud.token++;
     clearInterval(aloud.poll); aloud.poll = setInterval(aloudTick, 200);
     backgroundStart();
@@ -1498,7 +1504,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function stopAloud({ hint = '' } = {}) {
     const playing = aloud.on;
     aloud.on = false; aloud.key = ''; aloud.token++; clearInterval(aloud.poll); aloud.poll = undefined;
-    speaker.cancel(); soundscape.keepAlive(false); if (background.active) background.pause(); soundscape.stop(); natural?.only([]); aloud.scene = null; aloud.nextVoices = []; syncListenButtons();
+    speaker.cancel(); soundscape.keepAlive(false); if (background.active) background.pause(); soundscape.stop(); natural?.only([]); aloud.scene = null; aloud.nextVoices = []; aloud.nextScript = null; aloud.current = null; syncListenButtons();
     if (playing && hint) showVoiceNote(hint, 4000);
   }
   function aloudReady() {
@@ -1523,11 +1529,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const promise = (async () => {
       const saved = await scriptDisk.get(key).catch(() => null);
       // A page read before the descriptions were wanted is read once more for them.
-      if (saved && (saved.described || !describe)) return saved;
+      if (saved && (saved.described || !describe)) { cast.learn(saved.lines); return saved; }
       if (!drawable?.complete || !(drawable.naturalWidth > 0)) throw new Error(text().pageFailed);
       const picture = pageImageForScript(drawable, rects), controller = new AbortController(), timer = setTimeout(() => controller.abort(), 90000);
       try {
-        const script = await requestPageScript({ key: assistantStore.key, image: picture, panelCount: rects.length, panelsKey: panelsKeyOf(rects), direction: rtl() ? 'rtl' : 'ltr', describe, signal: controller.signal });
+        // The characters met so far go along, so names and voices stay the same from page to page.
+        const script = await requestPageScript({ key: assistantStore.key, image: picture, panelCount: rects.length, panelsKey: panelsKeyOf(rects), direction: rtl() ? 'rtl' : 'ltr', describe, characters: cast.known(30), signal: controller.signal });
+        cast.learn(script.lines);
         void scriptDisk.put(key, script).catch(() => {});
         return script;
       } finally { clearTimeout(timer); }
@@ -1538,31 +1546,56 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     return promise;
   }
   // The next page is read by the AI while this one is being listened to.
-  function aloudPrefetch(page) {
+  // The next pages are read by the AI while this one is being listened to
+  // (each once, however often it is asked for).
+  function aloudPrefetch(page, { voices: makeVoices = true } = {}) {
     if (!book || !comic || page < 0 || page >= book.pageCount || spreadActive()) return;
     const key = scriptKey(comic, page);
-    if (!key || aloud.scripts.has(scriptMemo(key))) return;
-    const entry = decodedEntry(page), mine = serial, id = comic.id;
-    entry?.promise.then(async candidate => {
-      if (mine !== serial || !aloud.on || comic?.id !== id) return;
-      // In Panel view its panels are found first, on the device, exactly as
-      // when the page is shown, so the AI sees them numbered.
-      if (guided && !store.getPanels(id, page).length) {
-        try {
-          const result = await analyzePagePanels(candidate.decodedImage, { direction: rtl() ? 'rtl' : 'ltr' });
-          if (mine === serial && comic?.id === id && result.confidence === 'high' && result.panels?.length && !store.getPanels(id, page).length) { store.setPanels(id, page, result.panels); checkSaved(); observePersistence(); }
-        } catch { /* The page is shown without them, as before. */ }
-      }
-      if (mine !== serial || !aloud.on || comic?.id !== id) return;
-      void aloudScript(page, { drawable: candidate.decodedImage, rects: store.getPanels(id, page) }).then(script => {
-        // Natural voices: the next page's first lines are made while this one plays.
-        const voices = naturalOn() && /^en\b/i.test(script.language || '') ? natural : null;
-        if (!voices || voices.state === 'failed' || !aloud.on || mine !== serial) return;
-        const scenes = describingNow() && Boolean(script.described);
-        aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx' && (scenes || line.kind !== 'scene')).slice(0, 8).map(line => ({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) }));
-        voices.prepare(aloud.nextVoices);
-      }).catch(() => {});
-    }, () => {});
+    if (!key) return;
+    const memo = scriptMemo(key), mine = serial, id = comic.id;
+    let pending = aloud.scripts.get(memo) || aloud.prefetching.get(memo);
+    if (!pending) {
+      const entry = decodedEntry(page);
+      if (!entry) return;
+      pending = entry.promise.then(async candidate => {
+        if (mine !== serial || !aloud.on || comic?.id !== id) throw abortError();
+        // In Panel view its panels are found first, on the device, exactly as
+        // when the page is shown, so the AI sees them numbered.
+        if (guided && !store.getPanels(id, page).length) {
+          try {
+            const result = await analyzePagePanels(candidate.decodedImage, { direction: rtl() ? 'rtl' : 'ltr' });
+            if (mine === serial && comic?.id === id && result.confidence === 'high' && result.panels?.length && !store.getPanels(id, page).length) { store.setPanels(id, page, result.panels); checkSaved(); observePersistence(); }
+          } catch { /* The page is shown without them, as before. */ }
+        }
+        if (mine !== serial || !aloud.on || comic?.id !== id) throw abortError();
+        return aloudScript(page, { drawable: candidate.decodedImage, rects: store.getPanels(id, page) });
+      });
+      aloud.prefetching.set(memo, pending);
+      const done = () => { if (aloud.prefetching.get(memo) === pending) aloud.prefetching.delete(memo); };
+      pending.then(done, done);
+    }
+    // Natural voices: the next page's first lines are made while this one plays.
+    if (makeVoices) pending.then(script => { if (mine === serial && aloud.on && comic?.id === id) prepareNextVoices(script); }, () => {});
+  }
+  function prepareNextVoices(script) {
+    const voices = naturalOn() && /^en\b/i.test(script?.language || '') ? natural : null;
+    if (!voices || voices.state === 'failed') return;
+    const scenes = describingNow() && Boolean(script.described);
+    aloud.nextScript = script;
+    aloud.nextVoices = script.lines.filter(line => line.kind !== 'sfx' && (scenes || line.kind !== 'scene')).slice(0, 8).map(line => ({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) }));
+    voices.prepare(aloud.nextVoices);
+  }
+  // The screen just turned off: the descriptions of the panels still to come
+  // (and of the next page) are made now, so they are ready when their turn comes.
+  function listenAhead() {
+    const voices = natural, now = aloud.current;
+    if (!voices || voices.state === 'failed' || !now || !naturalOn() || !/^en\b/i.test(now.script.language || '')) return;
+    const scenes = describingNow() && Boolean(now.script.described), wanted = now.lines.map(line => ({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) }));
+    if (now.rects.length) for (let index = now.step.panel + 1; index < now.rects.length; index++) {
+      for (const line of linesForStep(now.script, { rects: now.rects, panel: index, overview: false, panelsKey: now.panelsKey, numberedRects: now.real, scenes })) wanted.push({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) });
+    }
+    voices.prepare(wanted, { first: true });
+    if (aloud.nextScript) prepareNextVoices(aloud.nextScript);
   }
   async function aloudPlay(key) {
     // With the screen off allowed, listening does not keep the screen on.
@@ -1570,19 +1603,38 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const labels = aloudLabels(), spread = spreadPages.length > 1, page = currentPage, pageId = spread ? spreadPages.join('+') : page;
     const real = spread ? [] : storedPanels(), rects = guided ? panels() : [], partsStep = partsPage(), step = { panel, overview };
     const waiting = setTimeout(() => { if (mine === aloud.token) showVoiceNote(labels.preparing, 60000); }, 350);
+    // The next page goes to the AI at once (and the one after, once this page is
+    // in), so turning a page does not wait for it.
+    const next = (spread ? spreadPages[spreadPages.length - 1] : page) + 1;
+    aloudPrefetch(next);
     let script;
-    try { script = await aloudScript(pageId, { drawable: image, rects: real }); }
-    catch (error) {
-      if (mine !== aloud.token) return;
-      stopAloud(); showVoiceNote(error?.type === 'no_key' ? labels.noKey : friendlyError(error, language()) || labels.noVoice, 9000); return;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try { script = await aloudScript(pageId, { drawable: image, rects: real }); break; }
+        catch (error) {
+          if (mine !== aloud.token || !aloud.on) return;
+          // No connection (or the AI busy for a moment): wait and try again for a
+          // few minutes instead of stopping. A reply it could not use: once more.
+          if (retryable(error) && attempt < (error?.type === 'empty_answer' ? 1 : 7)) {
+            waitingForConnection(error?.type !== 'empty_answer');
+            await aloudWait(Math.min(30000, 4000 * 2 ** attempt));
+            if (mine !== aloud.token || !aloud.on) return;
+            continue;
+          }
+          const why = error?.type === 'no_key' ? labels.noKey : retryable(error) && error?.type !== 'empty_answer' ? labels.connectionLost : friendlyError(error, language()) || labels.noVoice;
+          stopAloud(); showVoiceNote(why, 9000); tellListener(why); return;
+        }
+      }
     } finally { clearTimeout(waiting); }
     if (mine !== aloud.token || key !== aloud.key || !aloud.on) return;
+    connectionBack();
     if (!voiceNote.hidden && voiceNote.textContent === labels.preparing) voiceNote.hidden = true;
-    aloudPrefetch((spread ? spreadPages[spreadPages.length - 1] : page) + 1);
+    aloudPrefetch(next); aloudPrefetch(next + 1, { voices: false });
     const panelsKey = guided && !partsStep ? panelsKeyOf(real) : '', voiceLanguage = script.language || navigator.language || '';
     // Scene descriptions: with the screen off (when allowed), or always if chosen.
     const scenes = describingNow() && Boolean(script.described);
     const lines = linesForStep(script, { rects, panel: step.panel, overview: step.overview, panelsKey, numberedRects: real, sounds: effectsOn(), scenes });
+    aloud.current = { script, rects, step, panelsKey, real, lines: lines.filter(line => line.kind !== 'sfx') };
     if (background.active) background.update(mediaInfo());
     // Extras: the music and background sound follow this panel (or page).
     if (musicOn() || effectsOn()) {
@@ -1605,7 +1657,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   async function speakWithDevice(lines, language) {
     const lower = musicOn() || effectsOn();
     if (lower) soundscape.duck(true);
-    try { return await speaker.speak(lines, { language, speed: voiceSpeed() }); } finally { if (lower) soundscape.duck(false); }
+    // Each character keeps one kind of voice (the one most of their lines give).
+    const said = lines.map(line => ({ ...line, voice: cast.kindFor(line) }));
+    try { return await speaker.speak(said, { language, speed: voiceSpeed() }); } finally { if (lower) soundscape.duck(false); }
   }
   // With extras: sound effects play in their place, lines use the natural voices.
   async function perform(lines, { mine, language, voices }) {
@@ -1639,7 +1693,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     }
     const plan = cast.plan(line, { speed: voiceSpeed() });
     let audio;
-    try { audio = await untilSettled(voices.synth(line.text, plan), alive); } catch { return false; }
+    // The line about to be heard is made before anything else waiting.
+    try { audio = await untilSettled(voices.synth(line.text, plan, { urgent: true }), alive); } catch { return false; }
     if (!alive() || !audio) return false;
     return soundscape.playVoice(audio.samples, audio.sampleRate, plan);
   }
@@ -1650,7 +1705,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       for (const line of linesForStep(script, { rects, panel: index, overview: false, panelsKey, numberedRects: real, scenes })) wanted.push({ text: line.text, plan: cast.plan(line, { speed: voiceSpeed() }) });
     }
     voices.only([...wanted, ...aloud.nextVoices]);
-    voices.prepare(wanted);
+    // This page before the next one.
+    voices.prepare(wanted, { first: true });
   }
   function aloudAtEnd() {
     if (!book) return true;
@@ -1665,13 +1721,55 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       // A menu, a touch or a page still loading: wait for it, however long.
       while (alive() && !aloudReady()) await aloudWait(250);
       if (!alive()) return;
-      const ending = aloudAtEnd();
+      const ending = aloudAtEnd(), errors = pageErrors;
       await move(1);
       await aloudWait(ending ? 4000 : 550);
       if (!alive()) return;
+      // The next page (or the next comic of the folder) did not open: usually no
+      // connection for a moment. Wait and try the same again for a few minutes;
+      // once it opens, reading goes on from there.
+      if (pageErrors !== errors) {
+        const retry = retryPage;
+        for (let failures = 1; ; failures++) {
+          if (failures > 6 || typeof retry !== 'function') { stopAloud({ hint: aloudLabels().connectionLost }); tellListener(aloudLabels().connectionLost); return; }
+          waitingForConnection();
+          await aloudWait(Math.min(30000, 4000 * 2 ** (failures - 1)));
+          if (!alive()) return;
+          const before = pageErrors;
+          await retry();
+          if (mine !== aloud.token || !aloud.on) return;
+          if (pageErrors === before) { connectionBack(); return; }
+        }
+      }
       if (ending) break;
     }
     if (alive()) stopAloud({ hint: aloudLabels().finished });
+  }
+  // Errors worth another try: no connection, a timeout, the AI busy for a moment.
+  function retryable(error) {
+    if (!error || error.type === 'no_key') return false;
+    const status = Number(error.status) || 0;
+    return !status || [408, 409, 425, 429, 500, 502, 503, 504, 529].includes(status);
+  }
+  // Shown on the screen and on the lock screen while waiting for the internet.
+  function waitingForConnection(say = true) {
+    const labels = aloudLabels();
+    if (!say) return;
+    showVoiceNote(labels.waiting, 150000);
+    if (background.active) background.update({ ...mediaInfo(), subtitle: labels.waiting });
+    if (!aloud.toldWaiting) { aloud.toldWaiting = true; tellListener(labels.waiting); }
+  }
+  // With the screen off, a wait or a stop is said out loud once (in the app's
+  // language), so whoever is listening knows why it went quiet.
+  function tellListener(message) {
+    if (!screenOffActive() || !screenHidden() || !speaker.available()) return;
+    const voice = language() === 'pt-BR' ? 'pt-BR' : language() === 'es' ? 'es-ES' : 'en-US';
+    void speaker.speak([{ kind: 'caption', voice: 'narrator', speaker: 'narrator', tone: 'normal', text: message }], { language: voice }).catch?.(() => {});
+  }
+  function connectionBack() {
+    aloud.toldWaiting = false;
+    if (!voiceNote.hidden && voiceNote.textContent === aloudLabels().waiting) voiceNote.hidden = true;
+    if (background.active) background.update(mediaInfo());
   }
   for (const button of [listenButton, listenFloat]) button.addEventListener('click', () => { if (aloud.on) stopAloud(); else startAloud(); });
   function editToolbar() {
@@ -1876,7 +1974,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       currentURL = candidate.url; pendingURLs.delete(candidate.url);
       image.src = currentURL; showImage(true); image.alt = spreadPages.length > 1 ? `${text().pageOf(index + 1, activeBook.pageCount)} + ${index + 2}` : text().pageOf(index + 1, activeBook.pageCount);
       imageWidth = candidate.width; imageHeight = candidate.height;
-      currentPage = index; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
+      currentPage = index; shownSerial++; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
       layoutPage({ fromBottom, enter: direction });
       if (guided) {
         await obtainPagePanels({ signal: request.signal, imageElement: candidate.decodedImage });
@@ -1901,7 +1999,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     } catch (error) {
       release(candidate);
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
-      pageTransition.cancel(); if (!fromPager) turning = false; loading = false; activity(false); updateControls();
+      pageTransition.cancel(); if (!fromPager) turning = false; loading = false; activity(false); updateControls(); pageErrors++;
       try { window.dispatchEvent(new CustomEvent('cloudpanels-error', { detail: { where: 'page', error, extra: { page: index + 1, format: comic?.format, size: comic?.size, ...(error?.details || {}) } } })); } catch {}
       statusMessage(error?.message || text().pageFailed, true, () => showPage(index, targetPanel, { prompt, targetOverview }));
     } finally {
@@ -1921,7 +2019,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       activity(false); setImmersive(false); statusMessage(turnLabels().end);
     } catch {
       if (mySession !== serial || comic !== finishedComic) return;
-      loading = false; activity(false); updateControls(); setImmersive(false);
+      loading = false; activity(false); updateControls(); setImmersive(false); pageErrors++;
       statusMessage(turnLabels().nextFailed, true, endOfBook);
     }
   }
@@ -2516,7 +2614,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // off is allowed: then it goes on, and any movement on the page lands at once.
     const listening = aloud.on && screenOffActive();
     if (document.hidden && aloud.on && !listening) stopAloud();
-    if (document.hidden && listening) landMotion();
+    if (document.hidden && listening) { landMotion(); listenAhead(); }
     if (document.hidden && comic) { if (!listening) cancelPrefetch(); persist(false, { observe: false }); observePersistence({ immediate: true }); } else if (comic) schedulePrefetch();
   });
 

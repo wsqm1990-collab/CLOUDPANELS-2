@@ -32,8 +32,9 @@ export function scriptInstructions({ describe = false } = {}) {
     '- text: the exact words, but in normal sentence case instead of ALL CAPITALS, joining words split across lines. Keep the language of the page. No quotation marks around it.',
     '- x and y: the centre of the balloon, caption or sound effect, as fractions of the page width and height (0 = left or top edge, 1 = right or bottom edge), two decimals.',
     '- panel: the number of the numbered outline it sits in, or 0 when the page has no numbered outlines or it sits outside them.',
-    '- speaker: the character speaking (their name if the page shows it, otherwise a short description such as "old man"); "narrator" for captions. Use the same name for the same character on every page.',
-    '- voice: one of narrator, man, woman, boy, girl, old man, old woman, creature, robot. Use boy or girl only for young children; teenagers are man or woman. Old man and old woman are for the elderly.',
+    '- speaker: the character speaking (their name if the story shows it, otherwise a short description such as "old man"); "narrator" for captions. Use one name per person on every page, also when they appear in costume or under another name.',
+    '- Who says each balloon: follow its tail (the pointer) to the character it points at, not to whoever is nearest. When two or more characters share a panel, check the tail of every balloon. Balloons joined together belong to one speaker; a tail pointing out of the panel is someone off-panel.',
+    '- voice: one of narrator, man, woman, boy, girl, old man, old woman, creature, robot, by how the character looks (a woman is woman even when shouting). Use boy or girl only for young children; teenagers are man or woman. Old man and old woman are for the elderly. A character keeps the same voice on every page.',
     '- tone: one of normal, shout, whisper, sad, angry, scared, laugh.',
     '- language: the BCP 47 code of the lettering, such as en-US, pt-BR or es-ES.',
     `- sound (sound effects only): what it sounds like, one of ${SOUNDS.join(', ')}.`,
@@ -56,12 +57,19 @@ export function scriptInstructions({ describe = false } = {}) {
   ].join('\n');
 }
 
-/** The note sent with the page image. */
-export function scriptRequestNote({ direction = 'ltr', panelCount = 0 } = {}) {
+/**
+ * The note sent with the page image. `characters`: who was met on the pages
+ * read before (name and voice), so the same people keep the same names and
+ * voices from page to page.
+ */
+export function scriptRequestNote({ direction = 'ltr', panelCount = 0, characters = [] } = {}) {
   const order = direction === 'rtl' ? 'right to left (manga order), top to bottom' : 'left to right, top to bottom';
+  const known = (Array.isArray(characters) ? characters : []).filter(person => person && String(person.name || '').trim()).slice(0, 30)
+    .map(person => `${String(person.name).replace(/[\s;()]+/g, ' ').trim().slice(0, 60)} (${VOICES.has(person.voice) ? person.voice : 'man'})`);
   return `Reading order: ${order}. ` + (panelCount > 0
     ? `The coloured outlines numbered 1 to ${panelCount} mark the panels in reading order; they were drawn on the page for you and are not part of the art.`
-    : 'No panels are marked on this page.');
+    : 'No panels are marked on this page.')
+    + (known.length ? ` Characters met on the pages before (name and voice): ${known.join('; ')}. When one of them speaks here, use exactly that name; keep their voice unless this page clearly shows it is wrong.` : '');
 }
 
 /** A stable short description of panel rectangles (fractions of the page). */
@@ -269,14 +277,14 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utterance = 
 }
 
 /** Ask the AI for one page's script. `image` is a base64 JPEG; `describe` adds scene descriptions. */
-export async function requestPageScript({ key, image, panelCount = 0, panelsKey = '', direction = 'ltr', describe = false, signal, model = READ_ALOUD_MODEL, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
+export async function requestPageScript({ key, image, panelCount = 0, panelsKey = '', direction = 'ltr', describe = false, characters = [], signal, model = READ_ALOUD_MODEL, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
   if (!key) throw Object.assign(new Error('No AI key.'), { type: 'no_key' });
   const response = await fetchImpl('https://api.anthropic.com/v1/messages', {
     method: 'POST', signal, credentials: 'omit', referrerPolicy: 'no-referrer',
     headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
     body: JSON.stringify({ model, max_tokens: 4096, system: scriptInstructions({ describe }), messages: [{ role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } },
-      { type: 'text', text: scriptRequestNote({ direction, panelCount }) },
+      { type: 'text', text: scriptRequestNote({ direction, panelCount, characters }) },
     ] }] }),
   });
   if (!response.ok) {
