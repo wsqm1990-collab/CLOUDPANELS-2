@@ -186,12 +186,21 @@ export function linesForStep(script, { rects = [], panel = 0, overview = false, 
   if (overview || !lines.length) return [];
   if (!rects.length) return lines;
   const numbered = Boolean(script.panelsKey) && script.panelsKey === panelsKey;
+  // By its place on the page: among the whole steps (a close view of balloons reaches over
+  // its neighbours; the one showing a line's balloon is chosen in closeViews).
+  const whole = rects.map((rect, index) => rect?.part ? -1 : index).filter(index => index >= 0);
+  const placeOf = (x, y) => {
+    if (!whole.length || whole.length === rects.length) return containing(rects, x, y);
+    const found = containing(whole.map(index => rects[index]), x, y);
+    return found < 0 ? -1 : whole[found];
+  };
   // The steps can hold more than the numbered panels (areas outside them).
   const same = (a, b) => Boolean(a && b) && ['x', 'y', 'width', 'height'].every(name => Math.abs(a[name] - b[name]) < 1e-6);
   const places = lines.map(line => {
     let index = -1;
-    if (numbered && line.panel >= 1 && line.panel <= numberedRects.length) index = rects.findIndex(rect => same(rect, numberedRects[line.panel - 1]));
-    return index < 0 ? containing(rects, line.x, line.y) : index;
+    // (A panel grown to take in a balloon breaking out of it is still that panel.)
+    if (numbered && line.panel >= 1 && line.panel <= numberedRects.length) index = rects.findIndex(rect => !rect.part && same(rect.source || rect, numberedRects[line.panel - 1]));
+    return index < 0 ? placeOf(line.x, line.y) : index;
   });
   // A description with no place belongs to the panel after it (it opens it).
   for (let index = places.length - 1, next = -1; index >= 0; index--) {
@@ -200,8 +209,35 @@ export function linesForStep(script, { rects = [], panel = 0, overview = false, 
   // Any other line with no place stays with the line before it.
   let previous = 0;
   for (let index = 0; index < places.length; index++) { if (places[index] < 0) places[index] = previous; previous = places[index]; }
+  closeViews(lines, places, rects);
   const step = lines.filter((line, index) => places[index] === panel);
   return scenes ? [...step.filter(line => line.kind === 'scene'), ...step.filter(line => line.kind !== 'scene')] : step;
+}
+
+// Readable balloons: a panel shown whole and then in close views (see
+// readable-steps.js). Each line goes to the view showing its balloon; a line
+// whose balloon is not among them stays with the line before it, and the
+// descriptions of the panel with the panel shown whole.
+function closeViews(lines, places, rects) {
+  const chosen = new Map();
+  for (let index = 0; index < lines.length; index++) {
+    const family = rects[places[index]]?.family;
+    if (family === undefined) continue;
+    const views = [], whole = rects.findIndex(rect => rect.family === family && !rect.part);
+    rects.forEach((rect, at) => { if (rect.family === family && rect.part) views.push(at); });
+    if (!views.length) continue;
+    const opening = whole >= 0 ? whole : views[0], line = lines[index];
+    if (line.kind === 'scene') { places[index] = opening; continue; }
+    let best = -1, nearest = .08;
+    if (line.x !== null && line.y !== null && Number.isFinite(line.x) && Number.isFinite(line.y)) {
+      for (const at of views) for (const box of rects[at].balloons || []) {
+        const gap = Math.hypot(Math.max(box.x - line.x, 0, line.x - box.x - box.width), Math.max(box.y - line.y, 0, line.y - box.y - box.height));
+        if (gap < nearest || (gap === 0 && best < 0)) { nearest = gap; best = at; }
+      }
+    }
+    places[index] = best >= 0 ? best : chosen.has(family) ? chosen.get(family) : opening;
+    chosen.set(family, places[index]);
+  }
 }
 
 /** The best device voice for a language (exact region first, nicer voices preferred). */

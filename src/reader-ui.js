@@ -1,6 +1,8 @@
 import { openComic, pageImageSize, DISPLAY_PIXELS } from './reader.js';
 import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, pageReadingSteps, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
+import { analyzePageBalloons } from './balloon-analyzer.js';
+import { readableSteps, letterTarget, stepFrame, stepPosition } from './readable-steps.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
 import { stepReadingPosition, spreadPartners } from './reader-position.js';
@@ -174,6 +176,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const button = document.createElement('button'); button.id = `reader-${name}`; button.type = 'button'; button.className = 'button ghost compact'; return [name, button];
   }));
   const fitHint = document.createElement('div'); fitHint.className = 'reader-fit-hint'; fitHint.setAttribute('role', 'status'); fitHint.hidden = true; shell.append(fitHint);
+  // Readable balloons: a few dots show where the reader is among a panel's close views (then fade).
+  const stepDots = document.createElement('div'); stepDots.className = 'reader-step-dots'; stepDots.setAttribute('aria-hidden', 'true'); shell.append(stepDots);
   // Natural voice messages (download, ready, problems) get their own clearly visible place.
   const voiceNote = document.createElement('div'); voiceNote.className = 'reader-voice-note'; voiceNote.id = 'reader-voice-note'; voiceNote.setAttribute('role', 'status'); voiceNote.hidden = true; shell.append(voiceNote);
   // Balloon translator (optional): pressing and holding a balloon shows its translation here.
@@ -297,7 +301,37 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   // Whole-page panels as parts of a cropped page (one lying only in the cut margin is left out).
   const shownPanels = (rects, box) => box ? rects.map(rect => toCropped(rect, box)).filter(rect => rect.width > .01 && rect.height > .01) : rects;
   const wholePanels = (rects, box) => box ? rects.map(rect => toWhole(rect, box)) : rects;
-  const panels = () => guided && !editing && guidedFallbackPage === currentPage ? pageParts() : guided && !editing && guidedPlus() ? pageSteps() : storedPanels();
+  // The steps of Panel view as they are without readable balloons (panels, parts, areas)…
+  const baseSteps = () => !guided || editing ? storedPanels() : guidedFallbackPage === currentPage ? pageParts() : guidedPlus() ? pageSteps() : storedPanels();
+  // …and with them (close views of the balloons), the steps the reader goes through.
+  const panels = () => {
+    const base = baseSteps();
+    return guided && !editing && readableTarget() ? readableFor(base, guidedFallbackPage === currentPage) : base;
+  };
+  // What a list of steps holds (lists are compared by this: stored panels come as new copies each time).
+  const stepsKey = steps => steps.map(step => `${step.x},${step.y},${step.width},${step.height},${step.part || 0}`).join(';');
+  const readableActive = () => guided && !editing && readableTarget() > 0;
+  // A place kept outside the reader (saved position, bookmarks, other devices) counts only the
+  // steps without close views (each of those steps stays, or is shown whole first), so it
+  // means the same with readable balloons on or off.
+  function basePanel(index = panel) {
+    if (!readableActive()) return index;
+    const steps = panels(), step = steps[index];
+    if (!steps.some(item => item?.part) || !step) return index;
+    if (guidedFallbackPage === currentPage) return 0;
+    if (step.part) return step.family;
+    let count = 0; for (let at = 0; at < index; at++) if (!steps[at].part) count++;
+    return count;
+  }
+  // The step for such a place (-1: the last step).
+  function stepIndex(target) {
+    const steps = panels();
+    if (!readableActive() || target === -1 || !steps.some(item => item?.part)) return resolvePanelIndex(target, steps.length);
+    if (guidedFallbackPage === currentPage) return 0;
+    let count = -1, last = 0;
+    for (let at = 0; at < steps.length; at++) if (!steps[at].part) { last = at; if (++count === Math.max(0, Math.floor(Number(target) || 0))) return at; }
+    return last;
+  }
   const focusLabel = (n, count) => text().panelStatus(n, count);
   // Enhanced guided view: a page with no panels found is read in parts. The
   // parts follow the screen's shape and are never saved as the page's panels;
@@ -352,10 +386,22 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     stepsMemo = { key, steps };
     return steps;
   }
-  const partsPage = () => guided && !editing && guidedFallbackPage === currentPage && pageParts().length > 0;
+  const partsPage = () => guided && !editing && guidedFallbackPage === currentPage && panels().length > 0;
   // Panels found on the page, or the parts of a page without them.
   const panelMode = () => guidedMode === 'panels' || partsPage();
   const stepLabel = (n, count) => partsPage() ? plusLabels().part(n, count) : focusLabel(n, count);
+  // Where the reader is: the panel (counted once with its close views) and, in a close view, which one.
+  function stepText(rects) {
+    const step = rects[panel];
+    if (step?.part) {
+      const close = readableLabels().close(step.part, step.parts);
+      if (partsPage()) return close;
+      const place = stepPosition(rects, panel);
+      return `${focusLabel(place.panel, place.panels)} · ${close}`;
+    }
+    if (!partsPage() && rects.some(item => item?.family !== undefined)) { const place = stepPosition(rects, panel); return focusLabel(place.panel, place.panels); }
+    return stepLabel(panel + 1, rects.length);
+  }
   const showImage = visible => { image.hidden = !visible; image.style.display = visible ? 'block' : 'none'; };
   const activity = (busy, open = Boolean(comic)) => { onActivity?.({ busy, open }); };
   const fullscreenTarget = document.documentElement;
@@ -380,6 +426,129 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       ? { title: 'Lectura guiada mejorada', on: 'Activada', off: 'Desactivada', note: 'Oscurece el resto de la página en vez de cubrirlo, se desliza con calma entre viñetas y lee por partes las páginas donde no se encuentran viñetas. Desactivada, todo queda como antes.', part: (p, n) => `Parte ${p} de ${n}`, partsHint: 'No se encontraron viñetas · Leyendo esta página por partes' }
       : { title: 'Enhanced guided view', on: 'On', off: 'Off', note: 'Dims the rest of the page instead of covering it, glides calmly between panels, and reads pages where no panels are found in parts. Off, everything stays as before.', part: (p, n) => `Part ${p} of ${n}`, partsHint: 'No panels found · Reading this page in parts' };
   const guidedPlus = () => store.state.settings.readerGuidedPlus === true;
+  // Readable balloons (optional, off unless chosen in Panel options).
+  const readableLabels = () => language() === 'pt-BR'
+    ? { title: 'Balões legíveis', off: 'Desligado', normal: 'Normal', large: 'Grande', xlarge: 'Extra grande', note: 'Na leitura guiada, quando as letras de um quadro ficariam pequenas nesta tela, o quadro aparece inteiro e depois os balões chegam mais perto, em ordem de leitura, no tamanho escolhido. Nada da página é pulado. Desligado, tudo fica como antes.', close: (p, n) => `Balões ${p} de ${n}` }
+    : language() === 'es'
+      ? { title: 'Globos legibles', off: 'Desactivado', normal: 'Normal', large: 'Grande', xlarge: 'Extra grande', note: 'En la lectura guiada, cuando las letras de una viñeta quedarían pequeñas en esta pantalla, la viñeta se muestra entera y luego los globos se acercan, en orden de lectura, al tamaño elegido. No se salta nada de la página. Desactivado, todo queda como antes.', close: (p, n) => `Globos ${p} de ${n}` }
+      : { title: 'Readable balloons', off: 'Off', normal: 'Normal', large: 'Large', xlarge: 'Extra large', note: 'In Panel view, when a panel’s lettering would be small on this screen, the panel shows whole first, then its balloons come closer, in reading order, at the size chosen. Nothing on the page is skipped. Off, everything stays as before.', close: (p, n) => `Balloons ${p} of ${n}` };
+  const readableTarget = () => letterTarget(store.state.settings.readerReadableBalloons);
+  // The steps of the page with its balloons brought close where needed (see
+  // readable-steps.js), once its balloons are found; until then, as they were.
+  let readableMemo = { key: '', found: null, steps: [] };
+  function readableFor(base, fallback) {
+    const found = balloonsOf(currentPage);
+    if (!found?.balloons.length || !imageWidth || !imageHeight) return base;
+    const available = availableSize(), target = readableTarget(), direction = rtl() ? 'rtl' : 'ltr';
+    const key = `${Math.round(available.width)}x${Math.round(available.height)}|${target}|${direction}|${fallback}|${imageWidth}x${imageHeight}|${stepsKey(base)}`;
+    if (readableMemo.found === found && readableMemo.key === key) return readableMemo.steps;
+    // Never closer than the page's own pixels allow (about three screen pixels for each).
+    const plan = { balloons: found.balloons, imageWidth, imageHeight, availableWidth: available.width, availableHeight: available.height, margin: guidedPanelMargin(available.width, available.height), target, direction, maxWidth: imageWidth * 3.2 / (window.devicePixelRatio || 1) };
+    let steps;
+    // A page without panels was just shown whole: only its close views follow (or its parts, as before).
+    if (fallback) { const views = readableSteps({ ...plan, steps: [{ x: 0, y: 0, width: 1, height: 1 }], lead: false }); steps = views.length ? views : base; }
+    else steps = readableSteps({ ...plan, steps: base });
+    readableMemo = { key, found, steps };
+    return steps;
+  }
+  // The balloons of each page, found on this device (in a worker), kept for the pages around.
+  const balloonFinds = new Map(), balloonJobs = [];
+  let balloonRunning = false, stepsVersion = 0;
+  const balloonKey = index => comic ? `${comic.id}|${index}|${cropBordersOn() ? 'crop' : ''}` : '';
+  const balloonsOf = index => balloonFinds.get(balloonKey(index))?.result || null;
+  // One page at a time: the page being read goes first, the pages around after it.
+  function nextBalloonJob() {
+    if (balloonRunning) return;
+    const job = balloonJobs.shift(); if (!job) return;
+    balloonRunning = true;
+    void job.run().finally(() => { balloonRunning = false; nextBalloonJob(); });
+  }
+  function findBalloonsOn(index, drawable, { ahead = false } = {}) {
+    const key = balloonKey(index);
+    if (!key || !drawable || !sessionController || spreadPages.length > 1) return Promise.resolve(null);
+    const known = balloonFinds.get(key);
+    if (known) {
+      // Wanted now: it goes to the front of the line.
+      if (!ahead && known.job && balloonJobs.includes(known.job)) { balloonJobs.splice(balloonJobs.indexOf(known.job), 1); balloonJobs.unshift(known.job); nextBalloonJob(); }
+      return known.promise;
+    }
+    const mySession = serial, signal = sessionController.signal, entry = {};
+    entry.promise = new Promise(resolve => {
+      entry.job = { run: async () => {
+        entry.job = null;
+        // Gone by its turn (the reader moved far on, the page was let go): looked at again when needed.
+        const page = drawable.naturalWidth || drawable.width;
+        if (mySession !== serial || signal.aborted || !(page > 0) || Math.abs(index - currentPage) > 2) { if (balloonFinds.get(key) === entry) balloonFinds.delete(key); resolve(null); return; }
+        let result = null;
+        try { result = await analyzePageBalloons(drawable, { signal }); } catch { result = null; }
+        if (mySession !== serial || balloonFinds.get(key) !== entry) { resolve(null); return; }
+        if (!result) { balloonFinds.delete(key); resolve(null); return; }
+        settleBalloons(index, entry, result, mySession); resolve(result);
+      } };
+    });
+    balloonFinds.set(key, entry);
+    if (ahead) balloonJobs.push(entry.job); else balloonJobs.unshift(entry.job);
+    nextBalloonJob();
+    return entry.promise;
+  }
+  // A page's balloons are kept; for the page being read, its steps change only with the reader at
+  // rest (never under a finger, a page turn or a camera move), and the same panel stays in view.
+  function settleBalloons(index, entry, result, mySession) {
+    const busy = () => gesture || pinch || pager || motion || turning || cameraFrame || activePointers.size;
+    const reading = () => index === currentPage && guided && !editing && readableTarget();
+    if (reading() && positionCommitted && !loading && busy()) { setTimeout(() => { if (mySession === serial && balloonFinds.get(balloonKey(index)) === entry && !entry.result) settleBalloons(index, entry, result, mySession); }, 250); return; }
+    const before = reading() && !overview ? panels()[panel] : null, beforeSteps = reading() ? stepsKey(panels()) : null;
+    entry.result = result;
+    while (balloonFinds.size > 40) balloonFinds.delete(balloonFinds.keys().next().value);
+    if (reading()) balloonsArrived(before, beforeSteps);
+  }
+  // Found while the page is already being read: its steps change, the same panel stays in view.
+  function balloonsArrived(before, beforeSteps) {
+    if (!guided || editing || loading || !positionCommitted || currentPage < 0 || !readableTarget()) return;
+    if (stepsKey(panels()) === beforeSteps) return;
+    // (Read aloud starts this step again, with its lines as the new steps share them.)
+    stepsVersion++; dotsAt = '';
+    if (keepPlace(before, beforeSteps)) { layoutPage({ smooth: true }); persist(); } else { laidSteps = stepsKey(panels()); showStepDots(); }
+    normalStatus();
+  }
+  // After the steps change: the step that was shown if it is still there, else the panel it showed
+  // (or was part of); a page without panels starts again from the whole page.
+  function keepPlace(before, beforeSteps) {
+    const steps = panels(), last = Math.max(0, steps.length - 1);
+    if (overview || !before) {
+      if (!overview && !before && guidedFallbackPage === currentPage && steps.length && beforeSteps !== stepsKey(steps)) { overview = true; panel = 0; return true; }
+      if (panel > last) panel = last;
+      return false;
+    }
+    const same = (a, b) => ['x', 'y', 'width', 'height'].every(name => Math.abs(a[name] - b[name]) < 1e-6);
+    // Still there, as it was: it stays.
+    const kept = steps.findIndex(step => step === before || (Boolean(step.part) === Boolean(before.part) && same(step, before) && same(stepFrame(step), stepFrame(before))));
+    if (kept >= 0) { const moved = kept !== panel; panel = kept; return moved; }
+    if (guidedFallbackPage === currentPage) { overview = Boolean(steps.length); panel = 0; return true; }
+    const was = stepFrame(before).source || stepFrame(before);
+    const found = steps.findIndex(step => !step.part && same(step.source || step, was));
+    const next = found >= 0 ? found : Math.min(panel, last);
+    const moved = next !== panel || !steps[next] || !same(steps[next], before); panel = next;
+    return moved;
+  }
+  // The pages next to the one being read are looked at too, so turning to them never waits.
+  function balloonsAhead(entry, index) {
+    if (!entry || !guided || !readableTarget() || balloonFinds.has(balloonKey(index))) return;
+    const mySession = serial;
+    void entry.promise.then(candidate => { if (mySession === serial && guided && readableTarget() && candidate?.decodedImage) return findBalloonsOn(index, candidate.decodedImage, { ahead: true }); }).catch(() => {});
+  }
+  // A short wait for the shown page's balloons, so its steps are right from its first panel.
+  async function balloonsSoon(index, drawable, wait = 700) {
+    if (!readableTarget() || balloonsOf(index)) return;
+    const finding = findBalloonsOn(index, drawable);
+    await Promise.race([finding, new Promise(resolve => setTimeout(resolve, wait))]);
+  }
+  // Choosing a size (or Off) takes effect on the page being read.
+  function applyReadable(before, beforeSteps) {
+    if (!book || currentPage < 0 || loading || editing || !guided) { updateControls(); return; }
+    if (readableTarget()) void findBalloonsOn(currentPage, image);
+    stepsVersion++; keepPlace(before, beforeSteps); laidSteps = stepsKey(panels()); dotsAt = ''; layoutPage({ smooth: true }); persist(); updateControls(); normalStatus();
+  }
   // Read aloud (optional, off unless switched on in Panel options).
   const aloudLabels = () => language() === 'pt-BR'
     ? { title: 'Leitura em voz alta', on: 'Ligada', off: 'Desligada', note: 'Lê os balões em voz alta com a voz deste aparelho e passa sozinha para o próximo quadro. A IA do assistente lê cada página uma vez (alguns centavos por página, na sua chave) e guarda neste aparelho. Desligada, nada muda.', listen: 'Ouvir', pause: 'Pausar', ready: 'Toque em Ouvir para começar', preparing: 'Lendo os balões desta página…', noKey: 'A leitura em voz alta usa a chave da IA do assistente. Adicione sua chave no Assistente primeiro.', noVoice: 'Este aparelho não consegue ler em voz alta.', finished: 'Leitura em voz alta terminada.', waiting: 'Sem conexão. Esperando a internet voltar para continuar…', connectionLost: 'A leitura parou: a internet não voltou. Toque em Ouvir para tentar de novo.' }
@@ -484,7 +653,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!book || currentPage < 0) return;
     const rects = panels(), t = text();
     const fallback = guided && guidedFallbackPage === currentPage;
-    statusMessage(`${t.pageOf(currentPage + 1, book.pageCount)}${guided && rects.length ? ` · ${overview ? turnLabels().overview : stepLabel(panel + 1, rects.length)}` : ''}${fallback ? ` · ${rects.length ? plusLabels().partsHint : guidedLabels().fallback}` : storageWarning ? '' : ` · ${t.readHint}`}`);
+    statusMessage(`${t.pageOf(currentPage + 1, book.pageCount)}${guided && rects.length ? ` · ${overview ? turnLabels().overview : stepText(rects)}` : ''}${fallback ? ` · ${rects.length ? plusLabels().partsHint : guidedLabels().fallback}` : storageWarning ? '' : ` · ${t.readHint}`}`);
     if (fallback) {
       const identity = `${serial}:${currentPage}`;
       for (const [label, action] of [[guidedLabels().edit, startEditing], [guidedLabels().retry, () => enableGuided({ force: true })]]) {
@@ -544,7 +713,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!comic || !book || currentPage < 0 || loading || analysisPending || !positionCommitted) return true;
     try {
       const previous = store.state.progress[comic.id];
-      store.setProgress(comic.id, { page: currentPage, panel: guided ? panel : 0, overview: Boolean(guided && overview), pageCount: book.pageCount,
+      store.setProgress(comic.id, { page: currentPage, panel: guided ? basePanel() : 0, overview: Boolean(guided && overview), pageCount: book.pageCount,
         status: finished || previous?.status === 'finished' ? 'finished' : 'reading' });
       checkSaved(); if (observe) observePersistence(); notify();
       return !storageWarning;
@@ -563,7 +732,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     quickPage.textContent = `${t.page} ${Math.max(0, currentPage) + 1} / ${book?.pageCount || '—'}`;
     const rects = guided && !analysisPending && positionCommitted ? panels() : [];
     quickPanel.hidden = !rects.length;
-    quickPanel.textContent = rects.length ? overview ? turnLabels().overview : stepLabel(panel + 1, rects.length) : '';
+    quickPanel.textContent = rects.length ? overview ? turnLabels().overview : stepText(rects) : '';
   }
   function updateControls() {
     dialog.classList.toggle('reader-overlay-controls', !editing);
@@ -775,7 +944,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       viewportHeight = height; viewportWidth = width;
       dialog.style.setProperty('--reader-viewport-height', `${height}px`);
       pagerAbort(); stopMotion();
-      if (dialog.open && !loading && book && currentPage >= 0 && !editing && spreadActive() !== (spreadPages.length > 1) && (spreadActive() ? currentPage > 0 : true)) { void showPage(currentPage, panel); return; }
+      if (dialog.open && !loading && book && currentPage >= 0 && !editing && spreadActive() !== (spreadPages.length > 1) && (spreadActive() ? currentPage > 0 : true)) { void showPage(currentPage, basePanel()); return; }
       if (dialog.open && !loading) { pageTransition.cancel(); layoutPage({ preserveWidthPosition: true }); if (editing) editToolbar(); }
     });
   }
@@ -807,7 +976,16 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   // The part of the page lit in Panel view (fractions of the page), so the
   // enhanced guided view can glide it to the next panel with the camera.
-  let focusRect = null;
+  let focusRect = null, laidStep = null, laidSteps = null, laidPage = -1, dotsAt = '', dotsTimer;
+  function showStepDots() {
+    clearTimeout(dotsTimer);
+    const steps = guided && !editing && !overview && readableTarget() ? panels() : [], step = steps[panel], family = step?.family;
+    const members = family === undefined ? [] : steps.filter(item => item?.family === family);
+    if (members.length < 2 || !members.some(item => item.part)) { stepDots.classList.remove('is-visible'); return; }
+    stepDots.replaceChildren(...members.map(item => { const dot = document.createElement('span'); if (!item.part) dot.className = 'is-whole'; if (item === step) dot.classList.add('is-here'); return dot; }));
+    stepDots.classList.add('is-visible');
+    dotsTimer = setTimeout(() => stepDots.classList.remove('is-visible'), 1600);
+  }
   const wholePage = () => ({ x: 0, y: 0, width: 1, height: 1 });
   const mixRect = (from, to, t) => ({ x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t, width: from.width + (to.width - from.width) * t, height: from.height + (to.height - from.height) * t });
   // Calmer than the quick panel jump, and slower or faster with Animation speed.
@@ -815,7 +993,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function paintPanels() {
     overlay.replaceChildren(); overlay.classList.toggle('editing', editing); focusRect = null;
     if (editing) draft.forEach((rect, index) => overlay.append(drawRect(rect, index)));
-    else if (guided && panelMode() && !overview && panels()[panel]) { focusRect = panels()[panel]; overlay.append(drawRect(focusRect, panel, true)); }
+    else if (guided && panelMode() && !overview && panels()[panel]) { focusRect = stepFrame(panels()[panel]); overlay.append(drawRect(focusRect, panel, true)); }
   }
   function cancelCamera() { cameraGeneration++; if (cameraFrame) cancelAnimationFrame(cameraFrame); cameraFrame = undefined; cameraFinish = undefined; cameraLand = undefined; dialog.classList.remove('reader-guided-moving'); }
   function layoutPage({ smooth = false, keepZoom = false, preserveWidthPosition = false, fromBottom = false, enter = 1, keepCenter = false } = {}) {
@@ -831,6 +1009,16 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     dialog.classList.toggle('reader-overlay-controls', !editing);
     dialog.classList.toggle('reader-guided', guided && !editing);
     dialog.classList.toggle('reader-guided-plus', guided && !editing && guidedPlus());
+    // Readable balloons: the steps changed under the reader (the screen turned or was resized):
+    // the same panel stays in view, and the place is always one of the steps.
+    if (readableActive()) {
+      const steps = panels(), key = stepsKey(steps);
+      if (laidSteps !== null && laidSteps !== key && laidPage === currentPage) {
+        if (laidStep) keepPlace(laidStep, laidSteps); stepsVersion++; laidSteps = key;
+        queueMicrotask(() => { if (!loading && positionCommitted && guided) normalStatus(); });
+      }
+      if (panel > steps.length - 1) panel = Math.max(0, steps.length - 1);
+    }
     dialog.classList.toggle('reader-fit-fill', fitMode() === 'fill' && !editing && !guided);
     dialog.classList.toggle('reader-fit-screen', fitMode() === 'screen' && !editing && !guided);
     const rect = guided && panelMode() && !editing ? overview ? (guidedWholeFills() ? undefined : wholePage()) : panels()[panel] : undefined;
@@ -844,23 +1032,26 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const startX = (stage.scrollLeft + centerX - wrap.offsetLeft) / startWidth;
       const startY = (stage.scrollTop + centerY - wrap.offsetTop) / (startWidth / aspect);
       const targetX = rect.x + rect.width / 2, targetY = rect.y + rect.height / 2;
-      const plus = guidedPlus(), litFrom = focusRect || wholePage();
+      const plus = guidedPlus(), litFrom = focusRect || wholePage(), lit = stepFrame(rect);
+      // Readable balloons: going into, between or out of close views is a calm camera move (zoom evening out).
+      const calm = plus || Boolean(readableTarget() && !overview && (rect.part || laidStep?.part)); laidStep = overview ? null : rect; laidSteps = readableActive() ? stepsKey(panels()) : null; laidPage = currentPage;
+      const here = `${currentPage}:${panel}:${overview}`; if (here !== dotsAt) { dotsAt = here; showStepDots(); }
       paintPanels();
       const generation = cameraGeneration, identity = `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}`, reduce = document.visibilityState === 'hidden' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
       // Enhanced guided view: the lit part glides along with the camera
       // (zooming evenly) instead of vanishing while it moves.
-      const glide = plus && smooth && !reduce ? overlay.querySelector('.panel-focus') || overlay.appendChild(drawRect(rect, panel, true)) : null;
+      const glide = plus && smooth && !reduce ? overlay.querySelector('.panel-focus') || overlay.appendChild(drawRect(lit, panel, true)) : null;
       if (glide) positionRect(glide, litFrom);
       const apply = progress => {
-        const eased = plus ? (progress < .5 ? 4 * progress ** 3 : 1 - (2 - 2 * progress) ** 3 / 2) : 1 - (1 - progress) ** 3;
-        setPageWidth(plus ? startWidth * (target.width / startWidth) ** eased : startWidth + (target.width - startWidth) * eased, { availableHeight: available.height, syncGestures: false });
+        const eased = calm ? (progress < .5 ? 4 * progress ** 3 : 1 - (2 - 2 * progress) ** 3 / 2) : 1 - (1 - progress) ** 3;
+        setPageWidth(calm ? startWidth * (target.width / startWidth) ** eased : startWidth + (target.width - startWidth) * eased, { availableHeight: available.height, syncGestures: false });
         scrollToPosition(wrap.offsetLeft + (startX + (targetX - startX) * eased) * pageWidth - centerX,
           wrap.offsetTop + (startY + (targetY - startY) * eased) * pageWidth / aspect - centerY);
-        if (glide) { focusRect = mixRect(litFrom, rect, eased); positionRect(glide, focusRect); }
+        if (glide) { focusRect = mixRect(litFrom, lit, eased); positionRect(glide, focusRect); }
       };
       if (!smooth || reduce) { apply(1); syncGestureMode(); }
       else {
-        const began = performance.now(), duration = plus ? glideDuration() : overview ? pageDuration() : 240; dialog.classList.add('reader-guided-moving');
+        const began = performance.now(), duration = plus ? glideDuration() : overview ? pageDuration() : calm ? Math.round(glideDuration() * .8) : 240; dialog.classList.add('reader-guided-moving');
         const settle = () => { cameraFrame = undefined; cameraFinish = undefined; cameraLand = undefined; dialog.classList.remove('reader-guided-moving'); if (glide) paintPanels(); syncGestureMode(); };
         const frame = now => {
           if (generation !== cameraGeneration || identity !== `${serial}:${pageSerial}:${currentPage}:${panel}:${overview}` || !dialog.open) return;
@@ -875,6 +1066,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         cameraLand = () => { if (generation !== cameraGeneration) return; cancelAnimationFrame(cameraFrame); apply(1); settle(); };
       }
     } else {
+      laidStep = null; laidSteps = readableActive() ? stepsKey(panels()) : null; laidPage = currentPage; if (dotsAt) { dotsAt = ''; showStepDots(); }
       if (!keepZoom) {
         const available = availableSize();
         const guidedFill = guidedWholeFills();
@@ -926,7 +1118,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     spreadNote.textContent = language() === 'pt-BR' ? 'Com o iPad deitado e "Página inteira", mostra duas páginas lado a lado, como uma revista aberta.' : language() === 'es' ? 'Con el iPad en horizontal y "Página completa", muestra dos páginas lado a lado.' : 'With the iPad in landscape and Whole page fit, shows facing pages side by side.';
     const spreadRow = document.createElement('div'); spreadRow.className = 'row'; menu.append(spreadNote, spreadRow);
     const toggle = popupButton(spreadRow, `${spreadLabel}: ${spreadEnabled() ? (language() === 'en' ? 'On' : 'Ligada'.replace('Ligada', language() === 'es' ? 'Activada' : 'Ligada')) : (language() === 'en' ? 'Off' : language() === 'es' ? 'Desactivada' : 'Desligada')}`, () => {
-      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, panel);
+      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, basePanel());
     }, spreadEnabled());
     toggle.setAttribute('aria-pressed', String(spreadEnabled()));
     const slide = slideLabels(), slideNote = document.createElement('p'); slideNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
@@ -1112,7 +1304,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const labels = featureText(), menu = makePopup(labels.bookmarks), mySession = serial;
     popupHeading(menu, labels.bookmarks, labels.local);
     const actions = document.createElement('div'); actions.className = 'row'; menu.append(actions);
-    popupButton(actions, labels.addBookmark, () => editBookmark({ page: currentPage, panel: guided ? panel : 0, overview: Boolean(guided && overview), pageCount: book.pageCount, guided, label: '', note: '' }), true);
+    popupButton(actions, labels.addBookmark, () => editBookmark({ page: currentPage, panel: guided ? basePanel() : 0, overview: Boolean(guided && overview), pageCount: book.pageCount, guided, label: '', note: '' }), true);
     popupButton(actions, labels.close, hidePopup);
     const entries = store.getBookmarks(comic.id), list = document.createElement('div'); list.className = 'reader-bookmark-list'; menu.append(list);
     if (!entries.length) { const empty = document.createElement('p'); empty.className = 'reader-popup-note'; empty.textContent = labels.noBookmarks; list.append(empty); }
@@ -1262,7 +1454,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     cropSelect.addEventListener('change', () => {
       saveAppearance({ readerCropBorders: cropSelect.value === 'on' });
       if (!book || currentPage < 0) return;
-      clearDecoded(); void showPage(currentPage, panel, { targetOverview: overview });
+      clearDecoded(); void showPage(currentPage, basePanel(), { targetOverview: overview });
     });
     menu.append(backgrounds, cropField, turnField, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
   }
@@ -1307,20 +1499,23 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!book || currentPage < 0 || editing || loading) return;
     hidePopup(); panMode = false; overview = false; guided = true; store.setSettings({ readerGuided: true }); checkSaved(); observePersistence();
     setImmersive(true, { requestScreen: true });
-    const mySession = serial, myPage = pageSerial, selectedPanel = panel;
+    const mySession = serial, myPage = pageSerial, selectedPanel = basePanel();
     loading = true; positionCommitted = false; activity(true); updateControls();
     try {
+      const balloonsReady = balloonsSoon(currentPage, image);
       const rects = await obtainPagePanels({ force });
       if (serial !== mySession || pageSerial !== myPage || !guided) return;
+      await balloonsReady;
+      if (serial !== mySession || pageSerial !== myPage || !guided) return;
       const count = panels().length;
-      panel = resolvePanelIndex(selectedPanel, count); if (partsPage()) overview = panel === 0; loading = false; positionCommitted = true; updateControls(); layoutPage({ smooth: true }); persist(); normalStatus(); activity(false); wakeRestore();
-      if (rects.length) showHint(guidedLabels().detected(count), 3500);
+      panel = readableTarget() ? stepIndex(selectedPanel) : resolvePanelIndex(selectedPanel, count); if (partsPage()) overview = panel === 0; laidSteps = null; loading = false; positionCommitted = true; updateControls(); layoutPage({ smooth: true }); persist(); normalStatus(); activity(false); wakeRestore();
+      if (rects.length) showHint(guidedLabels().detected(stepPosition(panels(), 0).panels), 3500);
       else if (count) showHint(plusLabels().partsHint, 3500);
       else showHint(guidedLabels().fallback, 6500);
       schedulePrefetch();
     } catch (error) {
       if (serial !== mySession || pageSerial !== myPage || error?.name === 'AbortError') return;
-      loading = false; guidedMode = 'whole'; guidedFallbackPage = currentPage; panel = 0; overview = partsPage(); positionCommitted = true;
+      loading = false; guidedMode = 'whole'; guidedFallbackPage = currentPage; panel = 0; overview = partsPage(); positionCommitted = true; laidSteps = null;
       activity(false); updateControls(); layoutPage(); persist(); normalStatus();
       if (partsPage()) showHint(plusLabels().partsHint, 3500); else showHint(guidedLabels().fallback, 6500);
       schedulePrefetch();
@@ -1346,7 +1541,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     spreadNote.textContent = language() === 'pt-BR' ? 'Com o iPad deitado e "Página inteira", mostra duas páginas lado a lado, como uma revista aberta.' : language() === 'es' ? 'Con el iPad en horizontal y "Página completa", muestra dos páginas lado a lado.' : 'With the iPad in landscape and Whole page fit, shows facing pages side by side.';
     const spreadRow = document.createElement('div'); spreadRow.className = 'row'; menu.append(spreadNote, spreadRow);
     const toggle = popupButton(spreadRow, `${spreadLabel}: ${spreadEnabled() ? (language() === 'en' ? 'On' : 'Ligada'.replace('Ligada', language() === 'es' ? 'Activada' : 'Ligada')) : (language() === 'en' ? 'Off' : language() === 'es' ? 'Desactivada' : 'Desligada')}`, () => {
-      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, panel);
+      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, basePanel());
     }, spreadEnabled());
     toggle.setAttribute('aria-pressed', String(spreadEnabled()));
     // Enhanced guided view: off unless chosen here, kept on this device.
@@ -1359,6 +1554,19 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       hidePopup(); applyGuidedPlus();
     }, guidedPlus());
     plusToggle.id = 'reader-guided-plus-toggle'; plusToggle.setAttribute('aria-pressed', String(guidedPlus()));
+    // Readable balloons: off unless chosen here, kept on this device.
+    const readable = readableLabels(), readableNote = document.createElement('p'); readableNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    readableNote.textContent = readable.note;
+    const readableField = document.createElement('label'); readableField.className = 'reader-navigation-setting'; readableField.textContent = readable.title;
+    const readableSelect = document.createElement('select'); readableSelect.id = 'reader-readable-balloons';
+    for (const value of ['off', 'normal', 'large', 'xlarge']) { const option = document.createElement('option'); option.value = value; option.textContent = readable[value]; readableSelect.append(option); }
+    readableSelect.value = store.state.settings.readerReadableBalloons || 'off'; readableField.append(readableSelect); menu.append(readableNote, readableField);
+    readableSelect.addEventListener('change', () => {
+      const before = guided && !editing && !overview ? panels()[panel] : null, beforeSteps = guided && !editing ? stepsKey(panels()) : null;
+      try { store.setSettings({ readerReadableBalloons: readableSelect.value }); checkSaved(); observePersistence(); }
+      catch (error) { statusMessage(error?.message || text().storage, true); return; }
+      applyReadable(before, beforeSteps);
+    });
     // Read aloud: off unless chosen here, kept on this device.
     const aloudText = aloudLabels(), aloudNote = document.createElement('p'); aloudNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
     aloudNote.textContent = aloudText.note;
@@ -1551,7 +1759,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     hidePopup(); aloud.token++; aloud.key = ''; speaker.cancel(); soundscape.stopVoices();
     void showPage(target, 0);
   }
-  const aloudPosition = () => `${serial}:${shownSerial}:${currentPage}:${panel}:${overview}:${guided}`;
+  const aloudPosition = () => `${serial}:${shownSerial}:${currentPage}:${panel}:${overview}:${guided}:${stepsVersion}`;
   const aloudWait = ms => new Promise(resolve => setTimeout(resolve, ms));
   let listenState = '';
   function syncListenButtons() {
@@ -1774,7 +1982,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (background.active) background.update(mediaInfo());
     // Extras: the music and background sound follow this panel (or page).
     if (musicOn() || effectsOn()) {
-      const here = rects[step.panel], numbered = Boolean(script.panelsKey) && script.panelsKey === panelsKey;
+      const shown = rects[step.panel], here = shown ? stepFrame(shown).source || stepFrame(shown) : shown, numbered = Boolean(script.panelsKey) && script.panelsKey === panelsKey;
       const panelNumber = numbered && here && !step.overview ? real.findIndex(rect => ['x', 'y', 'width', 'height'].every(name => Math.abs(rect[name] - here[name]) < 1e-6)) + 1 : 0;
       aloud.scene = sceneForStep(script, { panelNumber }); soundscape.setScene(aloud.scene);
     }
@@ -1785,7 +1993,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       const finished = voices || effectsOn() ? await perform(lines, { mine, language: voiceLanguage, voices }) : await speakWithDevice(lines, voiceLanguage);
       if (!finished || mine !== aloud.token || !aloud.on) return;
       await aloudWait(Math.round(450 / voiceSpeed()));
-    } else await aloudWait(step.overview ? 900 : 1700);
+    } else {
+      // A panel shown whole just before its balloons come close: a short look (none when no one is looking).
+      const shown = rects[step.panel], opens = Boolean(!step.overview && shown && !shown.part && rects[step.panel + 1]?.part && rects[step.panel + 1].family === shown.family);
+      await aloudWait(opens ? (screenHidden() || lockScreen.locked ? 150 : 900) : step.overview ? 900 : 1700);
+    }
     if (mine !== aloud.token || key !== aloud.key || !aloud.on) return;
     await aloudAdvance(key, mine);
   }
@@ -2193,7 +2405,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       prefetchTimer = undefined;
       if (mySession !== serial || !book || loading || editing || document.hidden || currentPage !== page) return;
       const next = decodedEntry(last + 1);
-      const previous = () => { if (mySession === serial && currentPage === page && !spreadActive()) decodedEntry(page - 1); };
+      balloonsAhead(next, last + 1);
+      const previous = () => { if (mySession === serial && currentPage === page && !spreadActive()) balloonsAhead(decodedEntry(page - 1), page - 1); };
       if (next && !next.candidate) next.promise.then(previous, previous); else previous();
     }, 120);
   }
@@ -2258,15 +2471,19 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       currentPage = index; shownSerial++; currentCrop = candidate.crop || null; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
       layoutPage({ fromBottom, enter: direction });
       if (guided) {
+        const balloonsReady = balloonsSoon(index, candidate.decodedImage);
         await obtainPagePanels({ signal: request.signal, imageElement: candidate.decodedImage });
+        if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
+        await balloonsReady;
         if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
         // The panels found (or, with the enhanced view, the parts of a page without them).
         const count = panels().length;
-        panel = resolvePanelIndex(targetPanel, count); overview = Boolean(targetOverview && count);
+        panel = readableTarget() ? stepIndex(targetPanel) : resolvePanelIndex(targetPanel, count); overview = Boolean(targetOverview && count);
         // A page read in parts shows whole first; reading back lands on its last part.
         if (partsPage()) overview = targetPanel !== -1 && panel === 0;
       }
-      loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom, enter: direction }); persist(); updateControls(); normalStatus();
+      // (The place was just chosen for the page's steps as they are now.)
+      laidSteps = null; loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom, enter: direction }); persist(); updateControls(); normalStatus();
       if (snapshot) await pageTransition.play({ snapshot, style: pageAnimation(), duration: pageDuration(), direction: direction * (rtl() ? -1 : 1) });
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
       if (!fromPager) turning = false;
@@ -2787,7 +3004,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     serial++; pageSerial++; pageTransition.cancel(); turning = false; overview = false; guidedMode = 'whole'; cancelAnalysis(); cancelCamera(); cancelPrefetch(); pageController?.abort(); sessionController?.abort();
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
-    hideTranslation(); translation.pages.clear(); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
+    hideTranslation(); translation.pages.clear(); balloonFinds.clear(); readableMemo = { key: '', found: null, steps: [] }; laidStep = null; laidSteps = null; laidPage = -1; balloonJobs.length = 0; dotsAt = ''; clearTimeout(dotsTimer); stepDots.classList.remove('is-visible'); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
     clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; clearTimeout(voiceNoteTimer); voiceNote.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;

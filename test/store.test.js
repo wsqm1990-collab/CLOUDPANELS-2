@@ -428,6 +428,15 @@ test('crop borders starts off and is kept', () => {
   const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
   assert.equal(restored.state.settings.readerCropBorders, true);
 });
+test('readable balloons starts off, takes only the sizes offered, and is kept', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerReadableBalloons, 'off');
+  s.setSettings({readerReadableBalloons: 'large'}); assert.equal(s.state.settings.readerReadableBalloons, 'large');
+  s.setSettings({readerReadableBalloons: 'huge', language: 'es'}); assert.equal(s.state.settings.readerReadableBalloons, 'large', 'only the sizes offered');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerReadableBalloons, 'large');
+  s.setSettings({readerReadableBalloons: 'off'}); assert.equal(s.state.settings.readerReadableBalloons, 'off');
+});
 test('the balloon translator starts off, follows the device language until chosen, and is kept', () => {
   const s = new LibraryStore({storage: memory()});
   assert.equal(s.state.settings.readerTranslate, false); assert.equal(s.state.settings.readerTranslateTo, '');
