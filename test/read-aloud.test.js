@@ -47,6 +47,32 @@ test('when the panels change (or the page is read in parts) lines follow their p
   assert.deepEqual(linesForStep(placeless, { rects: parts, panel: 0 }).map(line => line.text), ['A', 'B'], 'a line with no place stays with the one before it');
 });
 
+test('readable balloons: each close view reads the balloons it shows; the whole panel keeps its description', async () => {
+  const { readableSteps } = await import('../src/readable-steps.js');
+  const page = [{ x: .05, y: .05, width: .9, height: .42 }, { x: .05, y: .5, width: .9, height: .45 }];
+  const balloon = (x, y) => ({ x: x - .02, y: y - .01, width: .2, height: .06, text: { x, y, width: .16, height: .04 }, letter: .0075 });
+  const steps = readableSteps({ steps: page, balloons: [balloon(.12, .08), balloon(.62, .1), balloon(.12, .6)], imageWidth: 1988, imageHeight: 3056, availableWidth: 412, availableHeight: 860, margin: 10, target: 9.5 });
+  const views = steps.map((step, index) => step.part && step.family === 0 ? index : -1).filter(index => index >= 0);
+  assert.equal(views.length, 2, 'the top panel is shown in two close views');
+  const script = parseScript(JSON.stringify({ lines: [
+    { panel: 1, x: .5, y: .2, kind: 'scene', text: 'A street at night.' }, { panel: 1, x: .2, y: .1, text: 'Left!' }, { panel: 1, text: 'And on.' },
+    { panel: 1, x: .7, y: .12, text: 'Right!' }, { panel: 2, x: .2, y: .62, text: 'Below.' }] }), { panelCount: 2, panelsKey: panelsKeyOf(page), describe: true });
+  const texts = panel => linesForStep(script, { rects: steps, panel, panelsKey: panelsKeyOf(page), numberedRects: page, scenes: true }).map(line => line.text);
+  assert.deepEqual(texts(0), ['A street at night.'], 'the panel shown whole: its description');
+  assert.deepEqual(texts(views[0]), ['Left!', 'And on.'], 'a line with no place stays with the one before it');
+  assert.deepEqual(texts(views[1]), ['Right!']);
+  const below = steps.findIndex(step => step.family === 1 && !step.part);
+  assert.ok(below > views[1]);
+  assert.deepEqual(steps.slice(below).flatMap((step, index) => texts(below + index)), ['Below.'], 'nothing is lost or read twice');
+  // Lines placed only by where they are (no panel numbers) stay with their own panel,
+  // even where a close view of the panel above reaches over it.
+  const placed = parseScript(JSON.stringify({ lines: [{ x: .2, y: .1, text: 'Left!' }, { x: .7, y: .12, text: 'Right!' }, { x: .2, y: .55, text: 'Under, no balloon found.' }, { x: .2, y: .62, text: 'Below.' }] }));
+  const where = panel => linesForStep(placed, { rects: steps, panel, panelsKey: '' }).map(line => line.text);
+  assert.ok(steps[views[0]].y + steps[views[0]].height > .55, 'the close view does reach over the panel below');
+  assert.deepEqual([...views.flatMap(where)], ['Left!', 'Right!']);
+  assert.deepEqual(steps.slice(below).flatMap((step, index) => where(below + index)), ['Under, no balloon found.', 'Below.']);
+});
+
 test('the device voice matches the language, preferring the exact region and nicer voices', () => {
   const voices = [{ name: 'Joana', lang: 'pt-PT' }, { name: 'Luciana', lang: 'pt-BR' }, { name: 'Google português do Brasil', lang: 'pt_BR' }, { name: 'Samantha', lang: 'en-US', default: true }];
   assert.equal(pickVoice(voices, 'pt-BR').name, 'Google português do Brasil');

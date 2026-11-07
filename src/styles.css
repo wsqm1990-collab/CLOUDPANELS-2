@@ -739,3 +739,13 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .reader-translation-text.reader-translation-note{font-size:13px;font-weight:500;color:#dbe5ef}
 .reader-translation-original{margin:8px 0 0;font-size:12px;line-height:1.5;color:#9fb0c3;overflow-wrap:anywhere}
 .reader-translate #reader-image{-webkit-touch-callout:none}
+
+/* Readable balloons (optional): where the reader is among a panel's close views, for a moment. */
+.reader-step-dots{position:absolute;z-index:15;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 62px);transform:translateX(-50%);display:flex;align-items:center;gap:7px;padding:7px 11px;border-radius:999px;background:#0b1520b8;box-shadow:0 2px 12px #0006;opacity:0;transition:opacity .45s ease;pointer-events:none}
+.reader-step-dots.is-visible{opacity:1;transition-duration:.15s}
+.reader-step-dots>span{width:6px;height:6px;border-radius:50%;background:#ffffff5c;transition:background-color .25s,transform .25s}
+.reader-step-dots>span.is-whole{width:9px;border-radius:2px}
+.reader-step-dots>span.is-here{background:var(--lime,#c5ef62);transform:scale(1.35)}
+.reader-dialog:not(.reader-immersive) .reader-step-dots{bottom:calc(env(safe-area-inset-bottom,0px) + 112px)}
+.reader-dialog.reader-has-quick-navigation .reader-step-dots{bottom:calc(env(safe-area-inset-bottom,0px) + 92px)}
+@media (prefers-reduced-motion:reduce){.reader-step-dots,.reader-step-dots>span{transition:none}}
