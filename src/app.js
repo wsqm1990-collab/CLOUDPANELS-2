@@ -11,6 +11,7 @@ import {clearArchiveListings} from './reader.js';
 import {aloudEvents,interruptedListening,noteAloud} from './aloud-log.js';
 import {assistantStore,buildLibraryIndex,libraryBrief,libraryTools,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder, coverPicks} from './app-helpers.js';
+import {sagaWheelCard, openSagaWheel} from './saga-wheel-view.js';
 
 const copy = {
   en: {
@@ -923,9 +924,19 @@ function richText(textValue,byRef){
   }
   return box;
 }
+// The lucky wheel picks the next saga (see saga-wheel-view.js); it needs no AI key.
+function openWheel(){
+  openSagaWheel({store,t,element,action,openModal,openComic,toast,showFolder,
+    loadCover:(comic,signal)=>covers.get(comic,{signal,priority:'visible'})});
+}
+function showFolder(path){
+  closeModal();clearComicSelection(true);view='library';libraryMode='folders';selectedCollection=null;
+  folderPath=path.slice();visibleCount=60;document.querySelector('#search').value='';render();
+  void saveRememberedConnection().catch(()=>{});window.scrollTo({top:0,behavior:'auto'});
+}
 function renderAssistant() {
   const L=aiText();
-  main.append(heading(L.title,L.subtitle));
+  main.append(heading(L.title,L.subtitle),sagaWheelCard({store,element,action,onOpen:openWheel}));
   if(!assistantStore.key){
     const input=element('input',{class:'input',type:'password',autocomplete:'off',placeholder:'sk-ant-…','aria-label':L.keyLabel});
     const error=element('p',{class:'form-error',hidden:true});
