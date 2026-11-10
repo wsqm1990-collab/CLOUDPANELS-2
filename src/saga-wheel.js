@@ -109,31 +109,25 @@ export function randomUnit() {
 }
 const pick = (random, count) => Math.min(count - 1, Math.max(0, Math.floor(random() * count)));
 
+// The wheel's slices hide what is under them: they only make the show.
+export const WHEEL_SLICES = 12;
+
 /**
- * The sagas shown on the wheel: up to `count`, drawn at random from the pool.
- * When the pool is bigger than the wheel, the latest winners sit out (as many
- * as the others can replace). A short pool is shown whole, repeated, each saga
- * the same number of times, so the wheel stays a wheel. Whatever is on the
- * wheel can win, every slice as likely as any other.
+ * The next saga, by chance, from the whole draw: every saga in it as likely as
+ * any other. In a big draw (more than 8), the latest winners sit out for a
+ * while, so spinning again brings something else; in a small one, anything
+ * can come up again.
  */
-export function sampleSlices(pool, {count = 8, minSlices = 6, avoid = [], random = randomUnit} = {}) {
-  if (!Array.isArray(pool) || !pool.length) return [];
-  count = Math.max(1, count);
-  const recent = new Set((Array.isArray(avoid) ? avoid : []).slice(0, Math.max(0, Math.min(10, pool.length - count))));
-  const base = pool.filter(saga => !recent.has(saga.key));
-  const size = Math.min(count, base.length);
-  for (let index = 0; index < size; index++) {
-    const other = index + pick(random, base.length - index);
-    [base[index], base[other]] = [base[other], base[index]];
-  }
-  const chosen = base.slice(0, size), slices = [];
-  for (let round = Math.ceil(minSlices / size); round > 0; round--) slices.push(...chosen);
-  return slices;
+export function pickSaga(pool, {avoid = [], random = randomUnit} = {}) {
+  if (!Array.isArray(pool) || !pool.length) return null;
+  const recent = new Set((Array.isArray(avoid) ? avoid : []).slice(0, Math.max(0, Math.min(10, pool.length - 8))));
+  const fresh = pool.filter(saga => !recent.has(saga.key));
+  return fresh[pick(random, fresh.length)];
 }
 
-/** The winning slice: any slice, equally likely (so any saga of the pool is). */
-export function pickWinner(slices, random = randomUnit) {
-  return slices.length ? pick(random, slices.length) : -1;
+/** Where the wheel stops: any slice, equally likely. */
+export function pickSlice(total = WHEEL_SLICES, random = randomUnit) {
+  return total > 0 ? pick(random, total) : -1;
 }
 
 /**

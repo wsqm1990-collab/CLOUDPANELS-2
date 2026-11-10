@@ -1,34 +1,34 @@
-// The lucky wheel's screen (opened from the Assistant): a wheel of sagas that
-// spins and stops on the next one to read, with the buttons to start it (or
-// go on with it) right away. The choice is made by chance (see saga-wheel.js);
-// the wheel only shows it.
-import {findSagas, wheelCounts, wheelPool, wheelScopes, sampleSlices, pickWinner, landingRotation, sliceAtRotation, spinEase, rememberWinner, PAUSED_AFTER_DAYS} from './saga-wheel.js';
+// The lucky wheel's screen (opened from the Assistant): a wheel of hidden
+// slices that spins and stops on a surprise, the next saga to read, drawn by
+// chance from everything not read yet (see saga-wheel.js). Nothing tells what
+// can come up before it stops; then the buttons start it (or go on with it).
+import {findSagas, wheelCounts, wheelPool, wheelScopes, pickSaga, pickSlice, WHEEL_SLICES, landingRotation, sliceAtRotation, spinEase, rememberWinner, PAUSED_AFTER_DAYS} from './saga-wheel.js';
 
 const TEXT = {
-  en: {title: 'Lucky wheel', cardText: 'Can’t decide what to read? Spin the wheel and let chance pick your next saga.', cardCounts: '{new} not started · {paused} started and stopped', open: 'Spin the wheel',
-    subtitle: 'Your next saga, picked by chance from your folders.', all: 'All', new: 'Not started', paused: 'Started and stopped',
-    hint: 'Sagas already finished, and the ones you read in the last {days} days, stay out.', scope: 'Spin in', wholeLibrary: 'Whole library',
-    spin: 'Spin', spinAgain: 'Spin again', spinning: 'Spinning…', pool: '{count} sagas in the draw', poolOne: '1 saga in the draw',
+  en: {title: 'Lucky wheel', cardText: 'Can’t decide what to read? Spin the wheel: your next saga is a surprise.', cardCounts: '{new} not started · {paused} started and stopped', open: 'Spin the wheel',
+    subtitle: 'A surprise: the wheel picks your next saga from everything you haven’t read yet.', all: 'All', new: 'Not started', paused: 'Started and stopped',
+    hint: 'Only the sagas you finished, and the ones you read in the last {days} days (being read now), stay out.', scope: 'Spin in', wholeLibrary: 'Whole library',
+    spin: 'Spin', spinAgain: 'Spin again', spinning: 'Spinning…', pool: '{count} sagas in the draw · any of them can come up', poolOne: '1 saga in the draw',
     emptyLibrary: 'Add comics to your library and the wheel will pick from your folders.', allDone: 'Every saga in your library is finished or being read right now. Impressive!',
     emptyPool: 'No sagas for this choice here. Try “All” or another folder.', winner: 'Your next saga', newInfo: 'Not started · {count} stories', newInfoOne: 'Not started · 1 story',
     pausedInfo: '{read} of {count} read', lastRead: 'last read {when}', startsWith: 'Starts with {name}', nextUp: 'Next: {name}', pageOf: 'page {page} of {count}',
-    start: 'Start reading', continue: 'Continue', openFolder: 'Open folder', wheelLabel: 'Wheel with {names}', stopped: 'The wheel stopped on {name}.'},
-  'pt-BR': {title: 'Roleta da sorte', cardText: 'Na dúvida do que ler? Gire a roleta e deixe a sorte escolher sua próxima saga.', cardCounts: '{new} não começadas · {paused} começadas e paradas', open: 'Girar a roleta',
-    subtitle: 'Sua próxima saga, sorteada entre as suas pastas.', all: 'Todas', new: 'Não começadas', paused: 'Começadas e paradas',
-    hint: 'Ficam de fora as sagas que você já terminou e as que leu nos últimos {days} dias.', scope: 'Girar em', wholeLibrary: 'Biblioteca inteira',
-    spin: 'Girar', spinAgain: 'Girar de novo', spinning: 'Girando…', pool: '{count} sagas no sorteio', poolOne: '1 saga no sorteio',
+    start: 'Start reading', continue: 'Continue', openFolder: 'Open folder', wheelLabel: 'Wheel with {count} hidden sagas', stopped: 'The wheel stopped on {name}.'},
+  'pt-BR': {title: 'Roleta da sorte', cardText: 'Na dúvida do que ler? Gire a roleta: sua próxima saga é surpresa.', cardCounts: '{new} não começadas · {paused} começadas e paradas', open: 'Girar a roleta',
+    subtitle: 'Surpresa: a roleta sorteia sua próxima saga entre tudo o que você ainda não leu.', all: 'Todas', new: 'Não começadas', paused: 'Começadas e paradas',
+    hint: 'Só ficam de fora as sagas que você já terminou e as que leu nos últimos {days} dias (as que está lendo agora).', scope: 'Girar em', wholeLibrary: 'Biblioteca inteira',
+    spin: 'Girar', spinAgain: 'Girar de novo', spinning: 'Girando…', pool: '{count} sagas no sorteio · qualquer uma pode sair', poolOne: '1 saga no sorteio',
     emptyLibrary: 'Adicione quadrinhos à sua biblioteca e a roleta vai sortear entre as suas pastas.', allDone: 'Todas as sagas da sua biblioteca já foram lidas ou estão sendo lidas agora. Impressionante!',
     emptyPool: 'Nenhuma saga para essa escolha aqui. Tente “Todas” ou outra pasta.', winner: 'Sua próxima saga', newInfo: 'Ainda não começada · {count} histórias', newInfoOne: 'Ainda não começada · 1 história',
     pausedInfo: '{read} de {count} lidas', lastRead: 'última leitura {when}', startsWith: 'Começa por {name}', nextUp: 'Próxima: {name}', pageOf: 'página {page} de {count}',
-    start: 'Começar a ler', continue: 'Continuar', openFolder: 'Abrir pasta', wheelLabel: 'Roleta com {names}', stopped: 'A roleta parou em {name}.'},
-  es: {title: 'Ruleta de la suerte', cardText: '¿No sabes qué leer? Gira la ruleta y deja que la suerte elija tu próxima saga.', cardCounts: '{new} sin empezar · {paused} empezadas y paradas', open: 'Girar la ruleta',
-    subtitle: 'Tu próxima saga, sorteada entre tus carpetas.', all: 'Todas', new: 'Sin empezar', paused: 'Empezadas y paradas',
-    hint: 'Quedan fuera las sagas que ya terminaste y las que leíste en los últimos {days} días.', scope: 'Girar en', wholeLibrary: 'Toda la biblioteca',
-    spin: 'Girar', spinAgain: 'Girar de nuevo', spinning: 'Girando…', pool: '{count} sagas en el sorteo', poolOne: '1 saga en el sorteo',
+    start: 'Começar a ler', continue: 'Continuar', openFolder: 'Abrir pasta', wheelLabel: 'Roleta com {count} sagas escondidas', stopped: 'A roleta parou em {name}.'},
+  es: {title: 'Ruleta de la suerte', cardText: '¿No sabes qué leer? Gira la ruleta: tu próxima saga es una sorpresa.', cardCounts: '{new} sin empezar · {paused} empezadas y paradas', open: 'Girar la ruleta',
+    subtitle: 'Sorpresa: la ruleta sortea tu próxima saga entre todo lo que aún no leíste.', all: 'Todas', new: 'Sin empezar', paused: 'Empezadas y paradas',
+    hint: 'Solo quedan fuera las sagas que ya terminaste y las que leíste en los últimos {days} días (las que estás leyendo).', scope: 'Girar en', wholeLibrary: 'Toda la biblioteca',
+    spin: 'Girar', spinAgain: 'Girar de nuevo', spinning: 'Girando…', pool: '{count} sagas en el sorteo · puede salir cualquiera', poolOne: '1 saga en el sorteo',
     emptyLibrary: 'Añade cómics a tu biblioteca y la ruleta sorteará entre tus carpetas.', allDone: 'Todas las sagas de tu biblioteca ya están leídas o en lectura. ¡Impresionante!',
     emptyPool: 'No hay sagas para esta opción aquí. Prueba “Todas” u otra carpeta.', winner: 'Tu próxima saga', newInfo: 'Sin empezar · {count} historias', newInfoOne: 'Sin empezar · 1 historia',
     pausedInfo: '{read} de {count} leídas', lastRead: 'última lectura {when}', startsWith: 'Empieza por {name}', nextUp: 'Siguiente: {name}', pageOf: 'página {page} de {count}',
-    start: 'Empezar a leer', continue: 'Continuar', openFolder: 'Abrir carpeta', wheelLabel: 'Ruleta con {names}', stopped: 'La ruleta se detuvo en {name}.'},
+    start: 'Empezar a leer', continue: 'Continuar', openFolder: 'Abrir carpeta', wheelLabel: 'Ruleta con {count} sagas ocultas', stopped: 'La ruleta se detuvo en {name}.'},
 };
 const wheelText = language => TEXT[language] || TEXT.en;
 const fill = (value, vars = {}) => String(value).replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? ''));
@@ -86,63 +86,34 @@ function pointerIcon() {
   return svg;
 }
 
-function ellipsize(context, value, width) {
-  if (context.measureText(value).width <= width) return value;
-  let low = 0, high = value.length;
-  while (low < high) { const middle = (low + high + 1) >> 1; if (context.measureText(value.slice(0, middle).trimEnd() + '…').width <= width) low = middle; else high = middle - 1; }
-  return value.slice(0, low).trimEnd() + '…';
-}
-function twoLines(context, value, width) {
-  const words = value.split(/\s+/).filter(Boolean);
-  let best = null;
-  for (let cut = 1; cut < words.length; cut++) {
-    const first = words.slice(0, cut).join(' '), second = words.slice(cut).join(' ');
-    const a = context.measureText(first).width;
-    if (a > width) break;
-    const longest = Math.max(a, context.measureText(second).width);
-    if (!best || longest < best.longest) best = {first, second, longest};
-  }
-  return best ? [best.first, ellipsize(context, best.second, width)] : null;
-}
-// A name along its slice, from near the middle out to the rim: on one line if
-// it fits, else on two (where the slice is wide enough), else shortened.
-function sliceLabel(context, name, {from, to, half, family}) {
-  const value = String(name || '').replace(/\s+/g, ' ').trim(), width = to - from;
-  for (const size of [14, 13, 12]) {
-    context.font = `700 ${size}px ${family}`;
-    if (context.measureText(value).width <= width) { context.fillText(value, from, 0); return; }
-  }
-  const size = 11, gap = size * 1.18, start = from + 6;
-  if (Math.tan(half) * start * 2 * .9 >= gap * 2) {
-    context.font = `700 ${size}px ${family}`;
-    const lines = twoLines(context, value, to - start);
-    if (lines) { context.fillText(lines[0], start, -gap / 2); context.fillText(lines[1], start, gap / 2); return; }
-  }
-  context.font = `700 ${size}px ${family}`;
-  context.fillText(ellipsize(context, value, width), from, 0);
-}
-function drawWheel(canvas, slices, {size, highlight = -1, family}) {
+// The wheel: hidden slices, a question mark on each; once it stops, the slice
+// it stopped on lights up with a star (the saga's name shows over the wheel).
+function drawWheel(canvas, {total, size, reveal = -1, family}) {
   const ratio = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
   canvas.width = Math.round(size * ratio); canvas.height = Math.round(size * ratio);
   const context = canvas.getContext('2d');
-  if (!context || !slices.length) return;
+  if (!context || !total) return;
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  const center = size / 2, rim = center - 1, radius = center - Math.max(8, size * .036);
-  const total = slices.length, step = Math.PI * 2 / total;
+  const center = size / 2, rim = center - 1, radius = center - Math.max(8, size * .036), step = Math.PI * 2 / total;
   context.beginPath(); context.arc(center, center, rim, 0, Math.PI * 2);
   context.fillStyle = '#0a1018'; context.fill(); context.lineWidth = 1; context.strokeStyle = '#33465c'; context.stroke();
   for (let index = 0; index < total; index++) {
     const start = -Math.PI / 2 + index * step;
     context.beginPath(); context.moveTo(center, center); context.arc(center, center, radius, start, start + step); context.closePath();
     context.fillStyle = PALETTE[sliceColor(index, total)].fill; context.fill();
-    if (highlight >= 0 && index !== highlight) { context.fillStyle = 'rgba(6,10,16,.64)'; context.fill(); }
+    if (reveal >= 0 && index !== reveal) { context.fillStyle = 'rgba(6,10,16,.64)'; context.fill(); }
     context.lineWidth = 1.5; context.strokeStyle = '#0a1018'; context.stroke();
   }
-  context.textBaseline = 'middle'; context.textAlign = 'left';
+  // Upright when its slice is at the top, under the pointer.
+  context.textAlign = 'center'; context.textBaseline = 'middle';
+  const glyph = Math.max(15, Math.round(size * .074));
   for (let index = 0; index < total; index++) {
-    context.save(); context.translate(center, center); context.rotate(-Math.PI / 2 + (index + .5) * step);
-    context.fillStyle = highlight >= 0 && index !== highlight ? 'rgba(226,233,241,.42)' : PALETTE[sliceColor(index, total)].text;
-    sliceLabel(context, slices[index].name, {from: radius * .29, to: radius * .93, half: step / 2, family});
+    const angle = -Math.PI / 2 + (index + .5) * step, won = index === reveal;
+    context.save();
+    context.translate(center + Math.cos(angle) * radius * .7, center + Math.sin(angle) * radius * .7); context.rotate(angle + Math.PI / 2);
+    context.font = `800 ${won ? Math.round(glyph * 1.15) : glyph}px ${family}`;
+    context.fillStyle = reveal >= 0 && !won ? 'rgba(226,233,241,.3)' : PALETTE[sliceColor(index, total)].text;
+    context.fillText(won ? '★' : '?', 0, 1);
     context.restore();
   }
   // Little lights on the rim, between the slices.
@@ -152,11 +123,45 @@ function drawWheel(canvas, slices, {size, highlight = -1, family}) {
     const angle = -Math.PI / 2 + index * step;
     context.beginPath(); context.arc(center + Math.cos(angle) * lights, center + Math.sin(angle) * lights, Math.max(1.7, size * .008), 0, Math.PI * 2); context.fill();
   }
-  if (highlight >= 0) {
-    const start = -Math.PI / 2 + highlight * step;
+  if (reveal >= 0) {
+    const start = -Math.PI / 2 + reveal * step;
     context.beginPath(); context.moveTo(center, center); context.arc(center, center, radius - 1.5, start, start + step); context.closePath();
     context.lineWidth = 3; context.strokeStyle = '#f4ffd9'; context.stroke();
   }
+}
+
+// A little burst of confetti from under the pointer when the surprise shows.
+const CONFETTI = ['#c5ef62', '#e9ffb8', '#ffffff', '#7fb2e5', '#35587a'];
+function burst(canvas, size) {
+  const context = canvas.getContext('2d');
+  if (!context || !size) return;
+  const ratio = Math.min(2, Math.max(1, window.devicePixelRatio || 1)), width = canvas.clientWidth || size + 80, height = canvas.clientHeight || size + 80;
+  canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+  const id = canvas.dataset.burst = String((Number(canvas.dataset.burst) || 0) + 1);
+  const x = width / 2, y = (height - size) / 2 + size * .2;
+  const pieces = Array.from({length: 70}, () => {
+    const angle = -Math.PI / 2 + (Math.random() - .5) * 2.5, speed = 170 + Math.random() * 310;
+    return {x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, w: 4 + Math.random() * 4, h: 7 + Math.random() * 6,
+      turn: Math.random() * 6.3, spin: (Math.random() - .5) * 12, color: CONFETTI[Math.floor(Math.random() * CONFETTI.length)]};
+  });
+  const started = performance.now(), duration = 1600;
+  let last = started;
+  const frame = now => {
+    if (canvas.dataset.burst !== id) return;
+    const dt = Math.min(.05, Math.max(0, now - last) / 1000), time = (now - started) / duration;
+    last = now;
+    context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, width, height);
+    if (time >= 1 || !canvas.isConnected) return;
+    context.globalAlpha = time < .6 ? 1 : Math.max(0, 1 - (time - .6) / .4);
+    for (const piece of pieces) {
+      piece.vy += 900 * dt; piece.vx *= 1 - .8 * dt; piece.x += piece.vx * dt; piece.y += piece.vy * dt; piece.turn += piece.spin * dt;
+      context.save(); context.translate(piece.x, piece.y); context.rotate(piece.turn); context.fillStyle = piece.color;
+      context.fillRect(-piece.w / 2, -piece.h / 2, piece.w, piece.h * Math.abs(Math.cos(piece.turn * 1.7)) + 1);
+      context.restore();
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
 }
 
 /** The card on the Assistant screen that opens the wheel. */
@@ -186,7 +191,8 @@ export function openSagaWheel({store, t, element, action, openModal, openComic, 
   const sameScope = path => path.length === prefs.scope.length && path.every((part, index) => part === prefs.scope[index]);
   if (prefs.scope.length && !scopes.some(folder => sameScope(folder.path))) prefs.scope = [];
   const family = getComputedStyle(document.body).fontFamily || 'sans-serif';
-  let pool = [], slices = [], rotation = 0, spinning = false, spun = false, highlighted = -1;
+  // winner: drawn when the wheel starts; landed: the slice it stopped on (-1 while hidden).
+  let pool = [], winner = null, landed = -1, rotation = 0, spinning = false, spun = false;
   const urls = new Set(), jobs = new Map(), controller = new AbortController();
 
   const kinds = element('div', {class: 'chips saga-wheel-kinds', role: 'group', 'aria-label': L.title});
@@ -207,7 +213,9 @@ export function openSagaWheel({store, t, element, action, openModal, openComic, 
   const canvas = element('canvas', {class: 'saga-wheel-canvas', role: 'img'});
   const pointer = pointerIcon();
   const hub = action(L.spin, () => spin(), 'saga-wheel-hub', {'data-wheel-hub': ''});
-  const stage = element('div', {class: 'saga-wheel-stage'}, canvas, pointer, hub);
+  const banner = element('div', {class: 'saga-wheel-banner', hidden: true, 'aria-hidden': 'true', 'data-wheel-banner': ''});
+  const confetti = element('canvas', {class: 'saga-wheel-confetti', 'aria-hidden': 'true'});
+  const stage = element('div', {class: 'saga-wheel-stage'}, canvas, pointer, banner, hub, confetti);
   const poolLine = element('p', {class: 'saga-wheel-pool'});
   const spinButton = action(L.spin, () => spin(), 'button primary saga-wheel-spin', {'data-wheel-spin': ''});
   const empty = element('p', {class: 'saga-wheel-empty', hidden: true});
@@ -215,13 +223,17 @@ export function openSagaWheel({store, t, element, action, openModal, openComic, 
   const result = element('section', {class: 'saga-wheel-result', hidden: true, 'data-wheel-result': ''});
   body.append(...[kinds, hint, scopeSelect ? element('label', {class: 'saga-wheel-scope'}, element('span', {text: L.scope}), scopeSelect) : null, stage, poolLine, spinButton, empty, announce, result].filter(Boolean));
   body.closest('dialog')?.addEventListener('close', () => { controller.abort(); urls.forEach(url => URL.revokeObjectURL(url)); urls.clear(); }, {once: true});
-  const onResize = () => { if (!current()) { window.removeEventListener('resize', onResize); return; } if (!spinning && slices.length) draw(highlighted); };
+  const onResize = () => { if (!current()) { window.removeEventListener('resize', onResize); return; } if (!spinning && pool.length) draw(); };
   window.addEventListener('resize', onResize);
 
-  function draw(highlight = -1) {
-    highlighted = highlight;
-    drawWheel(canvas, slices, {size: Math.round(stage.clientWidth) || 300, highlight, family});
-    canvas.setAttribute('aria-label', fill(L.wheelLabel, {names: [...new Set(slices.map(saga => saga.name))].join(', ')}));
+  function draw() {
+    drawWheel(canvas, {total: WHEEL_SLICES, size: Math.round(stage.clientWidth) || 300, reveal: landed, family});
+    canvas.setAttribute('aria-label', landed >= 0 && winner ? fill(L.stopped, {name: winner.name}) : fill(L.wheelLabel, {count: pool.length}));
+  }
+  function hide() {
+    landed = -1; winner = null;
+    banner.hidden = true; banner.classList.remove('is-in');
+    result.hidden = true; result.replaceChildren(); announce.textContent = '';
   }
   function setBusy(busy) {
     spinning = busy;
@@ -239,7 +251,7 @@ export function openSagaWheel({store, t, element, action, openModal, openComic, 
       button.replaceChildren(element('span', {text: L[kind]}), element('span', {class: 'shelf-count', text: String(scoped[kind])}));
     }
     pool = wheelPool(sagas, {kind: prefs.kind, scope: prefs.scope});
-    result.hidden = true; result.replaceChildren(); announce.textContent = '';
+    hide();
     const nothing = !totals.all;
     kinds.hidden = nothing; hint.hidden = nothing;
     if (scopeSelect) scopeSelect.parentElement.hidden = nothing;
@@ -250,7 +262,7 @@ export function openSagaWheel({store, t, element, action, openModal, openComic, 
     }
     stage.hidden = false; poolLine.hidden = false; spinButton.hidden = false; empty.hidden = true;
     poolLine.textContent = pool.length === 1 ? L.poolOne : fill(L.pool, {count: pool.length});
-    slices = sampleSlices(pool, {avoid: prefs.recent}); spun = false;
+    spun = false;
     spinButton.textContent = L.spin;
     draw();
   }
@@ -265,41 +277,44 @@ export function openSagaWheel({store, t, element, action, openModal, openComic, 
   }
   function spin() {
     if (spinning || !pool.length || !current()) return;
-    // From the second spin on, the wheel is filled again from the whole draw.
-    if (spun) slices = sampleSlices(pool, {avoid: prefs.recent});
     spun = true;
+    hide();
     rotation = ((rotation % 360) + 360) % 360;
     canvas.style.transform = `rotate(${rotation}deg)`;
     draw();
-    result.hidden = true; announce.textContent = '';
-    const index = pickWinner(slices), winner = slices[index];
-    prefs.recent = rememberWinner(prefs.recent, winner.key); savePrefs(prefs);
-    void coverOf(winner.next);
-    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-    const from = rotation, to = landingRotation(from, index, slices.length, {turns: calm ? 1 : 5}), duration = calm ? 700 : 4600;
+    // The surprise is drawn now, from the whole draw; it shows only when the wheel stops.
+    const chosen = pickSaga(pool, {avoid: prefs.recent}), index = pickSlice(WHEEL_SLICES);
+    prefs.recent = rememberWinner(prefs.recent, chosen.key); savePrefs(prefs);
+    void coverOf(chosen.next);
+    const calm = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+    const from = rotation, to = landingRotation(from, index, WHEEL_SLICES, {turns: calm ? 1 : 5}), duration = calm ? 700 : 4600;
     setBusy(true);
     const started = performance.now();
-    let last = sliceAtRotation(from, slices.length);
+    let last = sliceAtRotation(from, WHEEL_SLICES);
     const frame = now => {
       if (!current()) return;
       const progress = Math.min(1, Math.max(0, (now - started) / duration));
       rotation = from + (to - from) * spinEase(progress);
       canvas.style.transform = `rotate(${rotation.toFixed(2)}deg)`;
-      const at = sliceAtRotation(rotation, slices.length);
+      const at = sliceAtRotation(rotation, WHEEL_SLICES);
       if (at !== last) { last = at; tick(); }
-      if (progress < 1) requestAnimationFrame(frame); else land(index);
+      if (progress < 1) requestAnimationFrame(frame); else land(chosen, index, calm);
     };
     requestAnimationFrame(frame);
   }
-  function land(index) {
+  function land(chosen, index, calm) {
+    winner = chosen; landed = index;
     setBusy(false);
-    draw(index);
-    try { navigator.vibrate?.(28); } catch { /* not on every device */ }
-    showResult(slices[index]);
+    draw();
+    banner.textContent = chosen.name; banner.hidden = false;
+    void banner.offsetWidth; banner.classList.add('is-in');
+    try { navigator.vibrate?.([18, 50, 30]); } catch { /* not on every device */ }
+    if (!calm) burst(confetti, stage.clientWidth);
+    showResult(chosen);
   }
   function showResult(saga) {
     const next = saga.next, entry = store.state.progress[next.id];
-    const coverBox = element('div', {class: 'saga-wheel-cover'}, element('span', {text: saga.name}));
+    const coverBox = element('div', {class: 'saga-wheel-cover is-revealed'}, element('span', {text: saga.name}));
     void coverOf(next).then(blob => {
       if (!blob || !coverBox.isConnected || controller.signal.aborted) return;
       const url = URL.createObjectURL(blob); urls.add(url);
@@ -333,7 +348,8 @@ export function openSagaWheel({store, t, element, action, openModal, openComic, 
         saga.kind === 'folder' && showFolder ? action(L.openFolder, () => showFolder(saga.path), 'button ghost', {'data-wheel-folder': ''}) : null));
     result.hidden = false;
     announce.textContent = fill(L.stopped, {name: saga.name});
-    requestAnimationFrame(() => { if (result.isConnected) result.scrollIntoView({block: 'nearest', behavior: 'smooth'}); });
+    // The name shows on the wheel first; a moment later, the card comes into view.
+    setTimeout(() => { if (result.isConnected && !result.hidden && winner === saga) result.scrollIntoView({block: 'nearest', behavior: 'smooth'}); }, 1000);
   }
   refresh();
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {findSagas, wheelCounts, wheelPool, wheelScopes, sampleSlices, pickWinner, landingRotation, sliceAtRotation, spinEase, rememberWinner, PAUSED_AFTER_DAYS} from '../src/saga-wheel.js';
+import {findSagas, wheelCounts, wheelPool, wheelScopes, pickSaga, pickSlice, WHEEL_SLICES, landingRotation, sliceAtRotation, spinEase, rememberWinner, PAUSED_AFTER_DAYS} from '../src/saga-wheel.js';
 
 const NOW = Date.parse('2026-11-10T12:00:00Z'), DAY = 86400000;
 const ago = days => new Date(NOW - days * DAY).toISOString();
@@ -101,51 +101,43 @@ test('the draw can be kept to one folder, and folders holding a few sagas are of
   assert.deepEqual(wheelScopes(sagas, {min: 1}).map(folder => folder.path.join('/')), ['DC', 'DC/Batman', 'Image', 'Image/Saga', 'Marvel', 'Marvel/Daredevil', 'Marvel/X-Men', 'Marvel/X-Men/Vol 1', 'Marvel/X-Men/Vol 2']);
 });
 
-const sequence = values => { let index = 0; return () => values[index++ % values.length]; };
 const pool = count => Array.from({length: count}, (_, index) => ({key: 'k' + index, name: 'Saga ' + index}));
+// A small, steady random source (mulberry32), so the counts can be checked.
+const seeded = (seed = 7) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 
-test('the wheel shows up to eight sagas; a short pool is repeated evenly so it stays a wheel', () => {
-  assert.equal(sampleSlices(pool(40)).length, 8);
-  assert.equal(new Set(sampleSlices(pool(40)).map(saga => saga.key)).size, 8);
-  for (const [size, slices] of [[1, 6], [2, 6], [3, 6], [4, 8], [5, 10], [6, 6], [7, 7]]) {
-    const shown = sampleSlices(pool(size));
-    assert.equal(shown.length, slices, `pool of ${size}`);
-    const counts = new Map(); for (const saga of shown) counts.set(saga.key, (counts.get(saga.key) || 0) + 1);
-    assert.equal(counts.size, size);
-    assert.equal(new Set(counts.values()).size, 1, 'every saga as many times as any other');
-  }
-  assert.deepEqual(sampleSlices([]), []);
-});
-
-test('recent winners sit out when the pool is bigger than the wheel; a small pool is always shown whole', () => {
-  const recent = ['k0', 'k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8', 'k9', 'k10', 'k11'];
-  for (let round = 0; round < 50; round++) {
-    // Ten sagas, eight on the wheel: the two latest winners sit out.
-    const ten = sampleSlices(pool(10), {avoid: recent}).map(saga => saga.key);
-    assert.deepEqual([...ten].sort(), ['k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8', 'k9']);
-    // Thirty sagas: the ten latest winners sit out.
-    assert.ok(sampleSlices(pool(30), {avoid: recent}).every(saga => !recent.slice(0, 10).includes(saga.key)));
-    // Eight or fewer: everyone is on the wheel, the latest winner too.
-    assert.deepEqual([...new Set(sampleSlices(pool(5), {avoid: recent}).map(saga => saga.key))].sort(), ['k0', 'k1', 'k2', 'k3', 'k4']);
-  }
-  assert.equal(sampleSlices(pool(1), {avoid: ['k0']})[0].key, 'k0', 'a single saga is never left out');
-});
-
-test('every saga of the pool is equally likely to win', () => {
-  const sagas = pool(5), wins = new Map();
-  let seed = 7;
-  const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
-  for (let round = 0; round < 20000; round++) {
-    const slices = sampleSlices(sagas, {count: 3, random});
-    const winner = slices[pickWinner(slices, random)];
+test('the next saga comes from the whole draw, every saga as likely as any other', () => {
+  const sagas = pool(30), wins = new Map(), random = seeded();
+  for (let round = 0; round < 60000; round++) {
+    const winner = pickSaga(sagas, {random});
     wins.set(winner.key, (wins.get(winner.key) || 0) + 1);
   }
-  for (const count of wins.values()) assert.ok(Math.abs(count - 4000) < 300, `about a fifth each, got ${count}`);
-  assert.equal(pickWinner([]), -1);
+  assert.equal(wins.size, 30, 'any saga of the draw can come up');
+  for (const count of wins.values()) assert.ok(Math.abs(count - 2000) < 220, `about a thirtieth each, got ${count}`);
+  assert.equal(pickSaga([]), null);
+  assert.equal(pickSaga(pool(1), {avoid: ['k0']}).key, 'k0', 'a single saga is never left out');
+});
+
+test('in a big draw the latest winners sit out for a while; in a small one anything can come up again', () => {
+  const recent = ['k0', 'k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8', 'k9', 'k10', 'k11'], random = seeded(11);
+  const seen = size => { const keys = new Set(); for (let round = 0; round < 4000; round++) keys.add(pickSaga(pool(size), {avoid: recent, random}).key); return [...keys].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))); };
+  // Ten sagas: the two latest winners sit out (eight stay in).
+  assert.deepEqual(seen(10), ['k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8', 'k9']);
+  // Thirty: the ten latest sit out.
+  assert.deepEqual(seen(30), Array.from({length: 20}, (_, index) => 'k' + (index + 10)));
+  // Eight or fewer: everything can come up, the latest winner too.
+  assert.deepEqual(seen(5), ['k0', 'k1', 'k2', 'k3', 'k4']);
+});
+
+test('the wheel can stop on any slice', () => {
+  const random = seeded(3), stops = new Map();
+  for (let round = 0; round < 24000; round++) { const slice = pickSlice(WHEEL_SLICES, random); stops.set(slice, (stops.get(slice) || 0) + 1); }
+  assert.equal(stops.size, WHEEL_SLICES);
+  for (const count of stops.values()) assert.ok(Math.abs(count - 24000 / WHEEL_SLICES) < 200);
+  assert.equal(pickSlice(0), -1);
 });
 
 test('the wheel stops with the winning slice under the pointer, after whole turns, never on an edge', () => {
-  for (const total of [6, 7, 8, 10]) {
+  for (const total of [6, 7, 8, 10, 12]) {
     for (let index = 0; index < total; index++) {
       for (const random of [0, .5, .9999]) {
         const from = 123.4, to = landingRotation(from, index, total, {turns: 5, random: () => random});
