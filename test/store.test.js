@@ -445,6 +445,15 @@ test('the balloon translator starts off, follows the device language until chose
   const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
   assert.equal(restored.state.settings.readerTranslate, true); assert.equal(restored.state.settings.readerTranslateTo, 'es');
 });
+test('enlarging balloons starts off and is kept once switched on', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerEnlargeBalloons, false);
+  s.setSettings({readerEnlargeBalloons: 'yes'}); assert.equal(s.state.settings.readerEnlargeBalloons, false, 'only on or off');
+  s.setSettings({readerEnlargeBalloons: true}); assert.equal(s.state.settings.readerEnlargeBalloons, true);
+  s.setSettings({language: 'pt-BR'}); assert.equal(s.state.settings.readerEnlargeBalloons, true, 'other settings leave it as it is');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerEnlargeBalloons, true);
+});
 test('reading changes are written quickly, exactly as a full save would write them',async()=>{
  let persisted=null,writes=0;
  const backend={async read(){return persisted},async write(text){writes++;persisted=text}};
