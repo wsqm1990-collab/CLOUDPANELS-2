@@ -2,6 +2,7 @@ import { openComic, pageImageSize, DISPLAY_PIXELS } from './reader.js';
 import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, pageReadingSteps, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { analyzePageBalloons } from './balloon-analyzer.js';
+import { createBalloonZoom } from './balloon-zoom.js';
 import { readableSteps, letterTarget, stepFrame, stepPosition } from './readable-steps.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
@@ -463,9 +464,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     balloonRunning = true;
     void job.run().finally(() => { balloonRunning = false; nextBalloonJob(); });
   }
-  function findBalloonsOn(index, drawable, { ahead = false } = {}) {
-    const key = balloonKey(index);
-    if (!key || !drawable || !sessionController || spreadPages.length > 1) return Promise.resolve(null);
+  function findBalloonsOn(index, drawable, { ahead = false, key: chosenKey = '' } = {}) {
+    const key = chosenKey || balloonKey(index);
+    if (!key || !drawable || !sessionController || (!chosenKey && spreadPages.length > 1)) return Promise.resolve(null);
     const known = balloonFinds.get(key);
     if (known) {
       // Wanted now: it goes to the front of the line.
@@ -532,11 +533,52 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     return moved;
   }
   // The pages next to the one being read are looked at too, so turning to them never waits.
+  const balloonsWanted = () => (guided && readableTarget()) || enlargeOn();
   function balloonsAhead(entry, index) {
-    if (!entry || !guided || !readableTarget() || balloonFinds.has(balloonKey(index))) return;
+    if (!entry || !balloonsWanted() || balloonFinds.has(balloonKey(index))) return;
     const mySession = serial;
-    void entry.promise.then(candidate => { if (mySession === serial && guided && readableTarget() && candidate?.decodedImage) return findBalloonsOn(index, candidate.decodedImage, { ahead: true }); }).catch(() => {});
+    void entry.promise.then(candidate => { if (mySession === serial && balloonsWanted() && candidate?.decodedImage) return findBalloonsOn(index, candidate.decodedImage, { ahead: true }); }).catch(() => {});
   }
+  // ---- Enlarge balloons: a tapped balloon comes out bigger (see balloon-zoom.js) ----
+  const balloonZoom = createBalloonZoom({ parent: dialog });
+  let shownDrawable = null;
+  // The balloons of what is shown: the page, or two pages side by side (looked at together).
+  const enlargeKey = () => !comic ? '' : spreadPages.length > 1 ? `${comic.id}|${spreadPages.join('+')}|${cropBordersOn() ? 'crop' : ''}` : balloonKey(currentPage);
+  const shownBalloons = () => balloonFinds.get(enlargeKey())?.result || null;
+  function findShownBalloons() {
+    if (!enlargeOn() || !comic || currentPage < 0 || !shownDrawable) return;
+    void findBalloonsOn(currentPage, shownDrawable, spreadPages.length > 1 ? { key: enlargeKey() } : {});
+  }
+  // The balloon under a finger: within its box (and a little around it), the nearest one.
+  function balloonAtPoint(clientX, clientY) {
+    const found = shownBalloons();
+    if (!found?.balloons?.length || !image.complete || !(image.naturalWidth > 0)) return null;
+    const box = image.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0)) return null;
+    const x = (clientX - box.left) / box.width, y = (clientY - box.top) / box.height;
+    let best = null, nearest = Infinity;
+    for (const balloon of found.balloons) {
+      const padY = balloon.letter * .7, padX = padY * box.height / box.width;
+      if (x < balloon.x - padX || x > balloon.x + balloon.width + padX || y < balloon.y - padY || y > balloon.y + balloon.height + padY) continue;
+      const distance = Math.hypot((x - balloon.text.x - balloon.text.width / 2) * box.width, (y - balloon.text.y - balloon.text.height / 2) * box.height);
+      if (distance < nearest) { nearest = distance; best = balloon; }
+    }
+    return best;
+  }
+  function openEnlarged(balloon) {
+    if (!enlargeOn() || !book || currentPage < 0 || loading || editing || popup || turning || pager || !image.complete || !(image.naturalWidth > 0)) return;
+    hideTranslation();
+    const style = getComputedStyle(stage), inset = edge => Math.max(0, parseFloat(style.getPropertyValue(`--reader-safe-${edge}`)) || 0);
+    const viewport = { width: window.visualViewport?.width || window.innerWidth, height: window.visualViewport?.height || window.innerHeight, top: inset('top'), right: inset('right'), bottom: inset('bottom'), left: inset('left') };
+    const calm = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+    try {
+      if (balloonZoom.open({ image, balloon, imageRect: image.getBoundingClientRect(), viewport, calm })) { try { navigator.vibrate?.(8); } catch { /* No vibration here. */ } }
+    } catch (error) {
+      try { window.dispatchEvent(new CustomEvent('cloudpanels-error', { detail: { where: 'enlarge-balloon', error } })); } catch { /* Nothing more to do. */ }
+    }
+  }
+  // Switching it takes effect on the page being read.
+  function applyEnlarge() { if (enlargeOn()) findShownBalloons(); else balloonZoom.close({ instant: true }); }
   // A short wait for the shown page's balloons, so its steps are right from its first panel.
   async function balloonsSoon(index, drawable, wait = 700) {
     if (!readableTarget() || balloonsOf(index)) return;
@@ -570,6 +612,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   const wantScenes = () => readAloudEnabled() && (describeOn() || screenOffActive());
   const screenHidden = () => document.visibilityState === 'hidden';
   const describingNow = () => describeOn() || (screenOffActive() && screenHidden());
+  // Enlarge balloons (optional, off at first): tap a balloon to see it bigger.
+  const enlargeOn = () => store.state.settings.readerEnlargeBalloons === true;
+  const enlargeLabels = () => language() === 'pt-BR'
+    ? { title: 'Ampliar balões', on: 'Ligado', off: 'Desligado', note: 'Toque num balão para vê-lo maior, recortado da página; toque de novo para devolvê-lo. Funciona no aparelho, sem internet. Desligado, nada muda.' }
+    : language() === 'es'
+      ? { title: 'Ampliar globos', on: 'Activado', off: 'Desactivado', note: 'Toca un globo para verlo más grande, recortado de la página; toca de nuevo para devolverlo. Funciona en el dispositivo, sin internet. Desactivado, nada cambia.' }
+      : { title: 'Enlarge balloons', on: 'On', off: 'Off', note: 'Tap a balloon to see it bigger, cut out of the page; tap again to put it back. Works on this device, without internet. Off, nothing changes.' };
   // Balloon translator (optional, off at first): press and hold a balloon.
   const translateOn = () => store.state.settings.readerTranslate === true;
   const translateTo = () => {
@@ -935,6 +984,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   function syncViewport() {
     if ((window.visualViewport?.scale || 1) > 1.035) return;
+    balloonZoom.close({ instant: true });
     if (viewportFrame) return;
     viewportFrame = requestAnimationFrame(() => {
       viewportFrame = undefined;
@@ -1636,6 +1686,16 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       hidePopup(); applyTranslate();
     }, translateOn());
     translateToggle.id = 'reader-translate-toggle'; translateToggle.setAttribute('aria-pressed', String(translateOn()));
+    // Enlarge balloons: off unless chosen here, kept on this device.
+    const enlarge = enlargeLabels(), enlargeNote = document.createElement('p'); enlargeNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
+    enlargeNote.textContent = enlarge.note;
+    const enlargeRow = document.createElement('div'); enlargeRow.className = 'row';
+    const enlargeToggle = popupButton(enlargeRow, `${enlarge.title}: ${enlargeOn() ? enlarge.on : enlarge.off}`, () => {
+      try { store.setSettings({ readerEnlargeBalloons: !enlargeOn() }); checkSaved(); observePersistence(); }
+      catch (error) { statusMessage(error?.message || text().storage, true); return; }
+      hidePopup(); applyEnlarge();
+    }, enlargeOn());
+    enlargeToggle.id = 'reader-enlarge-toggle'; enlargeToggle.setAttribute('aria-pressed', String(enlargeOn()));
     if (translateOn()) {
       const intoField = document.createElement('label'); intoField.className = 'reader-navigation-setting'; intoField.textContent = words.into;
       const intoSelect = document.createElement('select'); intoSelect.id = 'reader-translate-to';
@@ -1646,6 +1706,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         catch (error) { statusMessage(error?.message || text().storage, true); }
       });
     }
+    menu.append(enlargeNote, enlargeRow);
   }
   // Switching the enhanced guided view takes effect on the page being read:
   // a page without panels changes between parts and the whole page at once.
@@ -2434,7 +2495,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const sessionAbort = () => request.abort(sessionController?.signal.reason);
     const activeSessionSignal = sessionController.signal;
     activeSessionSignal.addEventListener('abort', sessionAbort, { once: true });
-    hidePopup(); hideTranslation(); loading = true; activity(true); updateControls(); statusMessage(text().loadingPage(index + 1));
+    hidePopup(); hideTranslation(); balloonZoom.close({ instant: true }); loading = true; activity(true); updateControls(); statusMessage(text().loadingPage(index + 1));
     let candidate, snapshot, previousURL;
     // Pages kept in the decoded cache own their address; a two-page composite
     // belongs to this view only and is released when it is replaced.
@@ -2469,6 +2530,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       image.src = currentURL; showImage(true); image.alt = spreadPages.length > 1 ? `${text().pageOf(index + 1, activeBook.pageCount)} + ${index + 2}` : text().pageOf(index + 1, activeBook.pageCount);
       imageWidth = candidate.width; imageHeight = candidate.height;
       currentPage = index; shownSerial++; currentCrop = candidate.crop || null; guidedFallbackPage = -1; panel = 0; overview = false; guidedMode = 'whole';
+      shownDrawable = candidate.decodedImage || null; findShownBalloons();
       layoutPage({ fromBottom, enter: direction });
       if (guided) {
         const balloonsReady = balloonsSoon(index, candidate.decodedImage);
@@ -2523,6 +2585,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   async function move(delta, { stepScroll = false } = {}) {
     if (!book || currentPage < 0 || loading || turning || editing || popup || analysisPending || !positionCommitted) return;
+    balloonZoom.close();
     stopMotion(); clearStretch();
     // A page wider than the screen (a double page upright): taps, buttons and
     // arrow keys first move across it and turn the page once its edge shows.
@@ -2911,6 +2974,25 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   function handleTap(g, event, now) {
     const duration = now - g.t0, dx = event.clientX - g.x0, dy = event.clientY - g.y0;
     const unchanged = g.session === serial && g.page === pageSerial && g.panel === panel && g.guided === guided && g.overview === overview && Math.abs(stage.scrollTop - g.scrollTop) < 3;
+    // Enlarge balloons: a tap on a balloon brings it out bigger (anywhere on the page;
+    // a double tap still zooms in there). A tap elsewhere does what it always did.
+    if (enlargeOn() && unchanged && !activePointers.size && g.distance < 9 && duration < 400 && !editing && !popup && !loading && !turning && !pager) {
+      const balloon = balloonAtPoint(event.clientX, event.clientY);
+      if (balloon) {
+        suppressClicksUntil = now + 450;
+        if (lastTap && now - lastTap.time < 300 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40) {
+          clearTimeout(lastTap.timer); lastTap = undefined;
+          if (book && currentPage >= 0 && !loading) { if (isZoomed()) layoutPage({ keepCenter: true }); else zoom(2.2, { x: event.clientX, y: event.clientY }); syncGestureMode(); }
+          return;
+        }
+        if (lastTap) clearTimeout(lastTap.timer);
+        const mySession = serial, myPage = pageSerial;
+        lastTap = { time: now, x: event.clientX, y: event.clientY, timer: setTimeout(() => { lastTap = undefined; if (mySession === serial && myPage === pageSerial) openEnlarged(balloon); }, 260) };
+        return;
+      }
+      // This page's balloons are not known yet: they are looked for now, for the next tap.
+      if (!shownBalloons()) findShownBalloons();
+    }
     const box = stage.getBoundingClientRect(), x = (event.clientX - box.left) / box.width, y = (event.clientY - box.top) / box.height;
     const style = getComputedStyle(stage);
     const inset = edge => Math.max(0, parseFloat(style.getPropertyValue(`--reader-safe-${edge}`)) || 0);
@@ -3004,7 +3086,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     serial++; pageSerial++; pageTransition.cancel(); turning = false; overview = false; guidedMode = 'whole'; cancelAnalysis(); cancelCamera(); cancelPrefetch(); pageController?.abort(); sessionController?.abort();
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
-    hideTranslation(); translation.pages.clear(); balloonFinds.clear(); readableMemo = { key: '', found: null, steps: [] }; laidStep = null; laidSteps = null; laidPage = -1; balloonJobs.length = 0; dotsAt = ''; clearTimeout(dotsTimer); stepDots.classList.remove('is-visible'); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
+    hideTranslation(); balloonZoom.close({ instant: true }); shownDrawable = null; translation.pages.clear(); balloonFinds.clear(); readableMemo = { key: '', found: null, steps: [] }; laidStep = null; laidSteps = null; laidPage = -1; balloonJobs.length = 0; dotsAt = ''; clearTimeout(dotsTimer); stepDots.classList.remove('is-visible'); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
     clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; clearTimeout(voiceNoteTimer); voiceNote.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;
@@ -3068,6 +3150,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   });
   function dismissReaderControls(event) {
     event.preventDefault();
+    if (balloonZoom.isOpen) { balloonZoom.close(); return; }
     if (editing) finishEditing();
     else if (popup) { hidePopup(); updateControls(); normalStatus(); }
     else { setImmersive(false); wakeRestore(); }
