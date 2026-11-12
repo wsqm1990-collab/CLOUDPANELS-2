@@ -806,3 +806,11 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
   .modal:has(.saga-wheel) .modal-header{margin-bottom:10px}
   .modal:has(.saga-wheel) .modal-header p{display:none}
 }
+/* Enlarge balloons (optional): a tapped balloon out of the page, bigger, over the page a little darker. */
+.reader-balloon-zoom{position:fixed;inset:0;z-index:60;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.reader-balloon-zoom-dim{position:absolute;inset:0;background:rgba(3,7,12,.62);opacity:0;transition:opacity .24s ease}
+.reader-balloon-zoom.is-open .reader-balloon-zoom-dim{opacity:1}
+.reader-balloon-zoom-cut{position:absolute;display:block;transform-origin:0 0;transition:transform .36s cubic-bezier(.18,1.22,.32,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.45)) drop-shadow(0 14px 30px rgba(0,0,0,.55));will-change:transform;pointer-events:none}
+.reader-balloon-zoom.is-closing .reader-balloon-zoom-cut{transition:transform .24s cubic-bezier(.4,0,.8,.3),opacity .24s ease-in;opacity:0}
+.reader-balloon-zoom.is-calm .reader-balloon-zoom-cut{transition:opacity .16s ease}
+@media (prefers-reduced-motion:reduce){.reader-balloon-zoom-cut,.reader-balloon-zoom-dim{transition:opacity .16s ease!important}}
