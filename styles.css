@@ -814,3 +814,29 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .reader-balloon-zoom.is-closing .reader-balloon-zoom-cut{transition:transform .24s cubic-bezier(.4,0,.8,.3),opacity .24s ease-in;opacity:0}
 .reader-balloon-zoom.is-calm .reader-balloon-zoom-cut{transition:opacity .16s ease}
 @media (prefers-reduced-motion:reduce){.reader-balloon-zoom-cut,.reader-balloon-zoom-dim{transition:opacity .16s ease!important}}
+/* Reading-order collections: each comic's number in the order, the issues not in the library in their places. */
+.order-badge{position:absolute;top:8px;right:8px;z-index:3;min-width:30px;height:30px;padding:0 8px;display:grid;place-items:center;border-radius:15px;background:#f4f7fb;color:#0d1622;font-size:13px;font-weight:800;letter-spacing:-.2px;box-shadow:0 2px 10px #00000066,0 0 0 2px #0d162299}
+.order-continue{display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px;margin:-6px 0 22px}
+.order-continue .button{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.order-continue p{margin:0;font-size:12px}
+.order-continue strong{color:var(--lime)}
+.order-missing .order-missing-cover{display:grid;place-items:center;background:repeating-linear-gradient(135deg,#17212e 0 12px,#141d29 12px 24px);border:1.5px dashed #9caabd59;box-shadow:none}
+.order-missing .order-missing-mark{font-size:46px;font-weight:300;color:#9caabd80;line-height:1}
+.order-missing .comic-title{color:var(--muted)}
+.order-missing .comic-meta{color:var(--muted-dim);font-style:italic}
+.order-missing:hover .comic-cover{transform:none;box-shadow:none}
+/* A collection the assistant proposes: its order and the buttons to create it. */
+.ai-collection-card{margin-top:14px;padding:14px 16px 15px;border:1px solid var(--line);border-radius:13px;background:var(--surface-raised);max-width:560px}
+.ai-collection-card .eyebrow{margin:0 0 3px}
+.ai-collection-card h4{margin:0 0 4px;font-size:17px;line-height:1.25;overflow-wrap:anywhere}
+.ai-collection-card>p.muted{margin:0;font-size:12px}
+.ai-collection-list{margin:12px 0 4px;padding:0;list-style:none;display:grid;gap:6px}
+.ai-collection-list li{display:flex;align-items:baseline;gap:9px;font-size:13px;line-height:1.35;min-width:0}
+.ai-collection-name{min-width:0;overflow-wrap:anywhere}
+.ai-collection-n{flex:none;min-width:24px;height:20px;padding:0 6px;display:inline-grid;place-items:center;border-radius:10px;background:#f4f7fb;color:#0d1622;font-size:11px;font-weight:800}
+.ai-collection-list li.is-missing{color:var(--muted)}
+.ai-collection-list li.is-missing .ai-collection-n{background:transparent;color:var(--muted);border:1px dashed #9caabd80}
+.ai-collection-list em{flex:none;font-size:11px;color:var(--muted-dim)}
+.ai-collection-more{margin-top:4px;font-size:12px}
+.ai-collection-actions{margin-top:12px}
+.ai-collection-done{color:var(--lime);font-weight:650;font-size:13px}
