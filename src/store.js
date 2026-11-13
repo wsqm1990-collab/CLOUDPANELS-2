@@ -1,4 +1,5 @@
 // Metadata only. MEGA sessions, passwords, keys and file bytes never enter this store.
+import { reanchorMissing, MAX_MISSING } from './collection-order.js';
 export const STORAGE_KEY = 'cloudpanels.library.v1';
 const MAX_RETIRED = 3000;
 export const MAX_COMICS = 50000;
@@ -20,6 +21,15 @@ const integer = (value, fallback, min, max) => Number.isFinite(Number(value)) &&
 const decimal = (value, fallback, min, max) => Number.isFinite(Number(value)) && value !== '' && value !== null && value !== undefined ? Math.max(min, Math.min(max, Number(value))) : fallback;
 const newId = prefix => prefix + ':' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : now();
+// A reading-order collection's missing issues: a title, and the comic each one comes before ('' = at the end).
+const missingIssues = value => (Array.isArray(value) ? value : []).filter(entry => entry && typeof entry === 'object' && string(entry.title, 200)).slice(0, MAX_MISSING)
+  .map(entry => ({ title: string(entry.title, 200), before: idValue(entry.before) || '' }));
+// A comic that changed its identity (moved or converted) keeps its places in collections.
+const swapCollection = (collection, swap) => ({ ...collection, comicIds: [...new Set(collection.comicIds.map(swap))],
+  ...(Array.isArray(collection.missing) ? { missing: collection.missing.map(entry => entry.before ? { ...entry, before: swap(entry.before) } : entry) } : {}) });
+// A comic that left a collection: the missing issues placed before it move to the comic after it.
+const withoutComic = (collection, id) => { const comicIds = collection.comicIds.filter(value => value !== id);
+  return collection.ordered ? { ...collection, comicIds, missing: reanchorMissing(collection.missing, collection.comicIds, comicIds) } : { ...collection, comicIds }; };
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
 const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerReadableBalloons: 'off', readerTranslate: false, readerTranslateTo: '', readerEnlargeBalloons: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
@@ -175,7 +185,11 @@ function sanitizeState(raw) {
     const id = idValue(value?.id), name = string(value?.name, 160);
     if (!id || !name || collectionIds.has(id)) throw new Error('Invalid collection.');
     collectionIds.add(id);
-    result.collections.push({id, name, comicIds: Array.isArray(value.comicIds) ? [...new Set(value.comicIds.filter(v => idValue(v) && seen.has(v)))].slice(0, MAX_COMICS) : [], createdAt: stamp(value.createdAt)});
+    const listed = Array.isArray(value.comicIds) ? [...new Set(value.comicIds.filter(v => idValue(v)))] : [];
+    const entry = {id, name, comicIds: listed.filter(v => seen.has(v)).slice(0, MAX_COMICS), createdAt: stamp(value.createdAt)};
+    // A collection in its own reading order (made with the comics assistant), with the issues not in the library.
+    if (value.ordered === true) { entry.ordered = true; entry.missing = reanchorMissing(missingIssues(value.missing), listed, entry.comicIds); }
+    result.collections.push(entry);
   }
   // Reading places of comics that left the library (moved out of the indexed
   // folders or deleted). If the same file comes back, its place returns too.
@@ -315,7 +329,7 @@ export class LibraryStore {
       this.state.favorites = [...new Set(this.state.favorites.map(swap))];
       this.state.readLater = [...new Set(this.state.readLater.map(swap))];
       this.state.bookmarks = this.state.bookmarks.map(b => b.comicId === oldId ? { ...b, comicId: newId } : b);
-      this.state.collections = this.state.collections.map(c => ({ ...c, comicIds: [...new Set(c.comicIds.map(swap))] }));
+      this.state.collections = this.state.collections.map(c => swapCollection(c, swap));
     }
     const transferred = new Set(remap.values()), now = new Date().toISOString();
     for (const old of missing) {
@@ -348,7 +362,7 @@ export class LibraryStore {
     this.state.favorites = [...new Set(this.state.favorites.map(swap))];
     this.state.readLater = [...new Set(this.state.readLater.map(swap))];
     this.state.bookmarks = this.state.bookmarks.map(b => b.comicId === oldId ? { ...b, comicId: newId } : b);
-    this.state.collections = this.state.collections.map(c => ({ ...c, comicIds: [...new Set(c.comicIds.map(swap))] }));
+    this.state.collections = this.state.collections.map(c => swapCollection(c, swap));
     this.save(); return valid;
   }
   removeComic(id) {
@@ -356,7 +370,7 @@ export class LibraryStore {
     this.state.favorites = this.state.favorites.filter(value => value !== id);
     this.state.readLater = this.state.readLater.filter(value => value !== id);
     this.state.bookmarks = this.state.bookmarks.filter(value => value.comicId !== id);
-    this.state.collections = this.state.collections.map(c => ({...c, comicIds: c.comicIds.filter(v => v !== id)})); this.save();
+    this.state.collections = this.state.collections.map(c => withoutComic(c, id)); this.save();
   }
   setProgress(id, value) {
     if (!this.state.comics.some(c => c.id === id)) throw new Error('Comic is not in your library.');
@@ -450,7 +464,25 @@ export class LibraryStore {
   setCollectionComics(id, ids) {
     const value = this.state.collections.find(c => c.id === id); if (!value) throw new Error('Collection not found.');
     if (!Array.isArray(ids)) throw new Error('Choose comics for this collection.');
-    const known = new Set(this.state.comics.map(c => c.id)); value.comicIds = [...new Set(ids.filter(v => idValue(v) && known.has(v)))]; this.save(); return this.state.collections.find(c => c.id === id);
+    const known = new Set(this.state.comics.map(c => c.id)), before = value.comicIds;
+    value.comicIds = [...new Set(ids.filter(v => idValue(v) && known.has(v)))];
+    if (value.ordered) value.missing = reanchorMissing(value.missing, before, value.comicIds);
+    this.save(); return this.state.collections.find(c => c.id === id);
+  }
+  /** A collection in its own reading order (made with the comics assistant): a new one, or the one `id` replaced. */
+  saveOrderedCollection({ id = '', name, comicIds, missing = [] } = {}) {
+    name = string(name, 160); if (!name) throw new Error('Name your collection.');
+    if (!Array.isArray(comicIds)) throw new Error('Choose comics for this collection.');
+    const known = new Set(this.state.comics.map(c => c.id)), listed = [...new Set(comicIds.filter(v => idValue(v)))];
+    const ids = listed.filter(v => known.has(v)).slice(0, MAX_COMICS);
+    if (!ids.length) throw new Error('None of these comics is in your library any more.');
+    let value = id ? this.state.collections.find(c => c.id === id) : null;
+    if (!value) {
+      if (this.state.collections.length >= 1000) throw new Error('The collection limit is 1000.');
+      value = { id: newId('collection'), name, comicIds: [], createdAt: now() }; this.state.collections.push(value);
+    }
+    Object.assign(value, { name, comicIds: ids, ordered: true, missing: reanchorMissing(missingIssues(missing), listed, ids) });
+    this.save(); return this.state.collections.find(c => c.id === value.id);
   }
   related(id, limit = 6) {
     const selected = this.state.comics.find(c => c.id === id); if (!selected) return [];

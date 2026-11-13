@@ -1,6 +1,7 @@
 // Comics assistant: a conversational helper that knows the user's library and
 // reading history, powered by Claude through the user's own API key.
 // The key and the conversation stay on this device.
+import { collectionItems, findCollection, proposeCollection, cleanProposal } from './collection-order.js';
 
 const KEY_STORAGE = 'cloudpanels-ai-key';
 const CHAT_STORAGE = 'cloudpanels-ai-chat-v1';
@@ -11,13 +12,19 @@ const MAX_CONTEXT_CHARS = 60000;
 const read = key => { try { return localStorage.getItem(key); } catch { return null; } };
 const write = (key, value) => { try { value == null ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch {} };
 
+const keptMessage = ({ role, text, proposals }) => {
+  const kept = role === 'assistant' && Array.isArray(proposals) ? proposals.map(cleanProposal).filter(Boolean) : [];
+  return kept.length ? { role, text, proposals: kept } : { role, text };
+};
+
 export const assistantStore = {
   get key() { return read(KEY_STORAGE) || ''; },
   set key(value) { write(KEY_STORAGE, value ? String(value).trim() : null); },
   get options() { try { return { voice: false, web: true, ...JSON.parse(read(OPTIONS_STORAGE) || '{}') }; } catch { return { voice: false, web: true }; } },
   setOption(name, value) { const next = { ...this.options, [name]: value }; write(OPTIONS_STORAGE, JSON.stringify(next)); return next; },
-  loadChat() { try { const value = JSON.parse(read(CHAT_STORAGE) || '[]'); return Array.isArray(value) ? value.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string').slice(-40) : []; } catch { return []; } },
-  saveChat(messages) { write(CHAT_STORAGE, JSON.stringify(messages.slice(-40).map(({ role, text }) => ({ role, text })))); },
+  // Each answer keeps the collections it proposed (the cards), and what became of them.
+  loadChat() { try { const value = JSON.parse(read(CHAT_STORAGE) || '[]'); return Array.isArray(value) ? value.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string').slice(-40).map(keptMessage) : []; } catch { return []; } },
+  saveChat(messages) { write(CHAT_STORAGE, JSON.stringify(messages.slice(-40).map(keptMessage))); },
   clearChat() { write(CHAT_STORAGE, null); },
 };
 
@@ -251,6 +258,50 @@ export function libraryTools(index) {
   };
 }
 
+/**
+ * Collections: the assistant sees the user's collections and proposes new ones
+ * (or changes to one) in reading order. The app shows each proposal as a card
+ * and only the user creates it, with a tap: the assistant never does.
+ * `proposals` collects this answer's proposals; `collections` returns the current ones.
+ */
+export function collectionTools(index, { collections = () => [], proposals = [] } = {}) {
+  const { entries, byRef } = index, comicsById = new Map(entries.map(entry => [entry.id, entry]));
+  return {
+    my_collections: {
+      definition: { name: 'my_collections', description: 'As coleções que o usuário já tem: nome, quantas revistas e se seguem uma ordem de leitura própria. Com name, mostra o conteúdo daquela coleção na ordem, com os códigos [[cN]] e as edições que faltam.',
+        input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Nome de uma coleção, para ver o conteúdo dela.' } } } },
+      run(input = {}) {
+        const list = collections() || [];
+        if (!list.length) return 'O usuário ainda não tem coleções.';
+        if (!String(input.name || '').trim()) return ['Coleções do usuário:', ...list.map(c => `- ${c.name} — ${c.comicIds.length} revistas${c.ordered ? ', em ordem de leitura própria' : ''}${c.missing?.length ? `, ${c.missing.length} edições faltando` : ''}`)].join('\n');
+        const collection = findCollection(list, input.name);
+        if (!collection) return `Nenhuma coleção chamada "${input.name}". As coleções são: ${list.map(c => c.name).join('; ')}.`;
+        const items = collectionItems(collection, comicsById);
+        return [`Coleção: ${collection.name} — ${collection.ordered ? 'em ordem de leitura própria' : 'feita à mão, sem ordem própria'}; ${items.length} itens.`,
+          ...items.slice(0, 400).map(item => item.type === 'comic' ? `${item.position}. ${entryLine(item.comic)}` : `${item.position}. (faltando, não está na biblioteca) ${item.title}`)].join('\n');
+      },
+    },
+    propose_collection: {
+      definition: { name: 'propose_collection', description: 'Propõe ao usuário uma coleção na ordem de leitura, ou a mudança de uma coleção que já existe. O app mostra um cartão com a ordem e só o usuário cria, tocando no botão. A ordem usa os códigos [[cN]] das ferramentas; edições da ordem que não estão na biblioteca entram como {"missing":"Título #N"} no lugar delas.',
+        input_schema: { type: 'object', properties: {
+          name: { type: 'string', description: 'Nome da coleção.' },
+          order: { type: 'array', description: 'A ordem de leitura completa, da primeira à última edição.', items: { type: 'object', properties: {
+            ref: { type: 'string', description: 'Código de uma revista da biblioteca, como c12.' },
+            missing: { type: 'string', description: 'Edição que faz parte da ordem mas não está na biblioteca, como "Civil War: Front Line #1".' } } } },
+          replace: { type: 'string', description: 'Só para mudar uma coleção que já existe: o nome dela. A ordem enviada substitui a anterior inteira.' } },
+          required: ['name', 'order'] } },
+      run(input = {}) {
+        const result = proposeCollection(input, { byRef, comicsById, collections: collections() || [] });
+        if (result.error) return result.error;
+        const proposal = result.proposal, same = proposals.findIndex(p => p.name.toLowerCase() === proposal.name.toLowerCase() || (proposal.replaceId && p.replaceId === proposal.replaceId));
+        if (same >= 0) proposals.splice(same, 1);
+        proposals.push(proposal);
+        return `Proposta pronta: "${proposal.name}" com ${proposal.comicIds.length} revistas da biblioteca${proposal.missing.length ? ` e ${proposal.missing.length} edições faltando` : ''}${proposal.replaceName ? `, substituindo a coleção "${proposal.replaceName}"` : ''}${proposal.repeated.length ? `; repetidas ignoradas: ${proposal.repeated.join(', ')}` : ''}. O app mostra um cartão com a ordem inteira e o usuário confirma tocando no botão; nada foi criado ainda. Agora responda curto, sem repetir a lista.`;
+      },
+    },
+  };
+}
+
 export function systemPrompt(context, language = 'en') {
   const reply = language === 'pt-BR' ? 'português do Brasil' : language === 'es' ? 'espanhol' : 'inglês (English)';
   return `Você é o assistente pessoal de quadrinhos do usuário, dentro do app CloudPanels (um leitor de HQs que lê a coleção dele no MEGA). Pense num mordomo de IA de filme: prestativo, entusiasmado com quadrinhos, direto e com um toque de bom humor — mas sem exagerar no personagem.
@@ -262,9 +313,17 @@ O que você faz:
 - Monta ordens de leitura de séries, arcos e eventos, marcando o que ele já tem e já leu.
 - Aponta edições que faltam na coleção, para ele saber o que procurar.
 - Dá opinião sincera sobre séries e arcos (pontos fortes e fracos, sem spoilers a menos que ele peça).
+- Cria coleções na ordem de leitura que ele pedir (ele confirma antes de criar).
 
 Acesso à biblioteca:
 - Abaixo há só um resumo. Você enxerga a biblioteca INTEIRA, todas as pastas, pelas ferramentas search_library, list_folder, series_status e reading_history. Use-as sempre que precisar de detalhes (quais edições ele tem, o que está numa pasta, o que já leu). Nunca diga que a lista está cortada ou incompleta: consulte as ferramentas.
+
+Coleções:
+- Quando ele pedir para criar ou mudar uma coleção (por exemplo, uma saga ou um evento na ordem de leitura): ache as revistas com as ferramentas da biblioteca (e a busca na web, se precisar da ordem oficial), monte a ordem completa e chame propose_collection. Edições da ordem que ele não tem entram como "missing", no lugar delas.
+- Para mudar uma coleção que já existe, veja como ela está com my_collections e mande a ordem nova inteira, com replace = nome dela.
+- Você não cria nem muda coleções sozinho: o app mostra um cartão e só ele confirma, tocando no botão. Nunca diga que já criou; diga que é só conferir e confirmar no cartão.
+- Depois da proposta, responda curto: quantas revistas entraram, quais edições faltam e qualquer dúvida sobre a ordem. Não repita a lista inteira: ela aparece no cartão.
+- Cada coleção tem a sua própria ordem e guarda só revistas da biblioteca; nada muda nas pastas do MEGA nem na ordem da biblioteca.
 
 Regras:
 - Quando citar uma revista que está na biblioteca, use exatamente o código dela entre colchetes duplos, por exemplo [[c12]] — o app transforma isso num botão que abre a revista. Não invente códigos: use só os que aparecem no resumo ou nas ferramentas.
@@ -350,10 +409,12 @@ export async function askAssistant({ key, messages, system, onText, signal, web 
   const conversation = cleanHistory(messages).map(m => ({ role: m.role, content: m.text }));
   if (!conversation.length) throw Object.assign(new Error('There is no question to send.'), { type: 'empty' });
   let shown = '', useWeb = web;
-  for (let round = 0; round < 10; round++) {
+  // (A collection in reading order can take a few more lookups than a question.)
+  for (let round = 0; round < 16; round++) {
     const toolList = Object.values(tools).map(tool => tool.definition);
     if (useWeb) toolList.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
-    const body = { model, max_tokens: 4096, system, stream: true, messages: conversation, ...(toolList.length ? { tools: toolList } : {}) };
+    // (Room for a long reading order in a proposed collection.)
+    const body = { model, max_tokens: 8192, system, stream: true, messages: conversation, ...(toolList.length ? { tools: toolList } : {}) };
     const response = await fetchImpl('https://api.anthropic.com/v1/messages', {
       method: 'POST', signal, credentials: 'omit', referrerPolicy: 'no-referrer',
       headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },

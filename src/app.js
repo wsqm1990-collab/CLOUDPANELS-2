@@ -9,8 +9,9 @@ import {OfflineLibrary} from './offline.js';
 import {streamToCbz,verifyCbz} from './convert.js';
 import {clearArchiveListings} from './reader.js';
 import {aloudEvents,interruptedListening,noteAloud} from './aloud-log.js';
-import {assistantStore,buildLibraryIndex,libraryBrief,libraryTools,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
+import {assistantStore,buildLibraryIndex,libraryBrief,libraryTools,collectionTools,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder, coverPicks} from './app-helpers.js';
+import {collectionItems, nextInCollection, continueInCollection} from './collection-order.js';
 import {sagaWheelCard, openSagaWheel} from './saga-wheel-view.js';
 
 const copy = {
@@ -57,6 +58,10 @@ Object.assign(copy['pt-BR'],{syncPaused:'A sincronização entre aparelhos está
 Object.assign(copy.en,{megaConnecting:'Connecting to MEGA… the story opens in a moment.',resumeListening:'The phone closed CloudPanels while it was reading aloud. This is the same page: tap Listen to go on.'});
 Object.assign(copy['pt-BR'],{megaConnecting:'Conectando ao MEGA… a história abre em instantes.',resumeListening:'O celular fechou o CloudPanels enquanto ele lia em voz alta. Esta é a mesma página: toque em Ouvir para continuar.'});
 Object.assign(copy.es,{megaConnecting:'Conectando con MEGA… la historia se abre enseguida.',resumeListening:'El teléfono cerró CloudPanels mientras leía en voz alta. Esta es la misma página: toca Escuchar para seguir.'});
+// Reading-order collections (made with the comics assistant).
+Object.assign(copy.en,{orderCount:'{count} stories in reading order',orderMissing:'{count} not in your library',notInLibrary:'Not in your library',orderStart:'Start · #{n} {title}',orderContinue:'Continue · #{n} {title}',orderDone:'Everything here is read ✓',orderHint:'Opened from here, each comic goes on to the next one in this collection.',orderEyebrow:'Reading order'});
+Object.assign(copy['pt-BR'],{orderCount:'{count} histórias na ordem de leitura',orderMissing:'{count} fora da sua biblioteca',notInLibrary:'Não está na sua biblioteca',orderStart:'Começar · #{n} {title}',orderContinue:'Continuar · #{n} {title}',orderDone:'Tudo daqui já foi lido ✓',orderHint:'Abrindo daqui, cada quadrinho segue para o próximo desta coleção.',orderEyebrow:'Ordem de leitura'});
+Object.assign(copy.es,{orderCount:'{count} historias en orden de lectura',orderMissing:'{count} fuera de tu biblioteca',notInLibrary:'No está en tu biblioteca',orderStart:'Empezar · #{n} {title}',orderContinue:'Seguir · #{n} {title}',orderDone:'Todo lo de aquí ya está leído ✓',orderHint:'Abriendo desde aquí, cada cómic sigue con el siguiente de esta colección.',orderEyebrow:'Orden de lectura'});
 // ---- Diagnostics: a small local log of errors the user can copy and send ----
 const DIAG_KEY='cloudpanels-diagnostics-v1';
 function scrub(text,limit=600){return String(text||'').replace(/sk-ant-[A-Za-z0-9_\-]+/g,'[key]').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]').replace(/https?:\/\/[^\s"')]+/g,u=>u.split('?')[0].replace(/\/[^/]{24,}/g,'/[id]')).slice(0,limit);}
@@ -200,7 +205,10 @@ const coverRequests=new Map(),coverTargets=new Map(),coverURLs=new Set();
 const reader = createReaderController({
   store,
   onNextComic:async current=>{
-    const comic=nextComicInFolder(store.state.comics,current);
+    // Opened from a collection in its own reading order: the next one of that
+    // collection (none after its last). Otherwise the next in its folder, as always.
+    const order=readingCollectionId&&store.state.collections.find(c=>c.id===readingCollectionId&&c.ordered&&c.comicIds.includes(current?.id));
+    const comic=order?nextInCollection(order,current.id,new Map(store.state.comics.map(c=>[c.id,c])),c=>readable.has(c.format)):nextComicInFolder(store.state.comics,current);
     if(!comic)return null;
     const source=await resolveSource(comic);
     return {comic,source};
@@ -679,7 +687,7 @@ function appendUpNext(comics){
   if(!comics.some(c=>statusOf(c,store.state.progress)!=='unread'||queued.has(c.id)))return;
   const next=upNextComics(comics,store.state.progress,6,store.state.readLater||[]);if(!next.length)return;
   const header=element('div',{class:'section-heading'},element('div',{},element('h2',{text:t('upNext')}),text(t('upNextHint'))));
-  const rail=element('div',{class:'up-next-rail'},next.map(comicCard));
+  const rail=element('div',{class:'up-next-rail'},next.map(comic=>comicCard(comic)));
   main.append(element('section',{class:'up-next-section section'},header,rail));
 }
 function appendComicList(comics) {
@@ -693,8 +701,8 @@ function appendComicList(comics) {
   } else main.append(comicGrid(shown));
   if(comics.length>shown.length)main.append(element('div',{style:'display:flex;justify-content:center;margin-top:30px'},action(t('loadMore')+' · '+shown.length+' / '+comics.length,()=>{visibleCount+=60;render();})));
 }
-function comicGrid(comics) { return element('div',{class:'library-grid'},comics.map(comicCard)); }
-function comicCard(comic) {
+function comicGrid(comics) { return element('div',{class:'library-grid'},comics.map(comic=>comicCard(comic))); }
+function comicCard(comic,{position}={}) {
   const metadata=comic.metadata,progress=store.state.progress[comic.id],status=statusOf(comic,store.state.progress);
   const palettes=['linear-gradient(145deg,#31434e,#172537)','linear-gradient(145deg,#3e4933,#202f2b)','linear-gradient(145deg,#493b4a,#252438)','linear-gradient(145deg,#514635,#272937)'];
   let hash=0;for(const char of comic.id)hash=(hash*31+char.charCodeAt(0))>>>0;
@@ -702,7 +710,8 @@ function comicCard(comic) {
     element('span',{class:'cover-publisher',text:metadata.publisher||comic.source.toUpperCase()}),
     element('span',{class:'cover-title',text:metadata.series||metadata.title||comic.name}),
     element('span',{class:'cover-bottom',text:[metadata.volume?'VOL. '+metadata.volume:'',metadata.issue?'#'+metadata.issue:'',metadata.year].filter(Boolean).join(' · ')}),
-    element('span',{class:'format-badge',text:comic.format.toUpperCase()}),status==='finished'?element('span',{class:'read-badge',text:'✓ '+t('finished')}):null);
+    element('span',{class:'format-badge',text:comic.format.toUpperCase()}),status==='finished'?element('span',{class:'read-badge',text:'✓ '+t('finished')}):null,
+    position?element('span',{class:'order-badge','aria-label':'#'+position,text:String(position)}):null);
   const selected=selectedComicIds.has(comic.id);
   const open=action('',()=>selectionMode?toggleComicSelection(comic.id):openComic(comic),selectionMode?'comic-cover-select':'',
     {'aria-label':selectionMode?t('selectStory',{title:metadata.title||comic.name}):(status==='reading'?t('resume'):t('open'))+' '+metadata.title,...(selectionMode?{'aria-pressed':String(selected)}:{})});open.append(cover);
@@ -764,8 +773,12 @@ async function resolveSource(comic){
   if(comic.id==='demo:reader-balloons:v1')throw new Error(store.state.settings.language==='pt-BR'?'Esta demonstração foi removida. Abra a demonstração atual em CBZ ou PDF.':store.state.settings.language==='es'?'Esta demostración fue retirada. Abre la demostración actual en CBZ o PDF.':'This demo has been retired. Open the current CBZ or PDF demo.');
   return demoSource(comic.format);
 }
+// The reading-order collection a comic was opened from ('' = the library or a folder).
+let readingCollectionId='';
+const orderedCollectionShown=()=>view==='collections'&&selectedCollection?store.state.collections.find(c=>c.id===selectedCollection&&c.ordered)||null:null;
 async function openComic(comic) {
   if(opening)return;
+  const from=orderedCollectionShown(),fromCollection=from&&from.comicIds.includes(comic?.id)?from.id:'';
   if(!readable.has(comic.format)){toast(t('unsupported'));return;}
   opening=true;
   covers.setForegroundBusy(true);pauseCoverRequests();
@@ -774,7 +787,7 @@ async function openComic(comic) {
     if(comic.source==='local'&&!localFiles.has(comic.id)&&!offline.has(comic.id)){pendingLocalId=comic.id;toast(t('selectAgain'));document.querySelector('#file-input').click();return;}
     const source=await resolveSource(comic);
     if(modal.open)closeModal();
-    readingComicId=comic.id;
+    readingComicId=comic.id;readingCollectionId=fromCollection;
     await reader.open(store.state.comics.find(c=>c.id===comic.id)||comic,source);
   }catch(error){diag('open-comic',error,{format:comic?.format,size:comic?.size});const message=publicError(error,t('connectionError'));if(message)toast(message);}
   finally{opening=false;refreshHeader();if(!document.querySelector('#reader').open){covers.setForegroundBusy(false);mainDirty=true;queueMainRefresh();}}
@@ -859,6 +872,7 @@ function openDetails(id) {
 }
 function renderCollections() {
   const collection=store.state.collections.find(c=>c.id===selectedCollection);
+  if(collection?.ordered){renderOrderedCollection(collection);return;}
   if(collection){
     main.append(action('← '+t('backCollections'),()=>{selectedCollection=null;visibleCount=60;render();},'back-button'),heading(collection.name,t('comicsCount',{count:collection.comicIds.length}),action(t('editCollection'),()=>editCollection(collection.id))));
     const ids=new Set(collection.comicIds),comics=sortComics(filterComics(store.state.comics.filter(c=>ids.has(c.id)),store.state.progress,{query:document.querySelector('#search').value}),store.state.progress,filters.sort);
@@ -875,7 +889,32 @@ function renderCollections() {
   if(!store.state.collections.length){main.append(empty(t('emptyCollections'),t('emptyCollectionsText'),[action(t('newCollection'),()=>editCollection(),'button primary')]));return;}
   main.append(element('div',{class:'section-heading'},element('h2',{text:t('customCollections')})));
   const grid=element('div',{class:'grid'});
-  store.state.collections.forEach(collection=>{const button=action('',()=>{selectedCollection=collection.id;visibleCount=60;render();},'collection-card',{'aria-label':collection.name});button.style.textAlign='left';button.append(element('span',{class:'eyebrow',text:t('collections')}),element('h3',{text:collection.name}),text(t('comicsCount',{count:collection.comicIds.length})));grid.append(button);});main.append(grid);
+  store.state.collections.forEach(collection=>{const button=action('',()=>{selectedCollection=collection.id;visibleCount=60;render();},'collection-card',{'aria-label':collection.name});button.style.textAlign='left';button.append(element('span',{class:'eyebrow',text:collection.ordered?t('orderEyebrow'):t('collections')}),element('h3',{text:collection.name}),text(t('comicsCount',{count:collection.comicIds.length})));grid.append(button);});main.append(grid);
+}
+// A collection in its own reading order: numbered, with the issues not in the
+// library in their places, and a button to go on where the reading stopped.
+function renderOrderedCollection(collection){
+  const comicsById=new Map(store.state.comics.map(c=>[c.id,c])),items=collectionItems(collection,comicsById);
+  const comicCount=items.filter(item=>item.type==='comic').length,missingCount=items.length-comicCount;
+  main.append(action('← '+t('backCollections'),()=>{selectedCollection=null;visibleCount=60;render();},'back-button'),
+    heading(collection.name,[t('orderCount',{count:comicCount}),missingCount?t('orderMissing',{count:missingCount}):''].filter(Boolean).join(' · '),action(t('editCollection'),()=>editCollection(collection.id))));
+  if(!comicCount){main.append(empty(collection.name,t('noCollectionComics'),[action(t('chooseComics'),()=>editCollection(collection.id),'button primary')]));return;}
+  const next=continueInCollection(collection,comicsById,store.state.progress);
+  main.append(element('section',{class:'order-continue'},
+    next?action('▶ '+t(next.started?'orderContinue':'orderStart',{n:next.position,title:next.comic.metadata.title||next.comic.name}),()=>openComic(next.comic),'button primary',{'data-order-continue':next.comic.id}):element('strong',{text:t('orderDone')}),
+    text(t('orderHint'))));
+  // A search narrows the list; the numbers stay those of the order.
+  const query=document.querySelector('#search').value.trim();
+  const matching=query?new Set(filterComics(items.filter(item=>item.type==='comic').map(item=>item.comic),store.state.progress,{query}).map(c=>c.id)):null;
+  const shown=matching?items.filter(item=>item.type==='comic'&&matching.has(item.comic.id)):items,visible=shown.slice(0,visibleCount);
+  if(!shown.length){main.append(empty(t('noMatches'),t('changeFilters'),[action(t('clearFilters'),resetFilters)]));return;}
+  main.append(element('div',{class:'library-grid order-grid'},visible.map(item=>item.type==='comic'?comicCard(item.comic,{position:item.position}):missingCard(item))));
+  if(shown.length>visible.length)main.append(element('div',{style:'display:flex;justify-content:center;margin-top:30px'},action(t('loadMore')+' · '+visible.length+' / '+shown.length,()=>{visibleCount+=60;render();})));
+}
+function missingCard(item){
+  return element('article',{class:'comic-card order-missing','data-order-missing':String(item.position)},
+    element('div',{class:'comic-cover order-missing-cover','aria-hidden':'true'},element('span',{class:'order-missing-mark',text:'?'}),element('span',{class:'order-badge',text:String(item.position)})),
+    element('div',{class:'comic-info'},element('h3',{class:'comic-title',text:item.title}),element('p',{class:'comic-meta',text:t('notInLibrary')})));
 }
 function editCollection(id) {
   const collection=store.state.collections.find(c=>c.id===id);
@@ -895,9 +934,12 @@ function editCollection(id) {
   body.append(form);if(collection)body.append(action(t('deleteCollection'),()=>{store.state.collections=store.state.collections.filter(c=>c.id!==id);store.save();selectedCollection=null;closeModal();changed();},'button danger'));draw();
 }
 const AI_TEXT={
-  'pt-BR':{title:'Assistente de quadrinhos',subtitle:'Pergunte o que ler, ordens de leitura, o que falta na sua coleção ou a opinião dele sobre uma série.',setupTitle:'Ligue o seu assistente',setupText:'O assistente usa a IA Claude, da Anthropic. Você cria uma chave uma vez e ela fica guardada só neste aparelho. O uso é cobrado pela Anthropic, normalmente alguns centavos por conversa.',steps:['Abra console.anthropic.com e crie sua conta (pode entrar com o Google).','Em Billing (Cobrança), adicione um pouco de crédito — US$ 5 duram bastante.','Em API Keys, toque em Create Key, dê um nome (ex.: CloudPanels) e copie a chave.','Cole a chave aqui embaixo e toque em Salvar.'],keyLabel:'Chave da IA (começa com sk-ant-)',save:'Salvar chave',keyInvalid:'Essa chave não parece certa. Ela começa com sk-ant-.',placeholder:'Pergunte qualquer coisa sobre quadrinhos…',send:'Enviar',listening:'Ouvindo…',mic:'Falar',voice:'Responder em voz alta',web:'Pesquisar na internet',newChat:'Nova conversa',changeKey:'Trocar chave',you:'VOCÊ',bot:'ASSISTENTE',thinking:'Pensando…',searching:'Pesquisando na internet…',library:'Olhando sua biblioteca…',hello:'Olá! Eu conheço sua biblioteca e o que você já leu. Posso indicar a próxima leitura, montar a ordem de um arco, mostrar o que falta nas suas coleções ou dar minha opinião sobre uma série. Por onde começamos?',chips:['O que eu leio agora?','O que está faltando nas minhas coleções?','Me indique algo parecido com o que estou lendo','Qual a ordem de leitura de um arco?'],keySaved:'Chave salva. Pode perguntar!',stop:'Parar'},
-  en:{title:'Comics assistant',subtitle:'Ask what to read, reading orders, what is missing from your collection or its opinion on a series.',setupTitle:'Turn on your assistant',setupText:'The assistant uses Claude AI by Anthropic. You create a key once and it stays only on this device. Usage is billed by Anthropic, usually a few cents per conversation.',steps:['Open console.anthropic.com and create an account.','In Billing, add a little credit — US$5 lasts a long time.','In API Keys, tap Create Key, name it (e.g. CloudPanels) and copy the key.','Paste the key below and tap Save.'],keyLabel:'AI key (starts with sk-ant-)',save:'Save key',keyInvalid:'That key does not look right. It starts with sk-ant-.',placeholder:'Ask anything about comics…',send:'Send',listening:'Listening…',mic:'Speak',voice:'Read answers aloud',web:'Search the web',newChat:'New conversation',changeKey:'Change key',you:'YOU',bot:'ASSISTANT',thinking:'Thinking…',searching:'Searching the web…',library:'Looking through your library…',hello:'Hi! I know your library and what you have read. I can suggest your next read, build a reading order, show what is missing from your collections or give my opinion on a series. Where shall we start?',chips:['What should I read now?','What is missing from my collections?','Suggest something like what I am reading','What is the reading order of an arc?'],keySaved:'Key saved. Ask away!',stop:'Stop'},
+  'pt-BR':{title:'Assistente de quadrinhos',subtitle:'Pergunte o que ler, ordens de leitura, o que falta na sua coleção ou a opinião dele sobre uma série.',setupTitle:'Ligue o seu assistente',setupText:'O assistente usa a IA Claude, da Anthropic. Você cria uma chave uma vez e ela fica guardada só neste aparelho. O uso é cobrado pela Anthropic, normalmente alguns centavos por conversa.',steps:['Abra console.anthropic.com e crie sua conta (pode entrar com o Google).','Em Billing (Cobrança), adicione um pouco de crédito — US$ 5 duram bastante.','Em API Keys, toque em Create Key, dê um nome (ex.: CloudPanels) e copie a chave.','Cole a chave aqui embaixo e toque em Salvar.'],keyLabel:'Chave da IA (começa com sk-ant-)',save:'Salvar chave',keyInvalid:'Essa chave não parece certa. Ela começa com sk-ant-.',placeholder:'Pergunte qualquer coisa sobre quadrinhos…',send:'Enviar',listening:'Ouvindo…',mic:'Falar',voice:'Responder em voz alta',web:'Pesquisar na internet',newChat:'Nova conversa',changeKey:'Trocar chave',you:'VOCÊ',bot:'ASSISTENTE',thinking:'Pensando…',searching:'Pesquisando na internet…',library:'Olhando sua biblioteca…',hello:'Olá! Eu conheço sua biblioteca e o que você já leu. Posso indicar a próxima leitura, montar a ordem de um arco, criar uma coleção na ordem de leitura (você confirma antes), mostrar o que falta nas suas coleções ou dar minha opinião sobre uma série. Por onde começamos?',chips:['O que eu leio agora?','O que está faltando nas minhas coleções?','Me indique algo parecido com o que estou lendo','Qual a ordem de leitura de um arco?','Crie uma coleção na ordem de leitura'],keySaved:'Chave salva. Pode perguntar!',stop:'Parar'},
+  en:{title:'Comics assistant',subtitle:'Ask what to read, reading orders, what is missing from your collection or its opinion on a series.',setupTitle:'Turn on your assistant',setupText:'The assistant uses Claude AI by Anthropic. You create a key once and it stays only on this device. Usage is billed by Anthropic, usually a few cents per conversation.',steps:['Open console.anthropic.com and create an account.','In Billing, add a little credit — US$5 lasts a long time.','In API Keys, tap Create Key, name it (e.g. CloudPanels) and copy the key.','Paste the key below and tap Save.'],keyLabel:'AI key (starts with sk-ant-)',save:'Save key',keyInvalid:'That key does not look right. It starts with sk-ant-.',placeholder:'Ask anything about comics…',send:'Send',listening:'Listening…',mic:'Speak',voice:'Read answers aloud',web:'Search the web',newChat:'New conversation',changeKey:'Change key',you:'YOU',bot:'ASSISTANT',thinking:'Thinking…',searching:'Searching the web…',library:'Looking through your library…',hello:'Hi! I know your library and what you have read. I can suggest your next read, build a reading order, make a collection in reading order (you confirm it first), show what is missing from your collections or give my opinion on a series. Where shall we start?',chips:['What should I read now?','What is missing from my collections?','Suggest something like what I am reading','What is the reading order of an arc?','Make a collection in reading order'],keySaved:'Key saved. Ask away!',stop:'Stop'},
 };
+// Collections the assistant proposes (a card the user confirms).
+Object.assign(AI_TEXT['pt-BR'],{newEyebrow:'Nova coleção',updateEyebrow:'Mudança numa coleção',create:'Criar coleção',update:'Atualizar coleção',cancelProposal:'Cancelar',created:'✓ Coleção criada',updated:'✓ Coleção atualizada',notCreated:'Não criada',notChanged:'Não alterada',openCollection:'Abrir coleção',inOrder:'{count} quadrinhos na ordem de leitura',missingCount:'{count} fora da sua biblioteca',replaces:'substitui “{name}”',seeOrder:'Ver a ordem inteira ({count})',notInLibrary:'fora da sua biblioteca',gone:'Esses quadrinhos não estão mais na sua biblioteca.',collectionReady:'Pronto: confira a ordem no cartão e confirme.',createdToast:'Coleção criada.',updatedToast:'Coleção atualizada.'});
+Object.assign(AI_TEXT.en,{newEyebrow:'New collection',updateEyebrow:'Change to a collection',create:'Create collection',update:'Update collection',cancelProposal:'Cancel',created:'✓ Collection created',updated:'✓ Collection updated',notCreated:'Not created',notChanged:'Not changed',openCollection:'Open collection',inOrder:'{count} comics in reading order',missingCount:'{count} not in your library',replaces:'replaces “{name}”',seeOrder:'See the whole order ({count})',notInLibrary:'not in your library',gone:'These comics are no longer in your library.',collectionReady:'Here it is: check the order in the card and confirm.',createdToast:'Collection created.',updatedToast:'Collection updated.'});
 AI_TEXT.es=AI_TEXT.en;
 const aiText=()=>AI_TEXT[store.state.settings.language]||AI_TEXT.en;
 let aiChat=null,aiBusy=null,aiStopListening=null;
@@ -954,7 +996,7 @@ function renderAssistant() {
   const messages=element('div',{class:'ai-messages'});
   const bubble=(role,content)=>element('div',{class:'message '+role},element('span',{class:'message-label',text:role==='user'?L.you:L.bot}),content);
   messages.append(bubble('assistant',richText(L.hello,context.byRef)));
-  for(const m of aiChat)messages.append(bubble(m.role,m.role==='user'?element('div',{text:m.text}):richText(m.text,context.byRef)));
+  for(const m of aiChat)messages.append(bubble(m.role,m.role==='user'?element('div',{text:m.text}):element('div',{},richText(m.text,context.byRef),...proposalCards(m))));
   const chips=element('div',{class:'assistant-prompts'},L.chips.map(chip=>action(chip,()=>send(chip),'chip')));
   const input=element('textarea',{class:'input',placeholder:L.placeholder,rows:2,maxlength:4000,'aria-label':L.placeholder});
   const sendButton=element('button',{type:'submit',class:'button primary',text:L.send});
@@ -981,12 +1023,17 @@ function renderAssistant() {
     const answerBox=element('div',{class:'ai-pending',text:L.thinking});const node=bubble('assistant',answerBox);messages.append(node);node.scrollIntoView({block:'end',behavior:'smooth'});
     const controller=new AbortController();aiBusy=controller;sendButton.textContent=L.stop;
     let frame=0,latest='';
+    // Collections it proposes in this answer (shown as cards to confirm).
+    const proposals=[],tools={...context.tools,...collectionTools(libraryIndex,{collections:()=>store.state.collections,proposals})};
     try{
-      const reply=await askAssistant({key:assistantStore.key,messages:aiChat,system:systemPrompt(context.text,store.state.settings.language),signal:controller.signal,web:assistantStore.options.web,tools:context.tools,
-        onText:(value,info)=>{latest=value;if(!value&&(info?.searching||info?.library)){answerBox.textContent=info.library?L.library:L.searching;answerBox.className='ai-pending';return;}if(frame)return;frame=requestAnimationFrame(()=>{frame=0;answerBox.replaceChildren(richText(latest,context.byRef));answerBox.className='';node.scrollIntoView({block:'end'});});}});
+      let reply;
+      try{reply=await askAssistant({key:assistantStore.key,messages:aiChat.map(forHistory),system:systemPrompt(context.text,store.state.settings.language),signal:controller.signal,web:assistantStore.options.web,tools,
+        onText:(value,info)=>{latest=value;if(!value&&(info?.searching||info?.library)){answerBox.textContent=info.library?L.library:L.searching;answerBox.className='ai-pending';return;}if(frame)return;frame=requestAnimationFrame(()=>{frame=0;answerBox.replaceChildren(richText(latest,context.byRef));answerBox.className='';node.scrollIntoView({block:'end'});});}});}
+      catch(error){if(error?.type==='empty_answer'&&proposals.length)reply=L.collectionReady;else throw error;}
       if(frame)cancelAnimationFrame(frame);
-      answerBox.replaceChildren(richText(reply,context.byRef));answerBox.className='';
-      aiChat.push({role:'assistant',text:reply});assistantStore.saveChat(aiChat);
+      const answer={role:'assistant',text:reply,...(proposals.length?{proposals:proposals.map(p=>({...p,state:'pending'}))}:{})},cards=proposalCards(answer);
+      aiChat.push(answer);assistantStore.saveChat(aiChat);
+      answerBox.replaceChildren(richText(reply,context.byRef),...cards);answerBox.className='';
       if(assistantStore.options.voice)speak(reply,store.state.settings.language==='en'?'en-US':'pt-BR');
     }catch(error){
       if(error?.name!=='AbortError')diag('assistant',error,{status:error?.status,type:error?.type});
@@ -995,6 +1042,51 @@ function renderAssistant() {
       if(error?.status===401){assistantStore.key='';}
     }finally{if(aiBusy===controller)aiBusy=null;sendButton.textContent=L.send;node.scrollIntoView({block:'end'});}
   }
+}
+// What became of the collections it proposed, for the assistant to know in the next questions.
+function forHistory(message){
+  if(message.role!=='assistant'||!message.proposals?.length)return message;
+  const state={pending:'esperando a confirmação dele',created:'ele criou',updated:'ele confirmou a mudança',cancelled:'ele cancelou'};
+  return {...message,text:message.text+'\n\n'+message.proposals.map(p=>`[Cartão de coleção: "${p.name}", ${p.comicIds.length} revistas${p.missing.length?`, ${p.missing.length} faltando`:''} — ${state[p.state]||state.pending}]`).join('\n')};
+}
+// A proposed collection: its order, and the buttons to create it (or not).
+function proposalCards(message){return (message.proposals||[]).map(proposal=>proposalCard(message,proposal));}
+function proposalCard(message,proposal){
+  const L=aiText(),comicsById=new Map(store.state.comics.map(c=>[c.id,c]));
+  const items=collectionItems({comicIds:proposal.comicIds,missing:proposal.missing},comicsById);
+  const comicCount=items.filter(item=>item.type==='comic').length,missingCount=items.length-comicCount;
+  const target=proposal.replaceId?store.state.collections.find(c=>c.id===proposal.replaceId):null,updating=Boolean(target);
+  const row=item=>element('li',{class:item.type==='missing'?'is-missing':''},element('span',{class:'ai-collection-n',text:String(item.position)}),
+    element('span',{class:'ai-collection-name',text:item.type==='comic'?(item.comic.metadata.title||item.comic.name):item.title}),item.type==='missing'?element('em',{text:L.notInLibrary}):null);
+  const list=element('ol',{class:'ai-collection-list'},items.slice(0,5).map(row));
+  const more=items.length>5?action(L.seeOrder.replace('{count}',items.length),()=>{list.replaceChildren(...items.map(row));more.remove();},'text-button ai-collection-more'):null;
+  const actions=element('div',{class:'ai-collection-actions row'});
+  const card=element('section',{class:'ai-collection-card','data-collection-proposal':proposal.name},
+    element('p',{class:'eyebrow',text:updating||proposal.state==='updated'?L.updateEyebrow:L.newEyebrow}),element('h4',{text:proposal.name}),
+    text([L.inOrder.replace('{count}',comicCount),missingCount?L.missingCount.replace('{count}',missingCount):'',updating?L.replaces.replace('{name}',target.name):''].filter(Boolean).join(' · ')),
+    list,more,actions);
+  function settle(state,collectionId=''){proposal.state=state;if(collectionId)proposal.collectionId=collectionId;assistantStore.saveChat(aiChat);draw();}
+  function confirm(){
+    try{
+      const saved=store.saveOrderedCollection({id:target?target.id:'',name:proposal.name,comicIds:proposal.comicIds,missing:proposal.missing});
+      if(store.lastError){toast(t('storageError'));return;}
+      settle(target?'updated':'created',saved.id);scheduleSync();toast(target?L.updatedToast:L.createdToast);
+    }catch(error){toast(publicError(error,t('storageError')));}
+  }
+  function draw(){
+    const open=()=>openCollection(proposal.collectionId);
+    if(proposal.state==='created'||proposal.state==='updated'){
+      const exists=store.state.collections.some(c=>c.id===proposal.collectionId);
+      actions.replaceChildren(element('span',{class:'ai-collection-done',text:proposal.state==='updated'?L.updated:L.created}),exists?action(L.openCollection,open,'button secondary compact'):null);
+    }else if(proposal.state==='cancelled')actions.replaceChildren(element('span',{class:'muted',text:proposal.replaceId?L.notChanged:L.notCreated}));
+    else if(!comicCount)actions.replaceChildren(element('span',{class:'muted',text:L.gone}));
+    else actions.replaceChildren(action(updating?L.update:L.create,confirm,'button primary compact',{'data-collection-confirm':''}),action(L.cancelProposal,()=>settle('cancelled'),'button ghost compact'));
+  }
+  draw();return card;
+}
+function openCollection(id){
+  if(!store.state.collections.some(c=>c.id===id))return;
+  clearComicSelection(true);view='collections';selectedCollection=id;visibleCount=60;document.querySelector('#search').value='';render();window.scrollTo({top:0,behavior:'auto'});
 }
 function renderAssistantOnly(){if(view==='assistant'){main.replaceChildren();renderAssistant();main.querySelector('textarea')?.focus();}}
 function settingRow(title,description,control) {return element('div',{class:'settings-row'},element('div',{},element('h3',{text:title}),text(description)),control);}
