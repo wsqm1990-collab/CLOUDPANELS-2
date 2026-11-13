@@ -144,3 +144,49 @@ test('thinking blocks (text left out, signature kept) go back exactly as receive
   assert.deepEqual(sentBack.content[0], { type: 'thinking', thinking: '', signature: 'EosnCkYICxIMsig' });
   assert.equal(sentBack.content[1].type, 'tool_use');
 });
+
+import { collectionTools, assistantStore, systemPrompt } from '../src/assistant.js';
+
+test('the assistant sees the collections and proposes one in reading order, never creating it', async () => {
+  const state = bigLibrary(), index = buildLibraryIndex(state, { folderOf });
+  const refOf = id => [...index.byRef].find(([, value]) => value === id)[0];
+  const collections = [{ id: 'col-1', name: 'Guerra Civil', comicIds: ['mega:f1n1', 'mega:f1n2'], ordered: true, missing: [{ title: 'Front Line #1', before: 'mega:f1n2' }] },
+    { id: 'col-2', name: 'Favoritas', comicIds: ['mega:f2n1'] }];
+  const proposals = [], tools = collectionTools(index, { collections: () => collections, proposals });
+  assert.match(tools.my_collections.run({}), /Guerra Civil — 2 revistas, em ordem de leitura própria, 1 edições faltando/);
+  assert.match(tools.my_collections.run({}), /Favoritas — 1 revistas$/m);
+  const inside = tools.my_collections.run({ name: 'guerra civil' });
+  assert.match(inside, /1\. \[\[c\d+\]\] Series 1 1/); assert.match(inside, /2\. \(faltando, não está na biblioteca\) Front Line #1/); assert.match(inside, /3\. \[\[c\d+\]\] Series 1 2/);
+  assert.match(tools.my_collections.run({ name: 'Nope' }), /Nenhuma coleção chamada "Nope"/);
+  // A new one: proposed, kept for the card, nothing created.
+  const said = tools.propose_collection.run({ name: 'Saga 7', order: [{ ref: refOf('mega:f7n2') }, { missing: 'Series 7 Annual #1' }, { ref: refOf('mega:f7n1') }] });
+  assert.match(said, /Proposta pronta: "Saga 7" com 2 revistas da biblioteca e 1 edições faltando/); assert.match(said, /nada foi criado/);
+  assert.deepEqual(proposals[0].comicIds, ['mega:f7n2', 'mega:f7n1']); assert.deepEqual(proposals[0].missing, [{ title: 'Series 7 Annual #1', before: 'mega:f7n1' }]);
+  assert.equal(collections.length, 2, 'nothing created by the assistant');
+  // Proposed again with the same name: the newer one replaces it in this answer.
+  tools.propose_collection.run({ name: 'saga 7', order: [{ ref: refOf('mega:f7n1') }] });
+  assert.equal(proposals.length, 1); assert.deepEqual(proposals[0].comicIds, ['mega:f7n1']);
+  // A change to an existing one, and mistakes it can fix.
+  assert.match(tools.propose_collection.run({ name: 'Guerra Civil', replace: 'Guerra Civil', order: [{ ref: refOf('mega:f1n2') }, { ref: refOf('mega:f1n1') }] }), /substituindo a coleção "Guerra Civil"/);
+  assert.equal(proposals[1].replaceId, 'col-1');
+  assert.match(tools.propose_collection.run({ name: 'Favoritas', order: [{ ref: refOf('mega:f2n1') }] }), /Já existe a coleção "Favoritas"/);
+  assert.match(tools.propose_collection.run({ name: 'Bad', order: [{ ref: 'c999999' }] }), /c999999/);
+  assert.equal(proposals.length, 2);
+  // The tools go to the AI with the library ones; the prompt explains the card.
+  assert.equal(tools.propose_collection.definition.input_schema.required.join(), 'name,order');
+  assert.match(systemPrompt('x', 'en'), /só ele confirma, tocando no botão/);
+});
+
+test('the chat keeps the proposed collections with their answer, checked when they come back', () => {
+  const data = new Map(), previous = globalThis.localStorage;
+  globalThis.localStorage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, String(value)), removeItem: key => data.delete(key) };
+  try {
+    assistantStore.saveChat([{ role: 'user', text: 'Make Saga 7', proposals: [{ name: 'ignored' }] },
+      { role: 'assistant', text: 'Here it is.', proposals: [{ name: 'Saga 7', comicIds: ['a', 'b'], missing: [{ title: 'M', before: 'b' }], state: 'created', collectionId: 'col-9', repeated: ['c3'] }, { name: '', comicIds: [] }] },
+      { role: 'assistant', text: 'Plain answer.' }]);
+    const loaded = assistantStore.loadChat();
+    assert.deepEqual(loaded[0], { role: 'user', text: 'Make Saga 7' });
+    assert.deepEqual(loaded[1].proposals, [{ name: 'Saga 7', comicIds: ['a', 'b'], missing: [{ title: 'M', before: 'b' }], replaceId: '', replaceName: '', state: 'created', collectionId: 'col-9' }]);
+    assert.deepEqual(loaded[2], { role: 'assistant', text: 'Plain answer.' });
+  } finally { globalThis.localStorage = previous; }
+});
