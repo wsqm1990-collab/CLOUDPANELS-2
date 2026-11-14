@@ -64,7 +64,10 @@ jobs:
         run: python3 native/ci/simulator.py
       - name: Send to TestFlight
         if: env.ASC_KEY_ID != '' && env.ASC_ISSUER_ID != '' && env.ASC_KEY_P8 != '' && env.APPLE_TEAM_ID != ''
-        run: bash native/ci/testflight.sh 2>&1 | tee results/testflight.log
+        # (pipefail: a failed upload fails this step, instead of passing through tee.)
+        run: |
+          set -o pipefail
+          bash native/ci/testflight.sh 2>&1 | tee results/testflight.log
       - name: Publish the results
         if: always()
         env:
