@@ -1,7 +1,8 @@
 // Sync between devices through the owner's own CloudPanels sync account (a
-// Supabase project), not through MEGA. Only reading positions travel: which
-// comics are read, in progress or unread, and the page and panel. Comic files,
-// covers, MEGA sessions and settings never leave the device. Nothing runs
+// Supabase project), not through MEGA. Reading positions travel (which comics
+// are read, in progress or unread, and the page and panel), and collections
+// (names, their comics in order, the issues missing from a reading order).
+// Comic files, covers, MEGA sessions and settings never leave the device. Nothing runs
 // until the reader signs in on that device; signing out stops it.
 //
 // The project's address and its publishable key are public by design: the
@@ -144,7 +145,94 @@ function cleanDocument(value) {
   const progress = value && typeof value === 'object' && value.v === 1 && value.progress && typeof value.progress === 'object' && !Array.isArray(value.progress) ? value.progress : {};
   const out = emptySyncDocument();
   for (const [key, entry] of Object.entries(progress)) if (typeof key === 'string' && key.length <= 200 && entry && typeof entry === 'object' && typeof entry.updatedAt === 'string') out.progress[key] = entry;
+  const collections = value?.v === 1 ? cleanCollections(value.collections) : {};
+  if (Object.keys(collections).length) out.collections = collections;
   return out;
+}
+
+// ---- What is synced: collections ---------------------------------------------
+// In the shared document: { collections: { id: { name, comics: [{ id, name,
+// size }] (in order), ordered, missing: [{ title, at }] (at: the place in
+// `comics` it comes before, -1 at the end), createdAt, updatedAt } or
+// { deleted: true, updatedAt } } }. The newest version of each one wins. A
+// collection missing from the document is not deleted (an older version of
+// the app leaves them out): only a deletion says so.
+const SYNCED_COMICS = 5000, SYNCED_COLLECTIONS = 1000;
+const isTime = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
+function cleanCollections(value) {
+  const out = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  for (const [id, entry] of Object.entries(value)) {
+    if (Object.keys(out).length >= SYNCED_COLLECTIONS) break;
+    if (!id || id.length > 180 || !entry || typeof entry !== 'object' || !isTime(entry.updatedAt)) continue;
+    if (entry.deleted === true) { out[id] = { deleted: true, updatedAt: entry.updatedAt }; continue; }
+    const name = typeof entry.name === 'string' ? entry.name.slice(0, 160) : '';
+    if (!name.trim()) continue;
+    const comics = (Array.isArray(entry.comics) ? entry.comics : []).filter(c => c && typeof c === 'object' && typeof c.id === 'string' && c.id && c.id.length <= 180)
+      .slice(0, SYNCED_COMICS).map(c => ({ id: c.id, name: typeof c.name === 'string' ? c.name.slice(0, 260) : '', size: Number.isSafeInteger(c.size) ? c.size : 0 }));
+    const missing = (Array.isArray(entry.missing) ? entry.missing : []).filter(m => m && typeof m.title === 'string' && m.title.trim()).slice(0, 300)
+      .map(m => ({ title: m.title.slice(0, 200), at: Number.isInteger(m.at) && m.at >= 0 && m.at < comics.length ? m.at : -1 }));
+    out[id] = { name, comics, ordered: entry.ordered === true, missing, createdAt: isTime(entry.createdAt) ? entry.createdAt : entry.updatedAt, updatedAt: entry.updatedAt };
+  }
+  return out;
+}
+// A shared collection as it is on this device: its comics found here (by id,
+// or by file name and size), the missing issues placed before the same comics.
+function localCollection(id, entry, index) {
+  const found = entry.comics.map(ref => {
+    const comic = index.byId.get(ref.id) || (ref.name && ref.size ? index.byFile.get(identity(ref)) : null);
+    return comic ? comic.id : null;
+  });
+  const comicIds = [...new Set(found.filter(Boolean))];
+  const missing = entry.missing.map(m => {
+    let before = '';
+    if (m.at >= 0) for (let at = m.at; at < found.length; at++) if (found[at]) { before = found[at]; break; }
+    return { title: m.title, before };
+  });
+  return { id, name: entry.name, comicIds, ordered: entry.ordered, missing: entry.ordered ? missing : [], createdAt: entry.createdAt, updatedAt: entry.updatedAt };
+}
+const sameCollection = (a, b) => JSON.stringify([a.name, a.comicIds, Boolean(a.ordered), a.ordered ? a.missing || [] : []]) === JSON.stringify([b.name, b.comicIds, Boolean(b.ordered), b.ordered ? b.missing || [] : []]);
+
+/** Collections from other devices to take: [{ type: 'put', value } | { type: 'delete', id, at }]. */
+export function incomingCollections(state, remote) {
+  const document = cleanDocument(remote), changes = [];
+  if (!document.collections) return changes;
+  const index = libraryIndex(state), local = new Map((state?.collections || []).map(c => [c.id, c]));
+  const deleted = new Map((state?.deletedCollections || []).map(t => [t.id, t.at]));
+  for (const [id, entry] of Object.entries(document.collections)) {
+    const mine = local.get(id), localTime = mine?.updatedAt || mine?.createdAt || '';
+    if (entry.deleted) { if (mine && !newer(localTime, entry.updatedAt)) changes.push({ type: 'delete', id, at: entry.updatedAt }); continue; }
+    if (!mine && newer(deleted.get(id), entry.updatedAt)) continue; // deleted here afterwards: this device sends that
+    if (mine && newer(localTime, entry.updatedAt)) continue; // changed here afterwards: this device sends it
+    const value = localCollection(id, entry, index);
+    // The same version again: taken when it finds more here (comics added to the library since).
+    if (mine && !sameCollection(mine, value) && (newer(entry.updatedAt, localTime) || value.comicIds.length > mine.comicIds.length)) changes.push({ type: 'put', value });
+    else if (!mine) changes.push({ type: 'put', value });
+  }
+  return changes;
+}
+// This device's collections (and deletions) newer than the shared ones, written in.
+function mergeCollections(state, document) {
+  let changed = 0;
+  const shared = document.collections || {}, comics = new Map((state?.comics || []).map(c => [c.id, c]));
+  for (const collection of state?.collections || []) {
+    const time = collection.updatedAt || collection.createdAt;
+    if (!isTime(time) || (shared[collection.id] && !newer(time, shared[collection.id].updatedAt))) continue;
+    // (A collection bigger than the shared list holds stays on this device, whole, rather than cut.)
+    if (collection.comicIds.length > SYNCED_COMICS) continue;
+    const refs = collection.comicIds.map(id => comics.get(id)).filter(Boolean).slice(0, SYNCED_COMICS);
+    const place = new Map(refs.map((comic, at) => [comic.id, at]));
+    shared[collection.id] = { name: collection.name, comics: refs.map(c => ({ id: c.id, name: c.name, size: c.size })), ordered: collection.ordered === true,
+      missing: collection.ordered ? (collection.missing || []).map(m => ({ title: m.title, at: m.before && place.has(m.before) ? place.get(m.before) : -1 })) : [],
+      createdAt: collection.createdAt || time, updatedAt: time };
+    changed++;
+  }
+  for (const gone of state?.deletedCollections || []) {
+    if (!isTime(gone.at) || (shared[gone.id] && !newer(gone.at, shared[gone.id].updatedAt))) continue;
+    shared[gone.id] = { deleted: true, updatedAt: gone.at }; changed++;
+  }
+  if (Object.keys(shared).length) document.collections = shared;
+  return changed;
 }
 
 /** Reading positions from other devices that are newer than this device's:
@@ -174,20 +262,24 @@ function mergeOutgoing(state, remote) {
     changed++;
     const file = fileOf(comic); if (file !== null && !files.has(file)) files.set(file, key);
   }
+  changed += mergeCollections(state, document);
   return { document, changed };
 }
-export const sameSyncDocument = (a, b) => JSON.stringify(cleanDocument(a).progress) === JSON.stringify(cleanDocument(b).progress);
+export const sameSyncDocument = (a, b) => { const x = cleanDocument(a), y = cleanDocument(b); return JSON.stringify([x.progress, x.collections || {}]) === JSON.stringify([y.progress, y.collections || {}]); };
 
-/** One sync: take newer positions from other devices, then save this
- * device's newer ones. A save from another device in between is merged in
- * and tried again. Returns { applied, sent }.
+/** One sync: take newer positions and collections from other devices, then
+ * save this device's newer ones. A save from another device in between is merged in
+ * and tried again. Returns { applied, sent } (and collections: how many
+ * collections were taken, when some were).
  * `seen` (kept by the caller between syncs): the shared list as this device
  * last saw it. While its revision is unchanged the list is not downloaded
  * again, and with no `changes` on this device either, nothing else is done.
  * `changes`: false when nothing changed on this device since the last sync. */
 const pause = () => new Promise(resolve => setTimeout(resolve, 0));
 export async function syncReadingPositions({ cloud, store, skip, signal, attempts = 3, seen = null, changes = true }) {
-  let applied = 0;
+  // applied: reading positions taken; collections: collections taken (only when some were).
+  let applied = 0, collections = 0;
+  const result = sent => ({ applied, sent, ...(collections ? { collections } : {}) });
   const remember = (revision, data) => { if (seen) { seen.revision = revision; seen.data = data; seen.skipped = skip || null; } };
   for (let attempt = 1; ; attempt++) {
     let remote = null;
@@ -195,7 +287,7 @@ export async function syncReadingPositions({ cloud, store, skip, signal, attempt
       const revision = await cloud.revision({ signal });
       if (revision === seen.revision) {
         // A comic left out last time (it was open) is looked at again.
-        if (!changes && !seen.skipped) return { applied, sent: false };
+        if (!changes && !seen.skipped) return result(false);
         remote = { data: seen.data, revision };
       }
     }
@@ -203,10 +295,12 @@ export async function syncReadingPositions({ cloud, store, skip, signal, attempt
     const document = remote?.data || emptySyncDocument();
     const incoming = incomingPositions(store.state, document, { skip });
     if (incoming.length) applied += store.applySyncedProgress(incoming);
+    const arriving = incomingCollections(store.state, document);
+    if (arriving.length && store.applySyncedCollections) collections += store.applySyncedCollections(arriving);
     await pause(); // lets a tap in between be answered
     const { document: next, changed } = mergeOutgoing(store.state, document);
-    if (remote && !changed) { remember(remote.revision, next); return { applied, sent: false }; }
-    try { const revision = await cloud.push(next, remote ? remote.revision : null, { signal }); remember(revision, next); return { applied, sent: true }; }
+    if (remote && !changed) { remember(remote.revision, next); return result(false); }
+    try { const revision = await cloud.push(next, remote ? remote.revision : null, { signal }); remember(revision, next); return result(true); }
     catch (error) { remember(null, null); if (error?.code !== 'CONFLICT' || attempt >= attempts) throw error; }
   }
 }
