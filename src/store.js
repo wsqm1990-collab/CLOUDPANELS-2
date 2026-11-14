@@ -24,6 +24,10 @@ const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(v
 // A reading-order collection's missing issues: a title, and the comic each one comes before ('' = at the end).
 const missingIssues = value => (Array.isArray(value) ? value : []).filter(entry => entry && typeof entry === 'object' && string(entry.title, 200)).slice(0, MAX_MISSING)
   .map(entry => ({ title: string(entry.title, 200), before: idValue(entry.before) || '' }));
+// Collections deleted here: their id and when, the newest kept.
+const tombstones = value => { const latest = new Map();
+  for (const entry of Array.isArray(value) ? value : []) { const id = idValue(entry?.id); if (!id || typeof entry.at !== 'string' || !Number.isFinite(Date.parse(entry.at))) continue; const at = new Date(entry.at).toISOString(); if (!latest.has(id) || at > latest.get(id)) latest.set(id, at); }
+  return [...latest].map(([id, at]) => ({ id, at })).sort((a, b) => a.at.localeCompare(b.at)).slice(-1000); };
 // A comic that changed its identity (moved or converted) keeps its places in collections.
 const swapCollection = (collection, swap) => ({ ...collection, comicIds: [...new Set(collection.comicIds.map(swap))],
   ...(Array.isArray(collection.missing) ? { missing: collection.missing.map(entry => entry.before ? { ...entry, before: swap(entry.before) } : entry) } : {}) });
@@ -31,7 +35,7 @@ const swapCollection = (collection, swap) => ({ ...collection, comicIds: [...new
 const withoutComic = (collection, id) => { const comicIds = collection.comicIds.filter(value => value !== id);
   return collection.ordered ? { ...collection, comicIds, missing: reanchorMissing(collection.missing, collection.comicIds, comicIds) } : { ...collection, comicIds }; };
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerReadableBalloons: 'off', readerTranslate: false, readerTranslateTo: '', readerEnlargeBalloons: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], deletedCollections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerReadableBalloons: 'off', readerTranslate: false, readerTranslateTo: '', readerEnlargeBalloons: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -186,11 +190,13 @@ function sanitizeState(raw) {
     if (!id || !name || collectionIds.has(id)) throw new Error('Invalid collection.');
     collectionIds.add(id);
     const listed = Array.isArray(value.comicIds) ? [...new Set(value.comicIds.filter(v => idValue(v)))] : [];
-    const entry = {id, name, comicIds: listed.filter(v => seen.has(v)).slice(0, MAX_COMICS), createdAt: stamp(value.createdAt)};
+    const entry = {id, name, comicIds: listed.filter(v => seen.has(v)).slice(0, MAX_COMICS), createdAt: stamp(value.createdAt), updatedAt: stamp(value.updatedAt || value.createdAt)};
     // A collection in its own reading order (made with the comics assistant), with the issues not in the library.
     if (value.ordered === true) { entry.ordered = true; entry.missing = reanchorMissing(missingIssues(value.missing), listed, entry.comicIds); }
     result.collections.push(entry);
   }
+  // Collections deleted on this device (so another device does not bring them back).
+  result.deletedCollections = tombstones(raw.deletedCollections).filter(entry => !collectionIds.has(entry.id));
   // Reading places of comics that left the library (moved out of the indexed
   // folders or deleted). If the same file comes back, its place returns too.
   if (raw.retired && typeof raw.retired === 'object' && !Array.isArray(raw.retired)) {
@@ -459,7 +465,7 @@ export class LibraryStore {
     name = string(name, 160); if (!name) throw new Error('Name your collection.');
     if (this.state.collections.length >= 1000) throw new Error('The collection limit is 1000.');
     const id = 'collection:' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
-    const value = {id, name, comicIds: [], createdAt: now()}; this.state.collections.push(value); this.save(); return value;
+    const value = {id, name, comicIds: [], createdAt: now(), updatedAt: now()}; this.state.collections.push(value); this.save(); return value;
   }
   setCollectionComics(id, ids) {
     const value = this.state.collections.find(c => c.id === id); if (!value) throw new Error('Collection not found.');
@@ -467,7 +473,41 @@ export class LibraryStore {
     const known = new Set(this.state.comics.map(c => c.id)), before = value.comicIds;
     value.comicIds = [...new Set(ids.filter(v => idValue(v) && known.has(v)))];
     if (value.ordered) value.missing = reanchorMissing(value.missing, before, value.comicIds);
+    value.updatedAt = now();
     this.save(); return this.state.collections.find(c => c.id === id);
+  }
+  /** Deletes a collection, remembering when (so it is deleted on the other devices too). */
+  deleteCollection(id) {
+    if (!this.state.collections.some(c => c.id === id)) return false;
+    this.state.collections = this.state.collections.filter(c => c.id !== id);
+    this.state.deletedCollections = tombstones([...(this.state.deletedCollections || []), { id, at: now() }]);
+    this.save(); return true;
+  }
+  /** Collections from other devices that are newer than this device's: put
+   * (created or replaced, keeping their times) or deleted. Returns how many changed. */
+  applySyncedCollections(changes) {
+    if (!Array.isArray(changes) || !changes.length) return 0;
+    const known = new Set(this.state.comics.map(c => c.id)); let applied = 0;
+    for (const change of changes) {
+      if (change?.type === 'delete') {
+        const id = idValue(change.id); if (!id) continue;
+        if (this.state.collections.some(c => c.id === id)) { this.state.collections = this.state.collections.filter(c => c.id !== id); applied++; }
+        this.state.deletedCollections = tombstones([...(this.state.deletedCollections || []), { id, at: change.at }]);
+        continue;
+      }
+      const value = change?.type === 'put' ? change.value : null, id = idValue(value?.id), name = string(value?.name, 160);
+      if (!id || !name) continue;
+      const listed = Array.isArray(value.comicIds) ? [...new Set(value.comicIds.filter(v => idValue(v)))] : [];
+      const entry = { id, name, comicIds: listed.filter(v => known.has(v)).slice(0, MAX_COMICS), createdAt: stamp(value.createdAt), updatedAt: stamp(value.updatedAt) };
+      if (value.ordered === true) { entry.ordered = true; entry.missing = reanchorMissing(missingIssues(value.missing), listed, entry.comicIds); }
+      const at = this.state.collections.findIndex(c => c.id === id);
+      if (at >= 0) this.state.collections[at] = entry;
+      else if (this.state.collections.length < 1000) this.state.collections.push(entry);
+      else continue;
+      this.state.deletedCollections = (this.state.deletedCollections || []).filter(t => t.id !== id);
+      applied++;
+    }
+    this.save(); return applied;
   }
   /** A collection in its own reading order (made with the comics assistant): a new one, or the one `id` replaced. */
   saveOrderedCollection({ id = '', name, comicIds, missing = [] } = {}) {
@@ -481,7 +521,7 @@ export class LibraryStore {
       if (this.state.collections.length >= 1000) throw new Error('The collection limit is 1000.');
       value = { id: newId('collection'), name, comicIds: [], createdAt: now() }; this.state.collections.push(value);
     }
-    Object.assign(value, { name, comicIds: ids, ordered: true, missing: reanchorMissing(missingIssues(missing), listed, ids) });
+    Object.assign(value, { name, comicIds: ids, ordered: true, missing: reanchorMissing(missingIssues(missing), listed, ids), updatedAt: now() });
     this.save(); return this.state.collections.find(c => c.id === value.id);
   }
   related(id, limit = 6) {
@@ -527,7 +567,10 @@ export class LibraryStore {
     merged.bookmarks = [...bookmarks.values()];
     for (const [id, value] of Object.entries(imported.progress)) { if (!merged.progress[id] || value.updatedAt >= merged.progress[id].updatedAt) merged.progress[id] = value; }
     for (const [id, value] of Object.entries(imported.panels)) merged.panels[id] = {...merged.panels[id], ...value};
-    const collections = new Map(current.collections.map(c => [c.id, c])); imported.collections.forEach(c => collections.set(c.id, c)); merged.collections = [...collections.values()];
+    const collections = new Map(current.collections.map(c => [c.id, c])); imported.collections.forEach(c => { const previous = collections.get(c.id); if (!previous || c.updatedAt >= previous.updatedAt) collections.set(c.id, c); });
+    merged.deletedCollections = tombstones([...(current.deletedCollections || []), ...(imported.deletedCollections || [])]);
+    const deleted = new Map(merged.deletedCollections.map(t => [t.id, t.at]));
+    merged.collections = [...collections.values()].filter(c => !(deleted.get(c.id) > c.updatedAt));
     this.state = sanitizeState(merged); this.save(); return this.state;
   }
 }

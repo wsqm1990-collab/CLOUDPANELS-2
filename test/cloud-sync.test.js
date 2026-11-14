@@ -212,3 +212,111 @@ test('a comic that was open during the last sync gets the other device\'s newer 
   assert.deepEqual(await syncReadingPositions({ cloud: phone, store, seen, changes: false }), { applied: 1, sent: false });
   assert.equal(store.state.progress['mega:A'].page, 15);
 });
+
+import { incomingCollections } from '../src/cloud-sync.js';
+
+// Collections travel between devices too: made, changed and deleted on one, the same on the other.
+async function twoDevices() {
+  const server = fakeSupabase();
+  const phone = createCloudSync({ url: URL, key: KEY, fetchImpl: server.fetchImpl, storage: memory() });
+  const ipad = createCloudSync({ url: URL, key: KEY, fetchImpl: server.fetchImpl, storage: memory() });
+  await phone.signIn('walter@example.com', 'right password'); await ipad.signIn('walter@example.com', 'right password');
+  return { server, phone, ipad };
+}
+const at = (store, id, time) => { store.state.collections.find(c => c.id === id).updatedAt = time; store.save(); };
+
+test('a collection made on the phone shows on the iPad, in its order, with its gaps, even where comics have other ids', async () => {
+  const { server, phone, ipad } = await twoDevices();
+  const phoneLibrary = library([comic('mega:A', 'Civil War 1.cbr'), comic('mega:B', 'Front Line 1.cbr'), comic('mega:C', 'Civil War 2.cbr')]);
+  const ipadLibrary = library([comic('mega:x:A', 'Civil War 1.cbr'), comic('mega:B', 'Front Line 1.cbr'), comic('mega:C', 'Civil War 2.cbr')]);
+  const saga = phoneLibrary.saveOrderedCollection({ name: 'Civil War', comicIds: ['mega:C', 'mega:A', 'mega:B'], missing: [{ title: 'Prologue', before: 'mega:A' }, { title: 'Epilogue', before: '' }] });
+  const shelf = phoneLibrary.createCollection('Favourites'); phoneLibrary.setCollectionComics(shelf.id, ['mega:B']);
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store: phoneLibrary }), { applied: 0, sent: true });
+  const shared = server.rows.get('walter@example.com').data.collections;
+  assert.deepEqual(shared[saga.id].comics.map(c => c.name), ['Civil War 2.cbr', 'Civil War 1.cbr', 'Front Line 1.cbr']);
+  assert.deepEqual(shared[saga.id].missing, [{ title: 'Prologue', at: 1 }, { title: 'Epilogue', at: -1 }]);
+  assert.deepEqual(await syncReadingPositions({ cloud: ipad, store: ipadLibrary }), { applied: 0, sent: false, collections: 2 });
+  const there = ipadLibrary.state.collections.find(c => c.id === saga.id);
+  assert.equal(there.name, 'Civil War'); assert.equal(there.ordered, true);
+  assert.deepEqual(there.comicIds, ['mega:C', 'mega:x:A', 'mega:B'], 'found by file where the id differs');
+  assert.deepEqual(there.missing, [{ title: 'Prologue', before: 'mega:x:A' }, { title: 'Epilogue', before: '' }]);
+  assert.equal(there.updatedAt, saga.updatedAt, 'the same version on both');
+  assert.deepEqual(ipadLibrary.state.collections.find(c => c.id === shelf.id).comicIds, ['mega:B']);
+  assert.equal(ipadLibrary.state.collections.find(c => c.id === shelf.id).ordered, undefined, 'made by hand stays so');
+  // Nothing goes back and forth when nothing changed.
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store: phoneLibrary }), { applied: 0, sent: false });
+  assert.deepEqual(await syncReadingPositions({ cloud: ipad, store: ipadLibrary }), { applied: 0, sent: false });
+});
+
+test('a collection changed on one device changes on the other; a deletion goes too and does not come back', async () => {
+  const { phone, ipad } = await twoDevices();
+  const files = [comic('mega:A', 'One.cbz'), comic('mega:B', 'Two.cbz'), comic('mega:C', 'Three.cbz')];
+  const phoneLibrary = library(files), ipadLibrary = library(files);
+  const saga = phoneLibrary.saveOrderedCollection({ name: 'Saga', comicIds: ['mega:A', 'mega:B'] }); at(phoneLibrary, saga.id, '2026-11-14T10:00:00.000Z');
+  await syncReadingPositions({ cloud: phone, store: phoneLibrary }); await syncReadingPositions({ cloud: ipad, store: ipadLibrary });
+  // Changed on the iPad (by hand: a comic added at the end).
+  ipadLibrary.setCollectionComics(saga.id, ['mega:A', 'mega:B', 'mega:C']); at(ipadLibrary, saga.id, '2026-11-14T10:05:00.000Z');
+  assert.deepEqual(await syncReadingPositions({ cloud: ipad, store: ipadLibrary }), { applied: 0, sent: true });
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store: phoneLibrary }), { applied: 0, sent: false, collections: 1 });
+  assert.deepEqual(phoneLibrary.state.collections.find(c => c.id === saga.id).comicIds, ['mega:A', 'mega:B', 'mega:C']);
+  // An older change on the phone (made before the iPad's arrived) loses to the newer one.
+  assert.deepEqual(incomingCollections({ ...phoneLibrary.state, collections: [{ ...phoneLibrary.state.collections[0], updatedAt: '2026-11-14T10:01:00.000Z', comicIds: ['mega:B'] }] }, { v: 1, progress: {}, collections: { [saga.id]: { name: 'Saga', comics: [{ id: 'mega:C', name: 'Three.cbz', size: 1000 }], ordered: true, missing: [], updatedAt: '2026-11-14T10:05:00.000Z' } } }).map(c => c.value.comicIds), [['mega:C']]);
+  // Deleted on the phone: gone on the iPad, and the iPad does not send it back.
+  phoneLibrary.deleteCollection(saga.id); phoneLibrary.state.deletedCollections.at(-1).at = '2026-11-14T10:10:00.000Z'; phoneLibrary.save();
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store: phoneLibrary }), { applied: 0, sent: true });
+  assert.deepEqual(await syncReadingPositions({ cloud: ipad, store: ipadLibrary }), { applied: 0, sent: false, collections: 1 });
+  assert.equal(ipadLibrary.state.collections.length, 0);
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store: phoneLibrary }), { applied: 0, sent: false });
+  assert.equal(phoneLibrary.state.collections.length, 0);
+  // Kept as deleted after the app opens again.
+  const reopened = new LibraryStore({ storage: memory() }); reopened.importBackup(phoneLibrary.exportBackup());
+  assert.deepEqual(reopened.state.deletedCollections.map(t => t.id), [saga.id]);
+});
+
+test('an edit made after a deletion on another device wins over it', async () => {
+  const { phone, ipad } = await twoDevices();
+  const files = [comic('mega:A', 'One.cbz'), comic('mega:B', 'Two.cbz')];
+  const phoneLibrary = library(files), ipadLibrary = library(files);
+  const shelf = phoneLibrary.createCollection('Shelf'); phoneLibrary.setCollectionComics(shelf.id, ['mega:A']); at(phoneLibrary, shelf.id, '2026-11-14T09:00:00.000Z');
+  await syncReadingPositions({ cloud: phone, store: phoneLibrary }); await syncReadingPositions({ cloud: ipad, store: ipadLibrary });
+  phoneLibrary.deleteCollection(shelf.id); phoneLibrary.state.deletedCollections.at(-1).at = '2026-11-14T09:10:00.000Z'; phoneLibrary.save();
+  ipadLibrary.setCollectionComics(shelf.id, ['mega:A', 'mega:B']); at(ipadLibrary, shelf.id, '2026-11-14T09:20:00.000Z');
+  await syncReadingPositions({ cloud: phone, store: phoneLibrary });
+  assert.deepEqual(await syncReadingPositions({ cloud: ipad, store: ipadLibrary }), { applied: 0, sent: true }, 'the iPad keeps its newer edit and sends it');
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store: phoneLibrary }), { applied: 0, sent: false, collections: 1 });
+  assert.deepEqual(phoneLibrary.state.collections.find(c => c.id === shelf.id).comicIds, ['mega:A', 'mega:B']);
+  assert.equal(phoneLibrary.state.deletedCollections.some(t => t.id === shelf.id), false);
+});
+
+test('collections left out by an older version of the app come back; one too big stays on its device', async () => {
+  const { server, phone, ipad } = await twoDevices();
+  const phoneLibrary = library([comic('mega:A', 'One.cbz')]);
+  const saga = phoneLibrary.saveOrderedCollection({ name: 'Saga', comicIds: ['mega:A'] });
+  await syncReadingPositions({ cloud: phone, store: phoneLibrary });
+  // An older app saves the list without collections.
+  const row = await ipad.pull(); await ipad.push({ v: 1, progress: row.data.progress }, row.revision);
+  assert.equal(server.rows.get('walter@example.com').data.collections, undefined);
+  assert.deepEqual(await syncReadingPositions({ cloud: phone, store: phoneLibrary }), { applied: 0, sent: true });
+  assert.ok(server.rows.get('walter@example.com').data.collections[saga.id], 'sent again');
+  assert.equal(phoneLibrary.state.collections.length, 1, 'not deleted by its absence');
+  // A collection bigger than the shared list holds is not cut: it stays here, whole.
+  const many = Array.from({ length: 5001 }, (_, i) => comic(`mega:m${i}`, `M ${i}.cbz`));
+  const big = library(many); const all = big.createCollection('Everything'); big.setCollectionComics(all.id, many.map(c => c.id));
+  assert.deepEqual(outgoingDocument(big.state, { v: 1, progress: {} }).collections, undefined);
+});
+
+test('a collection whose comics are not on this device yet fills in when they arrive, and is not cut down meanwhile', async () => {
+  const { server, phone, ipad } = await twoDevices();
+  const phoneLibrary = library([comic('mega:A', 'One.cbz'), comic('mega:N', 'New.cbz')]);
+  const ipadLibrary = library([comic('mega:A', 'One.cbz')]);
+  const saga = phoneLibrary.saveOrderedCollection({ name: 'Saga', comicIds: ['mega:N', 'mega:A'], missing: [{ title: 'Gap', before: 'mega:A' }] });
+  await syncReadingPositions({ cloud: phone, store: phoneLibrary });
+  await syncReadingPositions({ cloud: ipad, store: ipadLibrary });
+  assert.deepEqual(ipadLibrary.state.collections[0].comicIds, ['mega:A']);
+  assert.deepEqual(ipadLibrary.state.collections[0].missing, [{ title: 'Gap', before: 'mega:A' }]);
+  assert.equal(server.rows.get('walter@example.com').data.collections[saga.id].comics.length, 2, 'the shared copy keeps the comic the iPad lacks');
+  // The iPad's library gets the new comic: the collection fills in.
+  ipadLibrary.upsertComics([comic('mega:N', 'New.cbz')]);
+  assert.deepEqual(await syncReadingPositions({ cloud: ipad, store: ipadLibrary }), { applied: 0, sent: false, collections: 1 });
+  assert.deepEqual(ipadLibrary.state.collections[0].comicIds, ['mega:N', 'mega:A']);
+});
