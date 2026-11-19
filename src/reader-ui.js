@@ -1,7 +1,8 @@
 import { openComic, pageImageSize, DISPLAY_PIXELS } from './reader.js';
 import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, pageReadingSteps, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
-import { analyzePageBalloons } from './balloon-analyzer.js';
+import { analyzePageBalloons, balloonAnalysisSize } from './balloon-analyzer.js';
+import { lumaPicture, wallBetween } from './balloon-walls.js';
 import { createBalloonZoom, prepareCutout } from './balloon-zoom.js';
 import { balloonSequence, createBalloonStepper, readingTime, stepPause } from './balloon-steps.js';
 import { readableSteps, letterTarget, stepFrame, stepPosition } from './readable-steps.js';
@@ -649,13 +650,37 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   // The balloons to go through: in Panel view those of the panel shown; two pages side by side one page after
   // the other; a page, panel by panel.
+  // The shown page's brightness, at the size its balloons are looked for (to see panel borders and
+  // gutters between balloons, see balloon-walls.js); kept for the last pages shown.
+  const wallPictures = new Map();
+  function shownPicture() {
+    const key = enlargeKey(), known = wallPictures.get(key);
+    if (known !== undefined) return known;
+    let picture = null, canvas;
+    try {
+      const drawable = shownDrawable;
+      if (drawable) {
+        const size = balloonAnalysisSize(drawable.naturalWidth || drawable.width, drawable.naturalHeight || drawable.height);
+        canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (context) { context.imageSmoothingQuality = 'high'; context.drawImage(drawable, 0, 0, size.width, size.height); picture = lumaPicture({ ...size, data: context.getImageData(0, 0, size.width, size.height).data }); }
+      }
+    } catch { picture = null; } finally { if (canvas) canvas.width = canvas.height = 0; }
+    wallPictures.set(key, picture);
+    while (wallPictures.size > 2) wallPictures.delete(wallPictures.keys().next().value);
+    return picture;
+  }
   async function stepSequence() {
     const found = await shownBalloonsSoon();
     if (!found?.balloons?.length) return [];
     const direction = rtl() ? 'rtl' : 'ltr';
     if (guided) return overview || editing ? [] : balloonSequence(found.balloons, { panels: panels(), panel, direction });
-    if (spreadPages.length > 1) return balloonSequence(found.balloons, { spread: true, direction });
-    return balloonSequence(found.balloons, { panels: await orderPanelsSoon(), direction });
+    // Panels not known: a panel's border or gutter seen between two balloons keeps its balloons
+    // together (the page is looked at for it only when it is needed).
+    let picture;
+    const apart = (a, b) => { if (picture === undefined) picture = shownPicture(); return Boolean(picture) && wallBetween(picture, a, b, { balloons: found.balloons }); };
+    if (spreadPages.length > 1) return balloonSequence(found.balloons, { spread: true, direction, apart });
+    return balloonSequence(found.balloons, { panels: await orderPanelsSoon(), direction, apart });
   }
   // After the last balloon: the next page (or panel), as a tap on the corner always did.
   async function stepTurn(delta, auto) {
@@ -3237,7 +3262,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     serial++; pageSerial++; pageTransition.cancel(); turning = false; overview = false; guidedMode = 'whole'; cancelAnalysis(); cancelCamera(); cancelPrefetch(); pageController?.abort(); sessionController?.abort();
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
-    hideTranslation(); balloonStepper.reset(); orderPanelFinds.clear(); balloonZoom.close({ instant: true }); shownDrawable = null; translation.pages.clear(); balloonFinds.clear(); readableMemo = { key: '', found: null, steps: [] }; laidStep = null; laidSteps = null; laidPage = -1; balloonJobs.length = 0; dotsAt = ''; clearTimeout(dotsTimer); stepDots.classList.remove('is-visible'); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
+    hideTranslation(); balloonStepper.reset(); orderPanelFinds.clear(); wallPictures.clear(); balloonZoom.close({ instant: true }); shownDrawable = null; translation.pages.clear(); balloonFinds.clear(); readableMemo = { key: '', found: null, steps: [] }; laidStep = null; laidSteps = null; laidPage = -1; balloonJobs.length = 0; dotsAt = ''; clearTimeout(dotsTimer); stepDots.classList.remove('is-visible'); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
     clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; clearTimeout(voiceNoteTimer); voiceNote.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;

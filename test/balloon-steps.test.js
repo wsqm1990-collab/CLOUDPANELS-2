@@ -20,6 +20,31 @@ test('balloons in reading order: panel by panel, a spread page by page, one pane
   assert.deepEqual(balloonSequence([{ nothing: true }, null].filter(Boolean)), []);
 });
 
+test('panels not known: one is not left too soon where a border or gutter is seen between balloons', () => {
+  const box = (id, x, y, width, height) => ({ id, x, y, width, height, text: { x, y, width, height }, letter: .0069, letters: 30 });
+  // As on a page whose art runs to its edges, two small panels set into the big one at the right:
+  // the big one's captions, stacked down its left side, come before the small panels' ones.
+  const first = box('first', .04, .334, .19, .025), second = box('second', .10, .383, .17, .025);
+  const inset1 = box('inset1', .61, .36, .10, .024), inset2 = box('inset2', .78, .376, .15, .025), lower = box('lower', .37, .484, .13, .034);
+  const panelOf = { first: 'big', second: 'big', inset1: 'one', inset2: 'two', lower: 'under' };
+  const apart = (a, b) => panelOf[a.id] !== panelOf[b.id];
+  const page = [first, inset1, inset2, second, lower];
+  assert.deepEqual(ids(balloonSequence(page)), ['first', 'inset1', 'second', 'inset2', 'lower'], 'row by row, as before');
+  assert.deepEqual(ids(balloonSequence(page, { apart })), ['first', 'second', 'inset1', 'inset2', 'lower']);
+  // A talk going back and forth in one panel (nothing between them): as before.
+  const talk = [box('a', .05, .10, .2, .03), box('b', .6, .13, .2, .03), box('c', .06, .17, .2, .03)];
+  assert.deepEqual(ids(balloonSequence(talk, { apart: () => false })), ['a', 'b', 'c']);
+  assert.deepEqual(ids(balloonSequence(talk, { apart: () => true })), ['a', 'b', 'c'], 'each in its own panel: no reason to change');
+  // Four panels, gutters between all: a balloon right under another, but in the panel below, waits its turn.
+  const grid = [box('a', .05, .30, .2, .03), box('b', .6, .30, .2, .03), box('c', .06, .345, .2, .03), box('d', .6, .36, .2, .03)];
+  const quarter = { a: 1, b: 2, c: 3, d: 4 };
+  assert.deepEqual(ids(balloonSequence(grid, { apart: (x, y) => quarter[x.id] !== quarter[y.id] })), ['a', 'b', 'c', 'd']);
+  // Two pages side by side: on each page alike.
+  const spread = [box('left-first', .02, .334, .1, .025), box('left-inset', .3, .36, .05, .024), box('left-second', .05, .383, .09, .025), box('right', .6, .2, .1, .03)];
+  const side = { 'left-first': 'big', 'left-second': 'big', 'left-inset': 'inset', right: 'right' };
+  assert.deepEqual(ids(balloonSequence(spread, { spread: true, apart: (x, y) => side[x.id] !== side[y.id] })), ['left-first', 'left-second', 'left-inset', 'right']);
+});
+
 test('a balloon stays out by itself about as long as its lettering takes', () => {
   assert.equal(readingTime(balloon('a', 0, 0, 40)), 4300);
   assert.equal(readingTime(balloon('a', 0, 0, 40), 'slow'), Math.round(4300 * 1.45));
@@ -29,10 +54,12 @@ test('a balloon stays out by itself about as long as its lettering takes', () =>
   assert.equal(stepPause('long'), STEP_PAUSES.long); assert.equal(stepPause('nope'), STEP_PAUSES.medium);
 });
 
-// A small reader: pages of balloons, a clock, and what was done.
-function world(pages, { canTurn = () => true } = {}) {
+// A small reader: pages of balloons, a clock, and what was done. (Taps here are not kept back
+// just after a balloon comes out unless `guard` is given: see the test of that.)
+function world(pages, { canTurn = () => true, guard = 0 } = {}) {
   let now = 0, serial = 0, page = 0, opened = null; const timers = [], log = [], states = [];
   const clock = {
+    now: () => now,
     wait(ms, fn) { const id = ++serial; timers.push({ id, at: now + ms, fn }); return id; },
     cancel(id) { const at = timers.findIndex(t => t.id === id); if (at >= 0) timers.splice(at, 1); },
     async advance(ms) {
@@ -50,7 +77,7 @@ function world(pages, { canTurn = () => true } = {}) {
     isOpen: () => opened !== null,
     turn: async (delta, { auto }) => { if (!canTurn(page + delta, auto) || page + delta < 0 || page + delta >= pages.length) return false; page += delta; log.push(`page ${page}`); return true; },
     pause: () => 1000, readFor: b => b.letters * 100,
-    wait: clock.wait, cancel: clock.cancel, onState: state => states.push(state),
+    wait: clock.wait, cancel: clock.cancel, now: clock.now, guard, onState: state => states.push(state),
   });
   return { stepper, clock, log, states, flush, get page() { return page; }, set page(value) { page = value; }, get opened() { return opened; } };
 }
@@ -76,6 +103,30 @@ test('by tapping the corners: balloon by balloon, the page seen in between, then
   w.page = 2; w.log.length = 0;
   await w.stepper.step(1); assert.deepEqual(w.log, ['close', 'page 3'], '(the balloon still out is put back first)');
   assert.deepEqual(w.states, []);
+});
+
+test('a tap during the pause brings out the balloon on its way at once: none is skipped', async () => {
+  const w = world(pages());
+  await w.stepper.step(1); await w.stepper.step(1); assert.equal(w.opened, null, 'a1 put back, the page seen');
+  await w.clock.advance(400);
+  await w.stepper.step(1); assert.equal(w.opened.id, 'a2', 'the one that was coming, not the one after it');
+  await w.clock.advance(5000); assert.equal(w.opened.id, 'a2', 'and it stays (the pause is over)');
+  await w.stepper.step(1); await w.clock.advance(1000); assert.equal(w.opened.id, 'a3');
+});
+
+test('a tap just as a balloon comes out is not taken: it stays to be read', async () => {
+  const w = world(pages(), { guard: 550 });
+  await w.stepper.step(1); assert.equal(w.opened.id, 'a1');
+  await w.clock.advance(300); await w.stepper.step(1);
+  assert.equal(w.opened.id, 'a1', 'still out'); assert.deepEqual(w.log, ['open a1']);
+  await w.clock.advance(300); await w.stepper.step(1); assert.equal(w.opened, null, 'later, the tap goes on as always');
+  await w.clock.advance(1000); assert.equal(w.opened.id, 'a2');
+  await w.clock.advance(100); await w.stepper.step(-1); assert.equal(w.opened.id, 'a2', 'back too, just after it came out');
+  // Going on by itself is never held back, nor is starting it.
+  const r = world(pages(), { guard: 550 });
+  await r.stepper.step(1); await r.stepper.start(); assert.equal(r.opened, null, 'started at once: a1 put back');
+  await r.clock.advance(1000); assert.equal(r.opened.id, 'a2');
+  await r.clock.advance(2000 + 1000); assert.equal(r.opened.id, 'a3');
 });
 
 test('a balloon tapped directly: the steps go on from it', async () => {
@@ -129,7 +180,7 @@ test('another page shown meanwhile (a swipe): the steps start again there', asyn
 test('a balloon that cannot come out yet (the page still turning) is tried again, not skipped', async () => {
   const w = world(pages()); let busy = 2;
   const stepper = createBalloonStepper({ place: () => 'p0', sequence: async () => pages()[0], open: b => { if (busy-- > 0) return 'busy'; w.log.push(`open ${b.id}`); return true; },
-    close: () => {}, isOpen: () => false, turn: async () => false, pause: () => 1000, wait: w.clock.wait, cancel: w.clock.cancel });
+    close: () => {}, isOpen: () => false, turn: async () => false, pause: () => 1000, wait: w.clock.wait, cancel: w.clock.cancel, now: w.clock.now });
   await stepper.step(1); assert.deepEqual(w.log, []);
   await w.clock.advance(500); assert.deepEqual(w.log, ['open a1']);
   assert.equal(stepper.position.cursor, 0);
@@ -141,7 +192,7 @@ test('joined balloons come out together: one step, and the time to read both', a
   const pair = (shown, other) => shown !== other && ['a', 'a-joined'].includes(shown.id) && ['a', 'a-joined'].includes(other.id);
   const stepper = createBalloonStepper({ place: () => 'p0', sequence: async () => joined, open: (b, { timer }) => { opened = b; log.push(`${b.id}${timer ? ` ${timer}` : ''}`); return true; },
     close: () => { opened = null; }, isOpen: () => opened !== null, turn: async () => false, pause: () => 500, readFor: b => b.letters * 100,
-    covers: pair, wait: w.clock.wait, cancel: w.clock.cancel });
+    covers: pair, wait: w.clock.wait, cancel: w.clock.cancel, guard: 0 });
   await stepper.step(1); await stepper.step(1); await w.clock.advance(500);
   assert.deepEqual(log, ['a', 'b'], 'the joined one is not shown again');
   // Back: the joined shape once (by its last lettering), then the page.
