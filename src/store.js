@@ -18,6 +18,7 @@ const string = (value, max = 512) => typeof value === 'string'
 const noteText = value => typeof value === 'string' ? value.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/https?:\/\/(?:www\.)?mega\.(?:nz|co\.nz)\/\S+/gi, '[MEGA link omitted]').trim().slice(0, 2000) : '';
 const idValue = value => typeof value === 'string' && value.length > 0 && value.length <= 180 && !FORBIDDEN.has(value) && !/[\u0000-\u001f\u007f]/.test(value) && !/https?:\/\//i.test(value) ? value : null;
 const integer = (value, fallback, min, max) => Number.isFinite(Number(value)) && value !== '' && value !== null && value !== undefined ? Math.max(min, Math.min(max, Math.floor(Number(value)))) : fallback;
+const choice = (value, previous, allowed, fallback) => allowed.includes(value) ? value : allowed.includes(previous) ? previous : fallback;
 const decimal = (value, fallback, min, max) => Number.isFinite(Number(value)) && value !== '' && value !== null && value !== undefined ? Math.max(min, Math.min(max, Number(value))) : fallback;
 const newId = prefix => prefix + ':' + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : now();
@@ -35,7 +36,7 @@ const swapCollection = (collection, swap) => ({ ...collection, comicIds: [...new
 const withoutComic = (collection, id) => { const comicIds = collection.comicIds.filter(value => value !== id);
   return collection.ordered ? { ...collection, comicIds, missing: reanchorMissing(collection.missing, collection.comicIds, comicIds) } : { ...collection, comicIds }; };
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], deletedCollections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerReadableBalloons: 'off', readerTranslate: false, readerTranslateTo: '', readerEnlargeBalloons: false, readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], deletedCollections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerReadableBalloons: 'off', readerTranslate: false, readerTranslateTo: '', readerEnlargeBalloons: false, readerBalloonSteps: 'off', readerBalloonPause: 'medium', readerBalloonSpeed: 'normal', readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -138,6 +139,10 @@ function settings(value, previous = defaultState().settings) {
     readerTranslateTo: ['', 'pt-BR', 'es', 'en'].includes(value.readerTranslateTo) ? value.readerTranslateTo : (['pt-BR', 'es', 'en'].includes(previous.readerTranslateTo) ? previous.readerTranslateTo : ''),
     // Enlarge balloons (tap a balloon to see it bigger): optional, off at first.
     readerEnlargeBalloons: typeof value.readerEnlargeBalloons === 'boolean' ? value.readerEnlargeBalloons : previous.readerEnlargeBalloons === true,
+    // Balloon by balloon (with Enlarge balloons): off at first; by tapping the corners, or by itself.
+    readerBalloonSteps: choice(value.readerBalloonSteps, previous.readerBalloonSteps, ['off', 'tap', 'auto'], 'off'),
+    readerBalloonPause: choice(value.readerBalloonPause, previous.readerBalloonPause, ['short', 'medium', 'long'], 'medium'),
+    readerBalloonSpeed: choice(value.readerBalloonSpeed, previous.readerBalloonSpeed, ['slow', 'normal', 'fast'], 'normal'),
     readerTurnMode: ['both', 'swipe', 'tap'].includes(value.readerTurnMode) ? value.readerTurnMode : (['both', 'swipe', 'tap'].includes(previous.readerTurnMode) ? previous.readerTurnMode : 'both'),
     spoilers: typeof value.spoilers === 'boolean' ? value.spoilers : previous.spoilers};
 }

@@ -487,3 +487,13 @@ test('reading places from another device are kept without checking the whole lib
  assert.equal(await s.flush(),true);assert.equal(writes,1);
  assert.equal(JSON.parse(persisted).progress.a.page,3);
 });
+
+test('balloon by balloon starts off; its choices are kept, anything else is ignored', () => {
+  const s = new LibraryStore({storage: memory()});
+  assert.equal(s.state.settings.readerBalloonSteps, 'off'); assert.equal(s.state.settings.readerBalloonPause, 'medium'); assert.equal(s.state.settings.readerBalloonSpeed, 'normal');
+  s.setSettings({readerBalloonSteps: 'auto', readerBalloonPause: 'long', readerBalloonSpeed: 'fast'});
+  s.setSettings({readerBalloonSteps: 'sometimes', readerBalloonPause: 9, readerBalloonSpeed: null});
+  assert.equal(s.state.settings.readerBalloonSteps, 'auto'); assert.equal(s.state.settings.readerBalloonPause, 'long'); assert.equal(s.state.settings.readerBalloonSpeed, 'fast');
+  const restored = new LibraryStore({storage: memory()}); restored.importBackup(s.exportBackup());
+  assert.equal(restored.state.settings.readerBalloonSteps, 'auto');
+});
