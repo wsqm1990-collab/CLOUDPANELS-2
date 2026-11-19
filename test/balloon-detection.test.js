@@ -79,6 +79,37 @@ test('light lettering on a dark balloon, and a caption box, are found too', () =
   assert.equal(caption.lines, 2);
 });
 
+test('lit windows in a dark building are not white lettering; white words on the drawing still are', () => {
+  const facade = [30, 55, 140], light = [235, 235, 200];
+  // A drawn building: its colouring is not flat (shading in bands), as a balloon's paper is.
+  const building = ({ set }, x0, y0, w, h) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) { const shade = ((x * 3 + y) >> 3) % 3; set(x, y, [facade[0] + shade * 14, facade[1] + shade * 24, facade[2] + shade * 30]); } };
+  // A lit window, blurred by the colouring: a soft spot (about half of its box once picked out).
+  const spot = ({ set }, cx, cy) => { for (let y = cy - 5; y <= cy + 5; y++) for (let x = cx - 4; x <= cx + 4; x++) if (Math.abs(x - cx) / 4 + Math.abs(y - cy) / 5 <= 1) set(x, y, light); };
+  const windows = (canvas, x0, y0, columns, rows, merged = []) => {
+    for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
+      const cx = x0 + column * 16, cy = y0 + row * 22;
+      spot(canvas, cx, cy);
+      // Windows lit side by side run together into one wide spot.
+      if (merged.includes(column) && row === 0) for (let dx = 2; dx <= 10; dx += 2) spot(canvas, cx + dx, cy);
+    }
+  };
+  const picture = page(1040, 1600, canvas => {
+    hatch(canvas, 0, 0, 1040, 1600);
+    // A row of four (one of them two windows run together), as in the night scene that was taken for a balloon.
+    building(canvas, 80, 120, 260, 160);
+    windows(canvas, 140, 200, 4, 1, [2]);
+    // A lit office block: windows in rows and columns.
+    building(canvas, 520, 120, 300, 260);
+    windows(canvas, 570, 170, 8, 4);
+    // A name written in white straight on the dark drawing.
+    rectangle(canvas, 80, 900, 700, 200, facade, [10, 10, 30]);
+    write(canvas, 140, 980, 'DANIEL KURTZ', [245, 245, 245]);
+  });
+  const { balloons } = findBalloons(picture);
+  assert.equal(balloons.length, 1, JSON.stringify(balloons.map(b => [Math.round(b.text.x * 1040), Math.round(b.text.y * 1600)])));
+  assert.ok(balloons[0].light && balloons[0].text.y * 1600 > 950);
+});
+
 test('drawing alone (hatching, dots, shapes) gives no balloons; bad input gives none', () => {
   const picture = page(1040, 1600, canvas => {
     hatch(canvas, 0, 0, 1040, 1600);

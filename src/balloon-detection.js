@@ -122,9 +122,15 @@ export function findBalloons({ data, width, height } = {}, { maxBlocks = 60, exp
       if (together(kept[i], kept[j])) { merge(kept[i], kept[j]); kept.splice(j, 1); again = true; }
     }
   }
+  // Lit windows stand in rows and columns: white "lettering" off a clear dark balloon whose marks
+  // stand right under those of the row above is a lit building, not words.
+  kept = kept.filter(block => !(block.light && !clearBalloon(block) && gridded(block.rows)));
   // Fine print (credits, signatures, signs in the drawing) is far smaller than the lettering.
   const typical = median(kept.flatMap(block => Array(Math.min(block.letters, 40)).fill(block.letterPx)));
   const balloons = kept.filter(block => block.letterPx >= typical * .5 && block.letterPx <= typical * 2.4)
+    // Light spots in a dark picture (lit windows, lamps, stars) line up like white letters: away from a
+    // clear dark balloon, white lettering is words (several letters) or a title (big letters), not a few small spots.
+    .filter(block => !(block.light && !clearBalloon(block) && block.pieces - block.wide < 5 && block.letterPx < typical * 1.2))
     .sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0).slice(0, maxBlocks)
     .map(block => ({
       x: round(block.bx0 / width), y: round(block.by0 / height), width: round((block.bx1 - block.bx0 + 1) / width), height: round((block.by1 - block.by0 + 1) / height),
@@ -133,6 +139,18 @@ export function findBalloons({ data, width, height } = {}, { maxBlocks = 60, exp
       ...(explain ? { why: { paper: block.paper, ink: block.inkTone, even: block.even, sides: block.sides, closed: block.closed, px: block.letterPx, bars: block.bars, pieces: block.pieces, wide: block.wide } } : {}),
     }));
   return { balloons, letter: round(typical / height) };
+}
+// Even paper on every side of the lettering: a balloon or caption box (lit windows, lamps and
+// stars sit in a drawing, whose colouring around them is uneven).
+const clearBalloon = judged => judged.sides >= 4 && judged.even <= 16;
+// Marks in rows that stand right under those of the row above (a grid), as lit windows do.
+function gridded(rows = []) {
+  const sorted = [...rows].sort((a, b) => a.y0 - b.y0);
+  let aligned = 0, all = 0;
+  for (let index = 1; index < sorted.length; index++) for (const [x0, x1] of sorted[index].spans) {
+    all++; if (sorted[index - 1].spans.some(([a0, a1]) => Math.abs(a0 - x0) <= 2 && Math.abs(a1 - x1) <= 2)) aligned++;
+  }
+  return all >= 4 && aligned >= all * .6;
 }
 // Two blocks may be of one balloon: letters of one size, close together or on one paper.
 function near(a, b) {
@@ -149,6 +167,7 @@ function merge(into, block) {
   for (const key of ['letters', 'pieces', 'wide', 'bars', 'ink']) into[key] = (into[key] || 0) + (block[key] || 0);
   for (const [low, high] of [['x0', 'x1'], ['y0', 'y1'], ['bx0', 'bx1'], ['by0', 'by1']]) { into[low] = Math.min(into[low], block[low]); into[high] = Math.max(into[high], block[high]); }
   into.mixed = into.mixed || block.mixed;
+  into.rows = [...(into.rows || []), ...(block.rows || [])];
 }
 const round = value => Math.round(value * 100000) / 100000;
 const area = box => (box.bx1 - box.bx0 + 1) * (box.by1 - box.by0 + 1);
@@ -196,7 +215,8 @@ function blocksOf(mask, light, { luma, width, height }) {
   const lineMap = new Map();
   marks.forEach((mark, index) => {
     const root = rows.find(index); let line = lineMap.get(root);
-    if (!line) { line = { x0: mark.x0, y0: mark.y0, x1: mark.x1, y1: mark.y1, heights: [], ink: 0, bars: 0, pieces: 0, wide: 0 }; lineMap.set(root, line); }
+    if (!line) { line = { x0: mark.x0, y0: mark.y0, x1: mark.x1, y1: mark.y1, heights: [], spans: [], ink: 0, bars: 0, pieces: 0, wide: 0 }; lineMap.set(root, line); }
+    line.spans.push([mark.x0, mark.x1]);
     line.x0 = Math.min(line.x0, mark.x0); line.y0 = Math.min(line.y0, mark.y0); line.x1 = Math.max(line.x1, mark.x1); line.y1 = Math.max(line.y1, mark.y1);
     const h = mark.y1 - mark.y0 + 1, w = mark.x1 - mark.x0 + 1;
     // A word whose letters touch counts as the letters it holds.
@@ -254,10 +274,10 @@ function blocksOf(mask, light, { luma, width, height }) {
 
 // A block made of rows of letters, if it is lettering: letters of one size, on plain paper.
 function judgeBlock(group, light, picture) {
-  const block = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, heights: [], ink: 0, lines: 0, bars: 0, pieces: 0, wide: 0 };
+  const block = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, heights: [], rows: [], ink: 0, lines: 0, bars: 0, pieces: 0, wide: 0 };
   for (const line of group) {
     block.x0 = Math.min(block.x0, line.x0); block.y0 = Math.min(block.y0, line.y0); block.x1 = Math.max(block.x1, line.x1); block.y1 = Math.max(block.y1, line.y1);
-    block.heights.push(...line.heights); block.ink += line.ink; block.lines++; block.bars += line.bars; block.pieces += line.pieces; block.wide += line.wide;
+    block.heights.push(...line.heights); block.rows.push({ y0: line.y0, spans: line.spans }); block.ink += line.ink; block.lines++; block.bars += line.bars; block.pieces += line.pieces; block.wide += line.wide;
   }
   const letters = block.heights.length; if (letters < 2) return null;
   const middle = median(block.heights);
