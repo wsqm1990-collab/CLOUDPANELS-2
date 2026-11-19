@@ -2,7 +2,8 @@ import { openComic, pageImageSize, DISPLAY_PIXELS } from './reader.js';
 import { wholePageFit, pageFit, slideFitMode, slideThreshold, guidedPanelFit, guidedPanelMargin, readingParts, pageReadingSteps, resolvePanelIndex, canSwipePages, decideTapNavigation, turnInputs } from './reader-interactions.js';
 import { analyzePagePanels } from './panel-analyzer.js';
 import { analyzePageBalloons } from './balloon-analyzer.js';
-import { createBalloonZoom } from './balloon-zoom.js';
+import { createBalloonZoom, prepareCutout } from './balloon-zoom.js';
+import { balloonSequence, createBalloonStepper, readingTime, stepPause } from './balloon-steps.js';
 import { readableSteps, letterTarget, stepFrame, stepPosition } from './readable-steps.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
@@ -540,14 +541,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     void entry.promise.then(candidate => { if (mySession === serial && balloonsWanted() && candidate?.decodedImage) return findBalloonsOn(index, candidate.decodedImage, { ahead: true }); }).catch(() => {});
   }
   // ---- Enlarge balloons: a tapped balloon comes out bigger (see balloon-zoom.js) ----
-  const balloonZoom = createBalloonZoom({ parent: dialog });
+  const balloonZoom = createBalloonZoom({ parent: dialog, onTap: event => balloonLayerTap(event) });
   let shownDrawable = null;
   // The balloons of what is shown: the page, or two pages side by side (looked at together).
   const enlargeKey = () => !comic ? '' : spreadPages.length > 1 ? `${comic.id}|${spreadPages.join('+')}|${cropBordersOn() ? 'crop' : ''}` : balloonKey(currentPage);
   const shownBalloons = () => balloonFinds.get(enlargeKey())?.result || null;
   function findShownBalloons() {
-    if (!enlargeOn() || !comic || currentPage < 0 || !shownDrawable) return;
-    void findBalloonsOn(currentPage, shownDrawable, spreadPages.length > 1 ? { key: enlargeKey() } : {});
+    if (!enlargeOn() || !comic || currentPage < 0 || !shownDrawable) return null;
+    return findBalloonsOn(currentPage, shownDrawable, spreadPages.length > 1 ? { key: enlargeKey() } : {});
   }
   // The balloon under a finger: within its box (and a little around it), the nearest one.
   function balloonAtPoint(clientX, clientY) {
@@ -565,20 +566,137 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     }
     return best;
   }
-  function openEnlarged(balloon) {
-    if (!enlargeOn() || !book || currentPage < 0 || loading || editing || popup || turning || pager || !image.complete || !(image.naturalWidth > 0)) return;
+  // true: shown; 'busy': not now (the page is still turning or loading); false: it cannot be.
+  function openEnlarged(balloon, { timer = 0, quiet = false } = {}) {
+    if (!enlargeOn() || !book || currentPage < 0 || editing || popup) return false;
+    if (loading || turning || pager || !image.complete || !(image.naturalWidth > 0)) return 'busy';
     hideTranslation();
     const style = getComputedStyle(stage), inset = edge => Math.max(0, parseFloat(style.getPropertyValue(`--reader-safe-${edge}`)) || 0);
     const viewport = { width: window.visualViewport?.width || window.innerWidth, height: window.visualViewport?.height || window.innerHeight, top: inset('top'), right: inset('right'), bottom: inset('bottom'), left: inset('left') };
     const calm = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
     try {
-      if (balloonZoom.open({ image, balloon, imageRect: image.getBoundingClientRect(), viewport, calm })) { try { navigator.vibrate?.(8); } catch { /* No vibration here. */ } }
+      const shown = balloonZoom.open({ image, balloon, imageRect: image.getBoundingClientRect(), viewport, calm, timer, prepared: cutoutFor(balloon) });
+      if (shown && !quiet) { try { navigator.vibrate?.(8); } catch { /* No vibration here. */ } }
+      return shown;
     } catch (error) {
       try { window.dispatchEvent(new CustomEvent('cloudpanels-error', { detail: { where: 'enlarge-balloon', error } })); } catch { /* Nothing more to do. */ }
+      return false;
     }
   }
+  // A balloon's enlarged shape, worked out once on the page shown (the steps ask before it comes out).
+  const cutouts = new WeakMap();
+  function cutoutFor(balloon) {
+    if (!balloon || !image.complete || !(image.naturalWidth > 0)) return null;
+    const known = cutouts.get(balloon);
+    if (known && known.src === image.currentSrc) return known.prepared;
+    let prepared = null;
+    try { prepared = prepareCutout(image, balloon); } catch { prepared = null; }
+    cutouts.set(balloon, { src: image.currentSrc, prepared });
+    return prepared;
+  }
+  // Whether the enlarged `shown` already holds `other` (joined balloons come out as one shape).
+  function balloonCovers(shown, other) {
+    const prepared = cutoutFor(shown), text = other?.text;
+    if (!prepared?.cut?.mask || !text || shown === other) return false;
+    const { cut, window: area, width, height } = prepared, pageWidth = image.naturalWidth, pageHeight = image.naturalHeight;
+    // Its lettering's middle and corners (a little inside) all lie in the shape.
+    return [[.5, .5], [.15, .2], [.85, .2], [.15, .8], [.85, .8]].every(([fx, fy]) => {
+      const x = Math.floor(((text.x + text.width * fx) * pageWidth - area.x) * width / area.width), y = Math.floor(((text.y + text.height * fy) * pageHeight - area.y) * height / area.height);
+      return x >= 0 && y >= 0 && x < width && y < height && cut.mask[y * width + x] > 128;
+    });
+  }
   // Switching it takes effect on the page being read.
-  function applyEnlarge() { if (enlargeOn()) findShownBalloons(); else balloonZoom.close({ instant: true }); }
+  function applyEnlarge() { if (enlargeOn()) findShownBalloons(); else { balloonStepper.reset(); balloonZoom.close({ instant: true }); } }
+  // ---- Balloon by balloon (optional, with Enlarge balloons; see balloon-steps.js) ----
+  // The corners go from balloon to balloon in reading order, the page seen in between; or it goes on by itself.
+  const stepsMode = () => { const mode = store.state.settings.readerBalloonSteps; return enlargeOn() && (mode === 'tap' || mode === 'auto') ? mode : 'off'; };
+  const stepsOn = () => stepsMode() !== 'off';
+  const stepLabels = () => language() === 'pt-BR'
+    ? { title: 'Balão por balão', off: 'Desligado', tap: 'Tocando nos cantos', auto: 'Sozinho', pause: 'Pausa entre os balões', short: 'Curta', medium: 'Média', long: 'Longa', speed: 'Velocidade (sozinho)', slow: 'Devagar', normal: 'Normal', fast: 'Rápida',
+      note: 'Balão por balão: o canto direito traz o próximo balão e o esquerdo, o anterior; a página aparece por um instante entre eles e, depois do último balão, a página vira. Sozinho: toque uma vez no canto direito e ele segue sem você, cada balão pelo tempo de leitura; toque no meio para parar.',
+      running: 'Seguindo sozinho · toque no meio para parar', end: 'Fim do quadrinho', swipe: 'Deslize para virar a página' }
+    : language() === 'es'
+      ? { title: 'Globo a globo', off: 'Desactivado', tap: 'Tocando las esquinas', auto: 'Solo', pause: 'Pausa entre globos', short: 'Corta', medium: 'Media', long: 'Larga', speed: 'Velocidad (solo)', slow: 'Lenta', normal: 'Normal', fast: 'Rápida',
+        note: 'Globo a globo: la esquina derecha trae el siguiente globo y la izquierda, el anterior; la página se ve un momento entre ellos y, tras el último globo, la página pasa. Solo: toca una vez la esquina derecha y sigue sin ti, cada globo por su tiempo de lectura; toca el centro para parar.',
+        running: 'Siguiendo solo · toca el centro para parar', end: 'Fin del cómic', swipe: 'Desliza para pasar la página' }
+      : { title: 'Balloon by balloon', off: 'Off', tap: 'Tap the corners', auto: 'By itself', pause: 'Pause between balloons', short: 'Short', medium: 'Medium', long: 'Long', speed: 'Speed (by itself)', slow: 'Slow', normal: 'Normal', fast: 'Fast',
+        note: 'Balloon by balloon: the right corner brings out the next balloon, the left one the one before; the page shows for a moment in between, and after the last balloon the page turns. By itself: tap the right corner once and it goes on alone, each balloon for about its reading time; tap the middle to stop.',
+        running: 'Going on by itself · tap the middle to stop', end: 'End of the comic', swipe: 'Swipe to turn the page' };
+  let balloonTurning = false;
+  // The panels a page's balloons are put in order by (page view): its saved ones, or found now (kept here, not saved).
+  const orderPanelFinds = new Map();
+  function orderPanelsSoon(wait = 1800) {
+    if (!comic || currentPage < 0) return Promise.resolve([]);
+    const saved = storedPanels();
+    if (saved.length) return Promise.resolve(saved);
+    const key = enlargeKey();
+    if (!orderPanelFinds.has(key)) {
+      const drawable = shownDrawable;
+      if (!drawable) return Promise.resolve([]);
+      orderPanelFinds.set(key, analyzePagePanels(drawable, { direction: rtl() ? 'rtl' : 'ltr', signal: sessionController?.signal })
+        .then(result => result?.confidence === 'high' && result.panels?.length ? result.panels : []).catch(() => []));
+      while (orderPanelFinds.size > 12) orderPanelFinds.delete(orderPanelFinds.keys().next().value);
+    }
+    return Promise.race([orderPanelFinds.get(key), new Promise(resolve => setTimeout(() => resolve([]), wait))]);
+  }
+  // The shown page's balloons, waiting a little for them when they are still being found.
+  function shownBalloonsSoon(wait = 2500) {
+    const known = shownBalloons();
+    if (known) return Promise.resolve(known);
+    const pending = findShownBalloons();
+    if (!pending) return Promise.resolve(null);
+    return Promise.race([pending.then(result => result || shownBalloons()), new Promise(resolve => setTimeout(() => resolve(shownBalloons()), wait))]);
+  }
+  // The balloons to go through: in Panel view those of the panel shown; two pages side by side one page after
+  // the other; a page, panel by panel.
+  async function stepSequence() {
+    const found = await shownBalloonsSoon();
+    if (!found?.balloons?.length) return [];
+    const direction = rtl() ? 'rtl' : 'ltr';
+    if (guided) return overview || editing ? [] : balloonSequence(found.balloons, { panels: panels(), panel, direction });
+    if (spreadPages.length > 1) return balloonSequence(found.balloons, { spread: true, direction });
+    return balloonSequence(found.balloons, { panels: await orderPanelsSoon(), direction });
+  }
+  // After the last balloon: the next page (or panel), as a tap on the corner always did.
+  async function stepTurn(delta, auto) {
+    if (!book || currentPage < 0) return false;
+    if (!auto && !turnBy().tap) return false;
+    if (delta > 0 && auto && aloudAtEnd()) return false;
+    if (delta < 0 && currentPage <= 0 && (!guided || (panel <= 0 && !overview))) return false;
+    balloonTurning = true;
+    try { await move(delta); } finally { balloonTurning = false; }
+    return true;
+  }
+  const balloonStepper = createBalloonStepper({
+    place: () => !comic || currentPage < 0 ? '' : `${enlargeKey()}|${guided ? (overview ? 'whole' : `panel ${panel}`) : 'page'}`,
+    sequence: stepSequence,
+    open: (balloon, { timer }) => { if (timer) keepAwake.activity(); return openEnlarged(balloon, { timer, quiet: Boolean(timer) }); },
+    close: () => balloonZoom.close(),
+    isOpen: () => balloonZoom.isOpen,
+    turn: stepTurn,
+    pause: () => stepPause(store.state.settings.readerBalloonPause),
+    readFor: balloon => readingTime(balloon, store.state.settings.readerBalloonSpeed),
+    covers: balloonCovers,
+    onState: state => {
+      const words = stepLabels();
+      if (state === 'running') showHint(words.running, 2800);
+      else if (state === 'end') showHint(words.end, 2600);
+      else if (state === 'edge' && !turnBy().tap) showHint(words.swipe, 2200);
+    },
+  });
+  // A corner: the next balloon (by itself: starts it going), or the one before.
+  function stepBy(side) {
+    if (side > 0 && stepsMode() === 'auto' && !balloonStepper.running) void balloonStepper.start();
+    else void balloonStepper.step(side);
+  }
+  // A touch on the enlarged balloon: a corner goes on; the middle puts it back (and stops it going by itself).
+  function balloonLayerTap(event) {
+    if (!stepsOn()) return false;
+    const box = stage.getBoundingClientRect(), x = box.width > 0 ? (event.clientX - box.left) / box.width : .5;
+    if (x < .25 || x > .75) { stepBy(x > .75 ? 1 : -1); return true; }
+    balloonStepper.stop(); return false;
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) balloonStepper.stop(); });
   // A short wait for the shown page's balloons, so its steps are right from its first panel.
   async function balloonsSoon(index, drawable, wait = 700) {
     if (!readableTarget() || balloonsOf(index)) return;
@@ -1707,6 +1825,27 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       });
     }
     menu.append(enlargeNote, enlargeRow);
+    // Balloon by balloon (with Enlarge balloons on): off, by tapping the corners, or by itself.
+    if (enlargeOn()) {
+      const steps = stepLabels();
+      const stepsNote = document.createElement('p'); stepsNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;'; stepsNote.textContent = steps.note;
+      const choiceField = (id, title, choices, value, setting) => {
+        const field = document.createElement('label'); field.className = 'reader-navigation-setting'; field.textContent = title;
+        const select = document.createElement('select'); select.id = id;
+        for (const [option, label] of choices) { const item = document.createElement('option'); item.value = option; item.textContent = label; select.append(item); }
+        select.value = value; field.append(select);
+        select.addEventListener('change', () => {
+          try { store.setSettings({ [setting]: select.value }); checkSaved(); observePersistence(); }
+          catch (error) { statusMessage(error?.message || text().storage, true); return; }
+          if (setting === 'readerBalloonSteps') balloonStepper.reset();
+        });
+        return field;
+      };
+      menu.append(stepsNote,
+        choiceField('reader-balloon-steps', steps.title, [['off', steps.off], ['tap', steps.tap], ['auto', steps.auto]], stepsMode(), 'readerBalloonSteps'),
+        choiceField('reader-balloon-pause', steps.pause, [['short', steps.short], ['medium', steps.medium], ['long', steps.long]], store.state.settings.readerBalloonPause || 'medium', 'readerBalloonPause'),
+        choiceField('reader-balloon-speed', steps.speed, [['slow', steps.slow], ['normal', steps.normal], ['fast', steps.fast]], store.state.settings.readerBalloonSpeed || 'normal', 'readerBalloonSpeed'));
+    }
   }
   // Switching the enhanced guided view takes effect on the page being read:
   // a page without panels changes between parts and the whole page at once.
@@ -2495,7 +2634,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const sessionAbort = () => request.abort(sessionController?.signal.reason);
     const activeSessionSignal = sessionController.signal;
     activeSessionSignal.addEventListener('abort', sessionAbort, { once: true });
-    hidePopup(); hideTranslation(); balloonZoom.close({ instant: true }); loading = true; activity(true); updateControls(); statusMessage(text().loadingPage(index + 1));
+    hidePopup(); hideTranslation(); if (!balloonTurning) balloonStepper.stop(); balloonZoom.close({ instant: true }); loading = true; activity(true); updateControls(); statusMessage(text().loadingPage(index + 1));
     let candidate, snapshot, previousURL;
     // Pages kept in the decoded cache own their address; a two-page composite
     // belongs to this view only and is released when it is replaced.
@@ -2585,6 +2724,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   async function move(delta, { stepScroll = false } = {}) {
     if (!book || currentPage < 0 || loading || turning || editing || popup || analysisPending || !positionCommitted) return;
+    if (!balloonTurning) balloonStepper.stop();
     balloonZoom.close();
     stopMotion(); clearStretch();
     // A page wider than the screen (a double page upright): taps, buttons and
@@ -2977,6 +3117,17 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     // Enlarge balloons: a tap on a balloon brings it out bigger (anywhere on the page;
     // a double tap still zooms in there). A tap elsewhere does what it always did.
     if (enlargeOn() && unchanged && !activePointers.size && g.distance < 9 && duration < 400 && !editing && !popup && !loading && !turning && !pager) {
+      // Balloon by balloon: the corners go from balloon to balloon; a tap in the middle stops it going by itself.
+      if (stepsOn() && swipeAllowed() && !panMode) {
+        const area = stage.getBoundingClientRect(), side = area.width > 0 ? (event.clientX - area.left) / area.width : .5;
+        if (side < .25 || side > .75) {
+          event.preventDefault(); suppressClicksUntil = now + 450;
+          if (lastTap) { clearTimeout(lastTap.timer); lastTap = undefined; }
+          stepBy(side > .75 ? 1 : -1);
+          return;
+        }
+        balloonStepper.stop();
+      }
       const balloon = balloonAtPoint(event.clientX, event.clientY);
       if (balloon) {
         suppressClicksUntil = now + 450;
@@ -2987,7 +3138,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         }
         if (lastTap) clearTimeout(lastTap.timer);
         const mySession = serial, myPage = pageSerial;
-        lastTap = { time: now, x: event.clientX, y: event.clientY, timer: setTimeout(() => { lastTap = undefined; if (mySession === serial && myPage === pageSerial) openEnlarged(balloon); }, 260) };
+        lastTap = { time: now, x: event.clientX, y: event.clientY, timer: setTimeout(() => { lastTap = undefined; if (mySession === serial && myPage === pageSerial && openEnlarged(balloon) === true && stepsOn()) void balloonStepper.shown(balloon); }, 260) };
         return;
       }
       // This page's balloons are not known yet: they are looked for now, for the next tap.
@@ -3086,7 +3237,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     serial++; pageSerial++; pageTransition.cancel(); turning = false; overview = false; guidedMode = 'whole'; cancelAnalysis(); cancelCamera(); cancelPrefetch(); pageController?.abort(); sessionController?.abort();
     pageController = sessionController = undefined;
     book?.close(); book = undefined; rangeBuffer?.clear(); rangeBuffer = undefined;
-    hideTranslation(); balloonZoom.close({ instant: true }); shownDrawable = null; translation.pages.clear(); balloonFinds.clear(); readableMemo = { key: '', found: null, steps: [] }; laidStep = null; laidSteps = null; laidPage = -1; balloonJobs.length = 0; dotsAt = ''; clearTimeout(dotsTimer); stepDots.classList.remove('is-visible'); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
+    hideTranslation(); balloonStepper.reset(); orderPanelFinds.clear(); balloonZoom.close({ instant: true }); shownDrawable = null; translation.pages.clear(); balloonFinds.clear(); readableMemo = { key: '', found: null, steps: [] }; laidStep = null; laidSteps = null; laidPage = -1; balloonJobs.length = 0; dotsAt = ''; clearTimeout(dotsTimer); stepDots.classList.remove('is-visible'); comic = undefined; currentPage = -1; currentCrop = null; panel = 0; guidedFallbackPage = -1; positionCommitted = false; loading = false; editing = false; panMode = false; resumeButton.hidden = true; pointer = undefined; draft = [];
     clearTimeout(restoreTimer); clearTimeout(hintTimer); clearTimeout(thumbSeedTimer); thumbSeedTimer = undefined; fitHint.hidden = true; clearTimeout(voiceNoteTimer); voiceNote.hidden = true; hidePopup(); resetGesture(); pagerAbort(); stopMotion(); clearStretch(); clearDecoded(); touchPoints.clear(); activePointers.clear(); cancelledPointers.clear(); closeIntent = undefined; dialog.classList.remove('editing-panels', 'reader-immersive', 'reader-loading', 'reader-error', 'reader-controls-sleeping', 'reader-fit-fill', 'reader-panning', 'reader-guided', 'reader-guided-moving'); immersive = false; restoreButton.hidden = true;
     overlay.replaceChildren(); overlay.classList.remove('editing');
     image.removeAttribute('src'); showImage(false); imageWidth = imageHeight = pageWidth = 0;
@@ -3150,7 +3301,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   });
   function dismissReaderControls(event) {
     event.preventDefault();
-    if (balloonZoom.isOpen) { balloonZoom.close(); return; }
+    if (balloonZoom.isOpen) { balloonStepper.stop(); balloonZoom.close(); return; }
     if (editing) finishEditing();
     else if (popup) { hidePopup(); updateControls(); normalStatus(); }
     else { setImmersive(false); wakeRestore(); }

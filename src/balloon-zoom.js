@@ -98,9 +98,11 @@ function drawCutout(image, prepared, { width, height, ratio, canvasFactory }) {
 /**
  * The enlarged balloon over the reader (`parent`). `open` returns false when
  * nothing could be shown (then the tap does what it always did); `close` puts
- * it back (at once with `instant`).
+ * it back (at once with `instant`). A touch on it puts it back, unless
+ * `onTap(event)` takes that touch (returns true: balloon by balloon, a corner).
+ * `timer` (ms): a thin bar under the balloon empties over that time (it goes on by itself).
  */
-export function createBalloonZoom({ parent, canvasFactory = () => document.createElement('canvas'), onOpen, onClose } = {}) {
+export function createBalloonZoom({ parent, canvasFactory = () => document.createElement('canvas'), onOpen, onClose, onTap } = {}) {
   let layer = null, start = null, cut = null, timer = 0;
   function remove() {
     clearTimeout(timer); timer = 0;
@@ -114,10 +116,11 @@ export function createBalloonZoom({ parent, canvasFactory = () => document.creat
     onClose?.();
     if (instant) remove(); else timer = setTimeout(remove, 280);
   }
-  function open({ image, balloon, imageRect, viewport, calm = false }) {
+  function open({ image, balloon, imageRect, viewport, calm = false, timer = 0, prepared: ready = null }) {
     remove();
     if (!parent || !image || !(imageRect?.width > 0 && imageRect?.height > 0)) return false;
-    const prepared = prepareCutout(image, balloon, { canvasFactory });
+    // (`ready`: the cut already worked out for this balloon on this page.)
+    const prepared = ready || prepareCutout(image, balloon, { canvasFactory });
     if (!prepared) return false;
     const pageWidth = image.naturalWidth || image.width, pageHeight = image.naturalHeight || image.height;
     const onPage = cutoutOnPage(prepared), kx = imageRect.width / pageWidth, ky = imageRect.height / pageHeight;
@@ -135,11 +138,20 @@ export function createBalloonZoom({ parent, canvasFactory = () => document.creat
     Object.assign(canvas.style, { left: `${target.x}px`, top: `${target.y}px`, width: `${target.width}px`, height: `${target.height}px` });
     start = `translate(${now.x - target.x}px, ${now.y - target.y}px) scale(${now.width / target.width}, ${now.height / target.height})`;
     canvas.style.transform = start;
-    layer.append(dim, canvas); parent.append(layer); cut = canvas;
+    layer.append(dim, canvas);
+    if (timer > 0) {
+      // Under the balloon (above it when there is no room below), a third of its width.
+      const room = viewport.height - (viewport.bottom || 0) - 12, width = Math.max(48, target.width * .34);
+      const below = target.y + target.height + 14, top = below + 4 <= room ? below : Math.max((viewport.top || 0) + 6, target.y - 18);
+      const bar = document.createElement('div'); bar.className = 'reader-balloon-zoom-timer';
+      Object.assign(bar.style, { left: `${target.x + (target.width - width) / 2}px`, top: `${top}px`, width: `${width}px` });
+      const fill = document.createElement('span'); fill.style.animationDuration = `${Math.round(timer)}ms`; bar.append(fill); layer.append(bar);
+    }
+    parent.append(layer); cut = canvas;
     // Any touch on it puts the balloon back (and nothing else happens with it).
     let pressed = false;
     layer.addEventListener('pointerdown', event => { pressed = true; event.preventDefault(); event.stopPropagation(); });
-    layer.addEventListener('pointerup', event => { event.preventDefault(); event.stopPropagation(); if (pressed) close(); pressed = false; });
+    layer.addEventListener('pointerup', event => { event.preventDefault(); event.stopPropagation(); if (pressed && !onTap?.(event)) close(); pressed = false; });
     layer.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); });
     layer.addEventListener('contextmenu', event => event.preventDefault());
     void canvas.offsetWidth;

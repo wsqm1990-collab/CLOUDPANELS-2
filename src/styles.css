@@ -840,3 +840,9 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .ai-collection-more{margin-top:4px;font-size:12px}
 .ai-collection-actions{margin-top:12px}
 .ai-collection-done{color:var(--lime);font-weight:650;font-size:13px}
+/* Balloon by balloon, by itself: a thin bar under the balloon empties while it is read. */
+.reader-balloon-zoom-timer{position:absolute;height:4px;border-radius:2px;background:#ffffff2e;overflow:hidden;opacity:0;transition:opacity .3s ease;pointer-events:none}
+.reader-balloon-zoom.is-open .reader-balloon-zoom-timer{opacity:1}
+.reader-balloon-zoom.is-closing .reader-balloon-zoom-timer{opacity:0}
+.reader-balloon-zoom-timer>span{display:block;height:100%;border-radius:2px;background:var(--lime,#c5ef62);transform-origin:left center;animation:reader-balloon-timer linear forwards}
+@keyframes reader-balloon-timer{from{transform:scaleX(1)}to{transform:scaleX(0)}}
