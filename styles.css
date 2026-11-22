@@ -846,3 +846,16 @@ body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
 .reader-balloon-zoom.is-closing .reader-balloon-zoom-timer{opacity:0}
 .reader-balloon-zoom-timer>span{display:block;height:100%;border-radius:2px;background:var(--lime,#c5ef62);transform-origin:left center;animation:reader-balloon-timer linear forwards}
 @keyframes reader-balloon-timer{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+/* A reader menu's last buttons (Done) stay in view at its bottom while it scrolls. */
+.reader-popup .reader-popup-footer{position:sticky;bottom:-18px;z-index:1;display:flex;justify-content:flex-end;margin:16px -18px -18px;padding:12px 18px 16px;background:#152131;border-top:1px solid #2b3b50;border-radius:0 0 11px 11px}
+.reader-popup .reader-popup-footer .button{min-width:96px}
+/* Quick menu (a two-finger tap): big buttons, two to a row on a phone, three on wider screens. */
+.reader-quick-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media (min-width:600px){.reader-quick-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.reader-popup .reader-quick-action{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;min-height:62px;padding:10px 12px;text-align:left;white-space:normal;line-height:1.25}
+.reader-quick-name{font-size:15px;font-weight:650}
+.reader-quick-state{font-size:12px;color:#aebdcd;font-weight:500}
+.reader-quick-choices{margin:0 0 12px}
+.reader-quick-choices-title{margin:2px 0 8px;font-size:13px;color:#dfe8f2}
+/* A switch that is on keeps its look under a finger (menus now stay open after a tap on one). */
+.button.primary[aria-pressed=true]:hover{background:#c5ef6224;color:var(--lime)}
