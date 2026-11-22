@@ -1,5 +1,6 @@
 // Metadata only. MEGA sessions, passwords, keys and file bytes never enter this store.
 import { reanchorMissing, MAX_MISSING } from './collection-order.js';
+import { quickActions, QUICK_DEFAULT } from './quick-menu.js';
 export const STORAGE_KEY = 'cloudpanels.library.v1';
 const MAX_RETIRED = 3000;
 export const MAX_COMICS = 50000;
@@ -36,7 +37,7 @@ const swapCollection = (collection, swap) => ({ ...collection, comicIds: [...new
 const withoutComic = (collection, id) => { const comicIds = collection.comicIds.filter(value => value !== id);
   return collection.ordered ? { ...collection, comicIds, missing: reanchorMissing(collection.missing, collection.comicIds, comicIds) } : { ...collection, comicIds }; };
 const list = (value, max = 64) => Array.isArray(value) ? [...new Set(value.map(v => string(v, 120)).filter(Boolean))].slice(0, max) : [];
-const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], deletedCollections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerReadableBalloons: 'off', readerTranslate: false, readerTranslateTo: '', readerEnlargeBalloons: false, readerBalloonSteps: 'off', readerBalloonPause: 'medium', readerBalloonSpeed: 'normal', readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
+const defaultState = () => ({version: 1, comics: [], progress: {}, retired: {}, collections: [], deletedCollections: [], favorites: [], readLater: [], bookmarks: [], settings: {language: 'en', readerSpread: true, cacheMiB: 64, readingDirection: 'ltr', readerFitMode: 'whole', readerGuided: false, readerGuidedPlus: false, readerReadAloud: false, readerNaturalVoice: false, readerMusic: false, readerSoundEffects: false, readerVoiceSpeed: 1, readerScreenOff: false, readerDescribe: false, readerCropBorders: false, readerReadableBalloons: 'off', readerTranslate: false, readerTranslateTo: '', readerEnlargeBalloons: false, readerBalloonSteps: 'off', readerBalloonPause: 'medium', readerBalloonSpeed: 'normal', readerQuickMenu: false, readerQuickActions: [...QUICK_DEFAULT], readerNavigationSeconds: 3, readerSwipeResistance: 3, readerPageAnimation: 'slide', readerPageDuration: 420, readerBackground: 'black', readerBrightness: 1, readerContrast: 1, spoilers: false}, panels: {}});
 
 export function parseMetadata(name = '', path = '') {
   const stem = string(name).replace(/\.(cbz|zip|pdf|cbr|rar|cb7|7z|cbt|tar|jpe?g|png|webp|avif)$/i, '').replace(/_/g, ' ');
@@ -143,6 +144,9 @@ function settings(value, previous = defaultState().settings) {
     readerBalloonSteps: choice(value.readerBalloonSteps, previous.readerBalloonSteps, ['off', 'tap', 'auto'], 'off'),
     readerBalloonPause: choice(value.readerBalloonPause, previous.readerBalloonPause, ['short', 'medium', 'long'], 'medium'),
     readerBalloonSpeed: choice(value.readerBalloonSpeed, previous.readerBalloonSpeed, ['slow', 'normal', 'fast'], 'normal'),
+    // Quick menu (a two-finger tap on the page): off at first; the buttons chosen for it.
+    readerQuickMenu: typeof value.readerQuickMenu === 'boolean' ? value.readerQuickMenu : previous.readerQuickMenu === true,
+    readerQuickActions: quickActions(Array.isArray(value.readerQuickActions) ? value.readerQuickActions : previous.readerQuickActions),
     readerTurnMode: ['both', 'swipe', 'tap'].includes(value.readerTurnMode) ? value.readerTurnMode : (['both', 'swipe', 'tap'].includes(previous.readerTurnMode) ? previous.readerTurnMode : 'both'),
     spoilers: typeof value.spoilers === 'boolean' ? value.spoilers : previous.spoilers};
 }

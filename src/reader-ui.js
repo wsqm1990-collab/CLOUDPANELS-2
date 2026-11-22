@@ -5,6 +5,7 @@ import { analyzePageBalloons, balloonAnalysisSize } from './balloon-analyzer.js'
 import { lumaPicture, wallBetween } from './balloon-walls.js';
 import { createBalloonZoom, prepareCutout } from './balloon-zoom.js';
 import { balloonSequence, createBalloonStepper, readingTime, stepPause } from './balloon-steps.js';
+import { QUICK_ACTIONS, QUICK_MAX, quickActions, toggleQuickAction, twoFingerTap } from './quick-menu.js';
 import { readableSteps, letterTarget, stepFrame, stepPosition } from './readable-steps.js';
 import { createReaderNavigationTimer } from './reader-navigation.js';
 import { createPageTransition } from './reader-transitions.js';
@@ -608,6 +609,77 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   // Switching it takes effect on the page being read.
   function applyEnlarge() { if (enlargeOn()) findShownBalloons(); else { balloonStepper.reset(); balloonZoom.close({ instant: true }); } }
+  // ---- Quick menu (optional, off at first; see quick-menu.js) ----
+  // A tap with two fingers at once on the page opens a menu of big buttons for the features
+  // chosen in Reading appearance; each does just what its own button or switch does.
+  const quickMenuOn = () => store.state.settings.readerQuickMenu === true;
+  const quickLabels = () => language() === 'pt-BR'
+    ? { title: 'Menu rápido', close: 'Fechar', on: 'Ligado', off: 'Desligado', empty: 'Nenhum botão escolhido. Escolha em Aparência de leitura.', setting: 'Toque com dois dedos', none: 'Desligado', opens: 'Abre o menu rápido',
+      note: 'Um toque com dois dedos ao mesmo tempo, em qualquer lugar da página, abre um menu com botões grandes das funções que você mais usa. Desligado, dois dedos só dão zoom, como sempre.', choose: `Botões do menu rápido (até ${QUICK_MAX})`, immersive: 'Leitura sem distrações', fullscreen: 'Tela cheia' }
+    : language() === 'es'
+      ? { title: 'Menú rápido', close: 'Cerrar', on: 'Activado', off: 'Desactivado', empty: 'Ningún botón elegido. Elígelos en Apariencia de lectura.', setting: 'Toque con dos dedos', none: 'Desactivado', opens: 'Abre el menú rápido',
+        note: 'Un toque con dos dedos a la vez, en cualquier parte de la página, abre un menú con botones grandes de las funciones que más usas. Desactivado, dos dedos solo hacen zoom, como siempre.', choose: `Botones del menú rápido (hasta ${QUICK_MAX})`, immersive: 'Lectura sin distracciones', fullscreen: 'Pantalla completa' }
+      : { title: 'Quick menu', close: 'Close', on: 'On', off: 'Off', empty: 'No buttons chosen. Choose them in Reading appearance.', setting: 'Two-finger tap', none: 'Off', opens: 'Opens the quick menu',
+        note: 'A tap with two fingers at once, anywhere on the page, opens a menu with big buttons for the features you use most. Off, two fingers only zoom, as always.', choose: `Buttons in the quick menu (up to ${QUICK_MAX})`, immersive: 'Immersive reading', fullscreen: 'Full screen' };
+  // The name of each button (as its feature is called elsewhere in the reader).
+  function quickNames() {
+    const quick = quickLabels(), features = featureText(), guidedText = guidedLabels();
+    return { guided: guidedText.button, enlarge: enlargeLabels().title, steps: stepLabels().title, listen: aloudLabels().title, navigator: features.navigate, options: guidedText.options,
+      bookmarks: features.bookmarks, appearance: features.appearance, translate: translateLabels().title, immersive: quick.immersive, fullscreen: quick.fullscreen };
+  }
+  // A switch from the quick menu: as in Panel options, with a word of what changed.
+  function quickSwitch(setting, value, apply, title) {
+    try { store.setSettings({ [setting]: value }); checkSaved(); observePersistence(); }
+    catch (error) { statusMessage(error?.message || text().storage, true); return; }
+    apply(); showHint(`${title}: ${value ? quickLabels().on : quickLabels().off}`, 2400);
+  }
+  // Balloon by balloon from the quick menu: off, by tapping the corners, by itself, and off again
+  // (it switches Enlarge balloons on with it).
+  function quickSteps() {
+    const steps = stepLabels(), next = { off: 'tap', tap: 'auto', auto: 'off' }[stepsMode()];
+    try { store.setSettings({ readerBalloonSteps: next, ...(next !== 'off' && !enlargeOn() ? { readerEnlargeBalloons: true } : {}) }); checkSaved(); observePersistence(); }
+    catch (error) { statusMessage(error?.message || text().storage, true); return; }
+    balloonStepper.reset(); applyEnlarge();
+    showHint(`${steps.title}: ${steps[stepsMode()]}`, 2400);
+  }
+  // What each button shows and does now (null: not available now, as Listen without Read aloud).
+  function quickItems() {
+    const names = quickNames(), quick = quickLabels(), steps = stepLabels(), state = on => on ? quick.on : quick.off;
+    return {
+      guided: { label: names.guided, state: state(guided), pressed: guided, run: () => buttons.guided.click() },
+      enlarge: { label: names.enlarge, state: state(enlargeOn()), pressed: enlargeOn(), run: () => quickSwitch('readerEnlargeBalloons', !enlargeOn(), applyEnlarge, names.enlarge) },
+      steps: { label: names.steps, state: steps[stepsMode()], pressed: stepsOn(), run: quickSteps },
+      listen: readAloudEnabled() ? { label: listenButton.textContent.trim() || names.listen, run: () => listenButton.click() } : null,
+      navigator: { label: names.navigator, run: () => featureButtons.navigate.click() },
+      options: { label: names.options, run: () => choosePanelOptions() },
+      bookmarks: { label: names.bookmarks, run: () => featureButtons.bookmarks.click() },
+      appearance: { label: names.appearance, run: () => featureButtons.appearance.click() },
+      translate: { label: names.translate, state: state(translateOn()), pressed: translateOn(), run: () => quickSwitch('readerTranslate', !translateOn(), applyTranslate, names.translate) },
+      immersive: { label: names.immersive, state: state(immersive), pressed: immersive, run: () => immersiveButton.click() },
+      fullscreen: fullscreenButton.hidden ? null : { label: names.fullscreen, run: () => fullscreenButton.click() },
+    };
+  }
+  function openQuickMenu() {
+    if (!book || currentPage < 0 || loading || editing || popup) return;
+    // (Balloon by balloon going on by itself stops, as with a tap in the middle.)
+    balloonStepper.stop();
+    const quick = quickLabels(), items = quickItems(), chosen = quickActions(store.state.settings.readerQuickActions).filter(action => items[action]);
+    const menu = makePopup(quick.title); menu.classList.add('reader-quick-menu'); menu._quick = true;
+    popupHeading(menu, quick.title, chosen.length ? '' : quick.empty);
+    const grid = document.createElement('div'); grid.className = 'reader-quick-grid'; menu.append(grid);
+    for (const action of chosen) {
+      const item = items[action], button = document.createElement('button');
+      button.type = 'button'; button.className = 'button secondary reader-quick-action'; button.id = `reader-quick-action-${action}`;
+      const name = document.createElement('span'); name.className = 'reader-quick-name'; name.textContent = item.label; button.append(name);
+      if (item.state) { const now = document.createElement('span'); now.className = 'reader-quick-state'; now.textContent = item.state; button.append(now); }
+      if (item.pressed !== undefined) button.setAttribute('aria-pressed', String(Boolean(item.pressed)));
+      button.addEventListener('click', () => { hidePopup(); item.run(); });
+      grid.append(button);
+    }
+    const footer = document.createElement('div'); footer.className = 'row reader-popup-footer'; menu.append(footer);
+    popupButton(footer, quick.close, hidePopup).id = 'reader-quick-close';
+    (grid.querySelector('button') || footer.querySelector('button'))?.focus({ preventScroll: true });
+  }
   // ---- Balloon by balloon (optional, with Enlarge balloons; see balloon-steps.js) ----
   // The corners go from balloon to balloon in reading order, the page seen in between; or it goes on by itself.
   const stepsMode = () => { const mode = store.state.settings.readerBalloonSteps; return enlargeOn() && (mode === 'tap' || mode === 'auto') ? mode : 'off'; };
@@ -977,6 +1049,13 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const remaining = (availableHeight ?? availableSize().height) - pageWidth * imageHeight / imageWidth;
     wrap.style.marginTop = `${Math.max(0, remaining / 2)}px`;
     if (syncGestures) syncGestureMode();
+  }
+  // A page the device takes longer to get on screen: a double page (wider than tall, shown at the
+  // screen's height), many pixels drawn, or a high-resolution image.
+  function largeShown() {
+    if (!imageWidth || !imageHeight) return false;
+    const ratio = window.devicePixelRatio || 1, drawn = pageWidth * (pageWidth * imageHeight / imageWidth) * ratio * ratio;
+    return imageWidth > imageHeight * 1.15 || drawn > 6_000_000 || imageWidth * imageHeight > 8_000_000;
   }
   // In Panel view, a whole page (no recognised panels, or the overview after
   // the last panel) fills the screen width when the iPad is in landscape,
@@ -1559,7 +1638,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     try { store.setSettings(patch); checkSaved(); observePersistence(); notify(); applyAppearance(); }
     catch (error) { statusMessage(error?.message || text().storage, true); }
   }
-  function chooseAppearance() {
+  // `scroll` and `focus` (an id): where the menu was, when it opens again after a choice in it.
+  function chooseAppearance({ scroll = 0, focus = '' } = {}) {
     if (!book || currentPage < 0 || editing) return;
     setImmersive(false);
     const labels = featureText(), menu = makePopup(labels.appearance);
@@ -1604,7 +1684,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       catch (error) { statusMessage(error?.message || text().storage, true); }
     });
     navigationField.append(navigationSelect);
-    const actions = document.createElement('div'); actions.className = 'row';
+    const actions = document.createElement('div'); actions.className = 'row reader-popup-footer';
     popupButton(actions, labels.reset, () => { saveAppearance({ readerBackground: 'black', readerBrightness: 1, readerContrast: 1 }); chooseAppearance(); });
     popupButton(actions, labels.close, () => { saveAppearance(values); hidePopup(); });
     const turns = turnLabels();
@@ -1638,6 +1718,33 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       try { store.setSettings({ readerTurnMode: turnSelect.value }); checkSaved(); observePersistence(); notify(); }
       catch (error) { statusMessage(error?.message || text().storage, true); }
     });
+    // Quick menu (optional): a two-finger tap opens it; and the buttons in it (shown when it is on).
+    const quick = quickLabels(), again = id => chooseAppearance({ scroll: menu.scrollTop, focus: id });
+    const quickField = document.createElement('label'); quickField.className = 'reader-navigation-setting'; quickField.textContent = quick.setting;
+    const quickSelect = document.createElement('select'); quickSelect.id = 'reader-quick-menu';
+    for (const [value, label] of [['off', quick.none], ['on', quick.opens]]) { const option = document.createElement('option'); option.value = value; option.textContent = label; quickSelect.append(option); }
+    quickSelect.value = quickMenuOn() ? 'on' : 'off'; quickField.append(quickSelect);
+    const quickNote = document.createElement('p'); quickNote.className = 'reader-popup-note reader-quick-note'; quickNote.textContent = quick.note;
+    quickSelect.addEventListener('change', () => {
+      try { store.setSettings({ readerQuickMenu: quickSelect.value === 'on' }); checkSaved(); observePersistence(); }
+      catch (error) { statusMessage(error?.message || text().storage, true); return; }
+      again('reader-quick-menu');
+    });
+    const quickChoices = document.createElement('div'); quickChoices.className = 'reader-quick-choices';
+    if (quickMenuOn()) {
+      const chosen = quickActions(store.state.settings.readerQuickActions), names = quickNames();
+      const caption = document.createElement('p'); caption.className = 'reader-quick-choices-title'; caption.textContent = quick.choose;
+      const group = document.createElement('div'); group.className = 'row'; group.setAttribute('role', 'group'); group.setAttribute('aria-label', quick.choose);
+      for (const action of QUICK_ACTIONS) {
+        const on = chosen.includes(action), button = popupButton(group, names[action], () => {
+          try { store.setSettings({ readerQuickActions: toggleQuickAction(chosen, action) }); checkSaved(); observePersistence(); }
+          catch (error) { statusMessage(error?.message || text().storage, true); return; }
+          again(`reader-quick-choice-${action}`);
+        });
+        button.id = `reader-quick-choice-${action}`; button.setAttribute('aria-pressed', String(on)); button.disabled = !on && chosen.length >= QUICK_MAX;
+      }
+      quickChoices.append(caption, group);
+    }
     // Crop borders: off unless chosen here; the page is shown again at once.
     const cropField = document.createElement('label'); cropField.className = 'reader-navigation-setting';
     cropField.textContent = language() === 'pt-BR' ? 'Cortar bordas: tira as margens pretas ou brancas em volta da página, para o desenho ficar maior' : language() === 'es' ? 'Recortar bordes: quita los márgenes negros o blancos alrededor de la página, para ver el dibujo más grande' : 'Crop borders: cuts off plain black or white margins around the page, so the art is bigger';
@@ -1649,7 +1756,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (!book || currentPage < 0) return;
       clearDecoded(); void showPage(currentPage, basePanel(), { targetOverview: overview });
     });
-    menu.append(backgrounds, cropField, turnField, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions); menu.querySelector('input')?.focus({ preventScroll: true });
+    menu.append(backgrounds, cropField, turnField, quickField, quickNote, quickChoices, resistanceField, navigationField, animationField, durationField, overviewField, awakeField, actions);
+    if (scroll > 0) menu.scrollTop = scroll;
+    if (focus) menu.querySelector(`#${CSS.escape(focus)}`)?.focus({ preventScroll: true }); else menu.querySelector('input')?.focus({ preventScroll: true });
   }
   function savePanelLayout(rects) {
     try { store.setPanels(comic.id, currentPage, wholePanels(rects, currentCrop)); checkSaved(); observePersistence(); notify(); if (storageWarning) statusMessage('', true); return !storageWarning; }
@@ -1719,9 +1828,14 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     store.setSettings({ readerGuided: false }); checkSaved(); observePersistence();
     positionCommitted = true; updateControls(); layoutPage(); persist(); normalStatus();
   }
-  function choosePanelOptions() {
+  // `scroll` and `focus` (an id): where the menu was, when it opens again after a switch in it.
+  function choosePanelOptions({ scroll = 0, focus = '' } = {}) {
     if (!book || loading || currentPage < 0) return;
     setImmersive(false); const labels = guidedLabels(), menu = makePopup(labels.options);
+    // A switch here takes effect at once and the menu stays open where it was (Done closes it);
+    // actions (Edit panels, Detect again, Show whole page, a voice test) still close it.
+    const reopen = (place, id) => { if (!popup && dialog.open && book && !loading && !editing && currentPage >= 0) choosePanelOptions({ scroll: place, focus: id }); };
+    const switched = (id, apply) => { const place = menu.scrollTop; hidePopup(); apply(); reopen(place, id); };
     const heading = document.createElement('h3'); heading.textContent = labels.options;
     const note = document.createElement('p'); note.textContent = labels.detectNote; note.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;';
     const controls = document.createElement('div'); controls.className = 'row'; menu.append(heading, note, controls);
@@ -1734,9 +1848,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     spreadNote.textContent = language() === 'pt-BR' ? 'Com o iPad deitado e "Página inteira", mostra duas páginas lado a lado, como uma revista aberta.' : language() === 'es' ? 'Con el iPad en horizontal y "Página completa", muestra dos páginas lado a lado.' : 'With the iPad in landscape and Whole page fit, shows facing pages side by side.';
     const spreadRow = document.createElement('div'); spreadRow.className = 'row'; menu.append(spreadNote, spreadRow);
     const toggle = popupButton(spreadRow, `${spreadLabel}: ${spreadEnabled() ? (language() === 'en' ? 'On' : 'Ligada'.replace('Ligada', language() === 'es' ? 'Activada' : 'Ligada')) : (language() === 'en' ? 'Off' : language() === 'es' ? 'Desactivada' : 'Desligada')}`, () => {
-      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved(); hidePopup(); void showPage(currentPage, basePanel());
+      store.setSettings({ readerSpread: !spreadEnabled() }); checkSaved();
+      const place = menu.scrollTop; hidePopup(); void showPage(currentPage, basePanel()).then(() => reopen(place, 'reader-spread-toggle'));
     }, spreadEnabled());
-    toggle.setAttribute('aria-pressed', String(spreadEnabled()));
+    toggle.id = 'reader-spread-toggle'; toggle.setAttribute('aria-pressed', String(spreadEnabled()));
     // Enhanced guided view: off unless chosen here, kept on this device.
     const plus = plusLabels(), plusNote = document.createElement('p'); plusNote.style.cssText = 'font-size:12px;color:#bac8d7;line-height:1.6;margin-top:14px;';
     plusNote.textContent = plus.note;
@@ -1744,7 +1859,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const plusToggle = popupButton(plusRow, `${plus.title}: ${guidedPlus() ? plus.on : plus.off}`, () => {
       try { store.setSettings({ readerGuidedPlus: !guidedPlus() }); checkSaved(); observePersistence(); }
       catch (error) { statusMessage(error?.message || text().storage, true); return; }
-      hidePopup(); applyGuidedPlus();
+      switched('reader-guided-plus-toggle', applyGuidedPlus);
     }, guidedPlus());
     plusToggle.id = 'reader-guided-plus-toggle'; plusToggle.setAttribute('aria-pressed', String(guidedPlus()));
     // Readable balloons: off unless chosen here, kept on this device.
@@ -1767,8 +1882,10 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const aloudToggle = popupButton(aloudRow, `${aloudText.title}: ${readAloudEnabled() ? aloudText.on : aloudText.off}`, () => {
       try { store.setSettings({ readerReadAloud: !readAloudEnabled() }); checkSaved(); observePersistence(); }
       catch (error) { statusMessage(error?.message || text().storage, true); return; }
-      hidePopup(); if (!readAloudEnabled()) { stopAloud({ why: 'read aloud switched off' }); backgroundStop(); natural?.dispose(); natural = null; } updateControls();
-      if (readAloudEnabled()) showVoiceNote(aloudText.ready, 5000);
+      switched('reader-read-aloud-toggle', () => {
+        if (!readAloudEnabled()) { stopAloud({ why: 'read aloud switched off' }); backgroundStop(); natural?.dispose(); natural = null; } updateControls();
+        if (readAloudEnabled()) showVoiceNote(aloudText.ready, 5000);
+      });
     }, readAloudEnabled());
     aloudToggle.id = 'reader-read-aloud-toggle'; aloudToggle.setAttribute('aria-pressed', String(readAloudEnabled()));
     // Its extras: natural voices, music and sound effects (each off at first).
@@ -1780,7 +1897,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         const extraToggle = popupButton(extraRow, `${title}: ${isOn() ? aloudText.on : aloudText.off}`, () => {
           try { store.setSettings({ [setting]: !isOn() }); checkSaved(); observePersistence(); }
           catch (error) { statusMessage(error?.message || text().storage, true); return; }
-          hidePopup(); applyExtras(setting);
+          switched(id, () => applyExtras(setting));
         }, isOn());
         extraToggle.id = id; extraToggle.setAttribute('aria-pressed', String(isOn()));
         // Natural voices: how they are doing, and a quick way to hear them.
@@ -1812,7 +1929,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         const listenToggle = popupButton(listenRow, `${title}: ${isOn() ? aloudText.on : aloudText.off}`, () => {
           try { store.setSettings({ [setting]: !isOn() }); checkSaved(); observePersistence(); }
           catch (error) { statusMessage(error?.message || text().storage, true); return; }
-          hidePopup(); applyExtras(setting);
+          switched(id, () => applyExtras(setting));
         }, isOn());
         listenToggle.id = id; listenToggle.setAttribute('aria-pressed', String(isOn()));
       }
@@ -1826,7 +1943,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const translateToggle = popupButton(translateRow, `${words.title}: ${translateOn() ? aloudText.on : aloudText.off}`, () => {
       try { store.setSettings({ readerTranslate: !translateOn() }); checkSaved(); observePersistence(); }
       catch (error) { statusMessage(error?.message || text().storage, true); return; }
-      hidePopup(); applyTranslate();
+      switched('reader-translate-toggle', applyTranslate);
     }, translateOn());
     translateToggle.id = 'reader-translate-toggle'; translateToggle.setAttribute('aria-pressed', String(translateOn()));
     // Enlarge balloons: off unless chosen here, kept on this device.
@@ -1836,7 +1953,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     const enlargeToggle = popupButton(enlargeRow, `${enlarge.title}: ${enlargeOn() ? enlarge.on : enlarge.off}`, () => {
       try { store.setSettings({ readerEnlargeBalloons: !enlargeOn() }); checkSaved(); observePersistence(); }
       catch (error) { statusMessage(error?.message || text().storage, true); return; }
-      hidePopup(); applyEnlarge();
+      switched('reader-enlarge-toggle', applyEnlarge);
     }, enlargeOn());
     enlargeToggle.id = 'reader-enlarge-toggle'; enlargeToggle.setAttribute('aria-pressed', String(enlargeOn()));
     if (translateOn()) {
@@ -1871,6 +1988,11 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
         choiceField('reader-balloon-pause', steps.pause, [['short', steps.short], ['medium', steps.medium], ['long', steps.long]], store.state.settings.readerBalloonPause || 'medium', 'readerBalloonPause'),
         choiceField('reader-balloon-speed', steps.speed, [['slow', steps.slow], ['normal', steps.normal], ['fast', steps.fast]], store.state.settings.readerBalloonSpeed || 'normal', 'readerBalloonSpeed'));
     }
+    // Done: always in view at the bottom of the menu, however far down it is scrolled.
+    const footer = document.createElement('div'); footer.className = 'row reader-popup-footer'; menu.append(footer);
+    popupButton(footer, featureText().close, hidePopup).id = 'reader-panel-options-done';
+    if (scroll > 0) menu.scrollTop = scroll;
+    if (focus) menu.querySelector(`#${CSS.escape(focus)}`)?.focus({ preventScroll: true });
   }
   // Switching the enhanced guided view takes effect on the page being read:
   // a page without panels changes between parts and the whole page at once.
@@ -2710,6 +2832,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       }
       // (The place was just chosen for the page's steps as they are now.)
       laidSteps = null; loading = false; positionCommitted = true; if (!fromPager) turning = Boolean(snapshot); layoutPage({ fromBottom, enter: direction }); persist(); updateControls(); normalStatus();
+      // A big page (a double page, two pages side by side) is made ready before it slides in (the
+      // page before stays in view meanwhile), so it never slides in still undrawn.
+      if (snapshot && largeShown() && typeof image.decode === 'function') {
+        try { await Promise.race([image.decode(), new Promise(resolve => setTimeout(resolve, 1200))]); } catch { /* Shown anyway. */ }
+        if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
+      }
       if (snapshot) await pageTransition.play({ snapshot, style: pageAnimation(), duration: pageDuration(), direction: direction * (rtl() ? -1 : 1) });
       if (mySession !== serial || myPage !== pageSerial || request.signal.aborted) return;
       if (!fromPager) turning = false;
@@ -2975,10 +3103,17 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (pager !== p) return;
     await showPage(p.index, 0, { pager: true, direction: p.delta });
     if (pager !== p) return;
-    // The new page sits exactly where the sliding copy shows it; swap them
-    // once it is painted so nothing flickers.
-    if (currentPage === p.index && typeof image.decode === 'function') { try { await Promise.race([image.decode(), new Promise(resolve => setTimeout(resolve, 350))]); } catch { /* Shown anyway. */ } }
+    // The new page sits exactly where the sliding copy shows it. It is put in its place under the
+    // copy first, and the copy goes only once the page has been drawn there: a big page (a double
+    // page, which fills the screen's height, or a high-resolution scan) takes the device longer to
+    // draw, and taking the copy away before then made it blink.
+    const big = largeShown();
+    if (currentPage === p.index && typeof image.decode === 'function') { try { await Promise.race([image.decode(), new Promise(resolve => setTimeout(resolve, big ? 1500 : 350))]); } catch { /* Shown anyway. */ } }
+    if (pager !== p) return;
+    for (const animation of p.animations) { try { animation.cancel(); } catch { /* Already finished. */ } }
+    stage.style.transform = ''; dialog.classList.remove('reader-paging');
     await framesOrHidden();
+    if (big && pager === p && document.visibilityState !== 'hidden') { await new Promise(resolve => setTimeout(resolve, 120)); await framesOrHidden(); }
     pagerFinish(p);
   }
   // Taps, buttons and arrow keys: the same slide, when the page is ready.
@@ -3037,8 +3172,9 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if ((g?.turn === 'drag' || g?.axis === 'strip') && pager && !pager.animating) void pagerRelease(0, 0);
     stopMotion(); clearStretch();
     if (!book || currentPage < 0 || loading || editing || popup || turning || touchPoints.size !== 2) { pinch = undefined; return; }
-    const [a, b] = [...touchPoints.values()];
-    pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, frame: undefined };
+    const [a, b] = [...touchPoints.values()], distance = Math.hypot(a.x - b.x, a.y - b.y) || 1, mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    // (Where it began, to tell a two-finger tap from a pinch: see endPinch.)
+    pinch = { distance, mid, frame: undefined, start: { at: performance.now(), distance, mid, width: pageWidth, left: stage.scrollLeft, top: stage.scrollTop }, spread: 0, travel: 0 };
     suppressClicksUntil = performance.now() + 600;
   }
   function updatePinch(event) {
@@ -3051,12 +3187,21 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       if (touchPoints.size !== 2) return;
       const [a, b] = [...touchPoints.values()], distance = Math.hypot(a.x - b.x, a.y - b.y) || 1, mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       const ratio = distance / pinch.distance, pan = { x: mid.x - pinch.mid.x, y: mid.y - pinch.mid.y };
+      pinch.spread = Math.max(pinch.spread, Math.abs(distance - pinch.start.distance)); pinch.travel = Math.max(pinch.travel, Math.hypot(mid.x - pinch.start.mid.x, mid.y - pinch.start.mid.y));
       if (Math.abs(ratio - 1) > .004 || Math.abs(pan.x) + Math.abs(pan.y) > .5) { zoom(ratio, pinch.mid, { anchor: 'finger', pan }); pinch.distance = distance; pinch.mid = mid; }
     });
   }
-  function endPinch() {
+  // `lifted`: the fingers were lifted (not taken over by the system: then nothing opens).
+  function endPinch({ lifted = false } = {}) {
     if (pinch?.frame) cancelAnimationFrame(pinch.frame);
-    pinch = undefined; suppressClicksUntil = performance.now() + 600;
+    const ended = pinch; pinch = undefined; suppressClicksUntil = performance.now() + 600;
+    // Quick menu (when chosen): two fingers tapped together, not pinching. The page is put back
+    // exactly as it was (a tap moves the fingers a little), and the menu opens.
+    if (lifted && ended?.start && quickMenuOn() && twoFingerTap({ duration: performance.now() - ended.start.at, spread: ended.spread, travel: ended.travel })) {
+      const { width, left, top } = ended.start;
+      if (Math.abs(pageWidth - width) > .5 || Math.abs(stage.scrollLeft - left) > .5 || Math.abs(stage.scrollTop - top) > .5) { setPageWidth(width); paintPanels(); scrollToPosition(left, top); }
+      openQuickMenu(); return;
+    }
     // Let go smaller than the fitted page: return to the fitted page.
     if (book && currentPage >= 0 && !editing && !loading && pageWidth < baselineWidth() * .98) layoutPage({ keepCenter: true });
   }
@@ -3072,6 +3217,8 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   stage.addEventListener('pointerdown', event => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    // The quick menu goes with a touch on the page (and nothing else happens with that touch).
+    if (popup?._quick) { hidePopup(); suppressClicksUntil = performance.now() + 450; return; }
     if (!translationCard.hidden) hideTranslation();
     activePointers.add(event.pointerId);
     touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -3194,7 +3341,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   stage.addEventListener('pointerup', event => {
     touchPoints.delete(event.pointerId); activePointers.delete(event.pointerId);
-    if (pinch) { if (touchPoints.size < 2) endPinch(); return; }
+    if (pinch) { if (touchPoints.size < 2) endPinch({ lifted: true }); return; }
     requestAppFullscreen();
     const g = gesture;
     if (!g || g.id !== event.pointerId) return;
@@ -3303,7 +3450,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   buttons.fit.addEventListener('click', chooseFitMode); fillButton.addEventListener('click', () => selectFitMode('fill'));
   featureButtons.navigate.addEventListener('click', chooseNavigator);
   featureButtons.bookmarks.addEventListener('click', chooseBookmarks);
-  featureButtons.appearance.addEventListener('click', chooseAppearance);
+  featureButtons.appearance.addEventListener('click', () => chooseAppearance());
   panButton.addEventListener('click', () => setPanMode(!panMode)); resumeButton.addEventListener('click', () => setPanMode(false));
   restoreButton.addEventListener('focus', wakeRestore); restoreButton.addEventListener('pointerover', wakeRestore);
   restoreButton.addEventListener('blur', wakeRestore); restoreButton.addEventListener('pointerleave', wakeRestore);
@@ -3317,7 +3464,7 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
     if (!book || loading || currentPage < 0) return;
     if (guided) disableGuided(); else void enableGuided();
   });
-  buttons['edit-panels'].addEventListener('click', choosePanelOptions);
+  buttons['edit-panels'].addEventListener('click', () => choosePanelOptions());
   input.addEventListener('change', () => {
     if (!book || loading || editing) return;
     const value = Number(input.value);
