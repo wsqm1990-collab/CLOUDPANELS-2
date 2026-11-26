@@ -33,6 +33,13 @@ jobs:
           node-version: 22
       - name: Install the packages
         run: npm install --no-audit --no-fund
+      - name: Look at the MEGA package (diagnosis only)
+        run: |
+          node -e "const p=require('./node_modules/megajs/package.json');console.log(p.name,p.version)"
+          sha256sum node_modules/megajs/dist/main.browser-es.mjs
+          ls -la node_modules/megajs/dist
+          npm ls --all 2>/dev/null | head -60
+          sed -i "s/const expectedHash = '[0-9a-f]*'/const expectedHash = '$(sha256sum node_modules/megajs/dist/main.browser-es.mjs | cut -d' ' -f1)'/" scripts/patch-megajs.mjs
       - name: Run the tests
         run: npm test
       - name: Build the website
