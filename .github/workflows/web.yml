@@ -1,0 +1,60 @@
+name: Website
+
+# Builds the CloudPanels web app on GitHub's machines and publishes it on
+# GitHub Pages (the gh-pages branch). Started by hand for each version, before
+# that version reaches main: the iPad app is built from what is published here.
+# With "publish" off it only installs, tests and builds, and lists the files
+# made, to compare them with what is published.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the website (off: only build and check)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website
+  cancel-in-progress: false
+
+jobs:
+  website:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Get the project
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the packages
+        run: npm install --no-audit --no-fund
+      - name: Run the tests
+        run: npm test
+      - name: Build the website
+        run: |
+          set -o pipefail
+          npm run build
+          grep -o "IPAD · 0\.9\.[0-9]*" dist/index.html
+          # The files made (not the voice files), to compare with the published ones.
+          (cd dist && find . -type f ! -path './tts/*' ! -name _headers | sed 's|^\./||' | sort | while read -r file; do echo "$(git hash-object "$file") $file"; done)
+      - name: Publish on GitHub Pages
+        if: inputs.publish
+        run: |
+          set -eo pipefail
+          git fetch -q origin +refs/heads/gh-pages:refs/remotes/origin/gh-pages
+          git worktree add -q --detach "$RUNNER_TEMP/site" origin/gh-pages
+          cd "$RUNNER_TEMP/site"
+          git rm -rq .
+          cp -r "$GITHUB_WORKSPACE/dist/." .
+          rm -f _headers
+          touch .nojekyll
+          git add -A
+          version="$(grep -o 'IPAD · 0\.9\.[0-9]*' index.html | cut -d' ' -f3)"
+          git -c user.name="CloudPanels build" -c user.email="build@users.noreply.github.com" commit -qm "Website ${version} (${GITHUB_SHA})"
+          git push -q origin HEAD:gh-pages
+          echo "Published ${version}."
