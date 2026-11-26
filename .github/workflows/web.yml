@@ -49,6 +49,14 @@ jobs:
           grep -o "IPAD · 0\.9\.[0-9]*" dist/index.html
           # The files made (not the voice files), to compare with the published ones.
           (cd dist && find . -type f ! -path './tts/*' ! -name _headers | sed 's|^\./||' | sort | while read -r file; do echo "$(git hash-object "$file") $file"; done)
+      - name: Compare app.js with the published one (diagnosis only)
+        run: |
+          git fetch -q origin +refs/heads/gh-pages:refs/remotes/origin/gh-pages
+          git show origin/gh-pages:app.js > "$RUNNER_TEMP/published.js"
+          npx esbuild "$RUNNER_TEMP/published.js" --format=esm --log-level=error > "$RUNNER_TEMP/published.pretty.js"
+          npx esbuild dist/app.js --format=esm --log-level=error > "$RUNNER_TEMP/built.pretty.js"
+          diff -u "$RUNNER_TEMP/published.pretty.js" "$RUNNER_TEMP/built.pretty.js" | head -400 || true
+          echo "diff lines: $(diff "$RUNNER_TEMP/published.pretty.js" "$RUNNER_TEMP/built.pretty.js" | wc -l)"
       - name: Publish on GitHub Pages
         if: inputs.publish
         run: |
