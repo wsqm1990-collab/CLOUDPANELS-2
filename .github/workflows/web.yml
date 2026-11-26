@@ -60,7 +60,7 @@ jobs:
           node .github/diagnose/shape.cjs "$RUNNER_TEMP/built.pretty.js" "$RUNNER_TEMP/built.shape"
           wc -l "$RUNNER_TEMP/published.shape" "$RUNNER_TEMP/built.shape"
           echo "shape diff lines: $(diff "$RUNNER_TEMP/published.shape" "$RUNNER_TEMP/built.shape" | wc -l)"
-          diff -u "$RUNNER_TEMP/published.shape" "$RUNNER_TEMP/built.shape" | cut -c1-400 | head -300 || true
+          diff -u "$RUNNER_TEMP/published.shape" "$RUNNER_TEMP/built.shape" | cut -c1-300 | head -1500 || true
       - name: Publish on GitHub Pages
         if: inputs.publish
         run: |
