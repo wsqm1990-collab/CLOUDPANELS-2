@@ -1,0 +1,1 @@
+iPad (A16) com.apple.CoreSimulator.SimRuntime.iOS-26-5
