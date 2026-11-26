@@ -17,5 +17,5 @@ No iPad, abra no Safari → Compartilhar → **Adicionar à Tela de Início**. O
 
 ## Para desenvolvedores
 Código web em `src/`, testes em `test/` (`npm test`), build com `node scripts/build.mjs` (gera `dist/`).
-A versão publicada fica no branch `gh-pages`.
+A versão publicada fica no branch `gh-pages`: o site é montado, testado e publicado nas máquinas do GitHub pelo workflow **Website** (iniciado à mão para cada versão, antes de ela entrar no `main`, porque o app do iPad é montado a partir do que está publicado).
 Baseado no CloudPanels Android 0.7.2. Decodificação de RAR/7z por libarchive.js (WebAssembly).
