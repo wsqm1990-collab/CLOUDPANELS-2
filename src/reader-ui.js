@@ -159,7 +159,7 @@ export class ReadingRangeBuffer {
 }
 ReadingRangeBuffer.CHUNK = 4 * MiB;
 
-export function createReaderController({ store, onChange, onActivity, onCoverFirstPage, onNextComic } = {}) {
+export function createReaderController({ store, onChange, onActivity, onCoverFirstPage, onNextComic, nextFrom } = {}) {
   if (!store) throw new Error('The reader needs a library store.');
   const element = id => { const node = document.getElementById(id); if (!node) throw new Error(`Missing reader control: ${id}`); return node; };
   const dialog = element('reader'), stage = element('reader-stage'), image = element('reader-image');
@@ -281,6 +281,12 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
       ? { overview: 'Página completa · Toca para continuar', hint: 'Toca los lados para pasar páginas · Mover página permite explorar los bordes', detected: n => `${n} viñetas encontradas · Toca los lados para avanzar`, widthHint: 'Desplázate verticalmente para leer · Toca los lados para pasar páginas' }
       : { overview: 'Whole page · Tap to continue', hint: 'Tap the sides to turn pages · Use Move page to explore the edges', detected: n => `${n} panels found · Tap the sides to advance`, widthHint: 'Scroll vertically to read the page · Tap the sides to turn pages' };
   const turnLabels = () => turnBy().swipe ? baseTurnLabels() : { ...baseTurnLabels(), overview: tapWords().overview };
+  // A comic read through a collection goes on to the next one of the collection.
+  const collectionTurnWords = () => language() === 'pt-BR'
+    ? { next: 'Abrindo a próxima revista da coleção…', end: 'Fim da coleção. Esta revista foi marcada como lida.' }
+    : language() === 'es'
+      ? { next: 'Abriendo el siguiente cómic de la colección…', end: 'Fin de la colección. El cómic está marcado como leído.' }
+      : { next: 'Opening the next comic in this collection…', end: 'End of this collection. This comic is marked as read.' };
   const featureText = () => turnBy().swipe ? baseFeatureText() : { ...baseFeatureText(), widthHint: tapWords().widthHint };
   const panLabels = () => turnBy().swipe ? basePanLabels() : { ...basePanLabels(), hint: tapWords().hint };
   const guidedLabels = () => turnBy().swipe ? baseGuidedLabels() : { ...baseGuidedLabels(), detected: tapWords().detected };
@@ -2861,14 +2867,16 @@ export function createReaderController({ store, onChange, onActivity, onCoverFir
   }
   async function endOfBook() {
     const mySession = serial, finishedComic = comic;
+    let words = turnLabels();
+    try { if (nextFrom?.(finishedComic) === 'collection') words = { ...words, ...collectionTurnWords() }; } catch { /* The folder's words. */ }
     persist(true);
-    loading = true; activity(true); updateControls(); statusMessage(turnLabels().next);
+    loading = true; activity(true); updateControls(); statusMessage(words.next);
     try {
       const next = await onNextComic?.(finishedComic);
       if (mySession !== serial || comic !== finishedComic) return;
       loading = false; updateControls();
       if (next) return await controller.open(next.comic, next.source, { fromStart: true });
-      activity(false); setImmersive(false); statusMessage(turnLabels().end);
+      activity(false); setImmersive(false); statusMessage(words.end);
     } catch {
       if (mySession !== serial || comic !== finishedComic) return;
       loading = false; activity(false); updateControls(); setImmersive(false); pageErrors++;

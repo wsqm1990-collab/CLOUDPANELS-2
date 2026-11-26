@@ -45,6 +45,65 @@ export function nextInCollection(collection, currentId, comicsById, canOpen = ()
 }
 
 /**
+ * The comic after `currentId` in a collection made by hand, in the order its
+ * screen lists them (`listed` puts its comics in that order), or null at its end.
+ */
+export function nextInListedCollection(collection, currentId, comics, listed, canOpen = () => true) {
+  const ids = new Set(Array.isArray(collection?.comicIds) ? collection.comicIds : []);
+  if (!ids.has(currentId)) return null;
+  const order = listed((Array.isArray(comics) ? comics : []).filter(comic => ids.has(comic?.id)));
+  const index = order.findIndex(comic => comic.id === currentId);
+  if (index < 0) return null;
+  for (let next = index + 1; next < order.length; next++) if (canOpen(order[next])) return order[next];
+  return null;
+}
+
+// Which collection each comic is read through, kept on the device: the
+// comic's id → the collection's id ('' = its folder). The latest are kept.
+export const MAX_THROUGH = 400;
+const throughId = value => typeof value === 'string' && value.length <= 180;
+
+/** The kept list, back from storage (anything unexpected is left out). */
+export function throughFromText(text) {
+  const kept = new Map();
+  let value = null;
+  try { value = JSON.parse(text || 'null'); } catch { /* Nothing kept. */ }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return kept;
+  for (const [comicId, collectionId] of Object.entries(value).slice(-MAX_THROUGH)) if (comicId && throughId(comicId) && throughId(collectionId)) kept.set(comicId, collectionId);
+  return kept;
+}
+
+/** Keeps how a comic is read (no collection given: forgets it). The newest go last; the oldest leave first. */
+export function keepThrough(kept, comicId, collectionId) {
+  if (!comicId || !throughId(comicId)) return kept;
+  kept.delete(comicId);
+  if (throughId(collectionId)) kept.set(comicId, collectionId);
+  while (kept.size > MAX_THROUGH) kept.delete(kept.keys().next().value);
+  return kept;
+}
+
+/**
+ * The collection a comic is read through ('' = its folder, as always).
+ * Opened from a collection's screen: that one. Otherwise the way it was last
+ * opened on this device, while that collection still has it. A comic this
+ * device knows nothing about (begun on another device, or before this was
+ * kept) goes on in a reading order only when it is clearly being read through
+ * it: it is being read and it is where that order has got to (everything
+ * before it there is read), in exactly one reading order.
+ */
+export function readingThrough(comicId, { shown = '', kept = new Map(), collections = [], progress = {} } = {}) {
+  const list = Array.isArray(collections) ? collections : [];
+  const holds = collection => Array.isArray(collection?.comicIds) && collection.comicIds.includes(comicId);
+  const has = id => Boolean(id) && list.some(collection => collection?.id === id && holds(collection));
+  if (has(shown)) return shown;
+  if (kept.has(comicId)) return has(kept.get(comicId)) ? kept.get(comicId) : '';
+  if (progress?.[comicId]?.status !== 'reading') return '';
+  const reached = collection => collection.comicIds.find(id => progress[id]?.status !== 'finished') === comicId;
+  const orders = list.filter(collection => collection?.ordered === true && holds(collection) && reached(collection));
+  return orders.length === 1 ? orders[0].id : '';
+}
+
+/**
  * Where to go on in a collection: its first comic not read yet, with its
  * number in the order; `started` when any of it has been read (or is being read).
  * Null when everything in it has been read.

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectionItems, nextInCollection, continueInCollection, reanchorMissing, findCollection, proposeCollection, cleanProposal, MAX_ORDER } from '../src/collection-order.js';
+import { collectionItems, nextInCollection, continueInCollection, reanchorMissing, findCollection, proposeCollection, cleanProposal, MAX_ORDER,
+  nextInListedCollection, readingThrough, throughFromText, keepThrough, MAX_THROUGH } from '../src/collection-order.js';
+import { sortComics } from '../src/app-helpers.js';
 import { LibraryStore } from '../src/store.js';
 
 const memory = () => { const data = new Map(); return { getItem: k => data.get(k) || null, setItem: (k, v) => data.set(k, v), data }; };
@@ -25,6 +27,56 @@ test('the next comic comes from the collection, skipping what cannot be opened; 
   assert.equal(nextInCollection(collection, 'a', comics, canOpen).id, 'b', 'past a comic that left and one that cannot be opened');
   assert.equal(nextInCollection(collection, 'b', comics, canOpen), null, 'the end of the collection');
   assert.equal(nextInCollection(collection, 'x', comics, canOpen), null, 'not in it');
+});
+
+test('a collection made by hand goes on in the order its screen lists it', () => {
+  const comics = [comic('c3', 'Hush 3', 'DC/Batman'), comic('x', 'Hush 2', 'DC/Other'), comic('c1', 'Hush 1', 'DC/Batman'), comic('c10', 'Hush 10', 'DC/Batman'), { ...comic('e', 'Hush 4'), format: 'epub' }, comic('out', 'Hush 2b')];
+  const collection = { comicIds: ['c10', 'c1', 'x', 'c3', 'e'] }; // picked in another order
+  const byTitle = list => sortComics(list, {}, 'title'), canOpen = c => c.format === 'cbz';
+  const order = [];
+  for (let at = 'c1'; at; at = nextInListedCollection(collection, at, comics, byTitle, canOpen)?.id) order.push(at);
+  assert.deepEqual(order, ['c1', 'x', 'c3', 'c10'], 'by title, numbers in order, across folders, past what cannot be opened, nothing from outside it');
+  assert.equal(nextInListedCollection(collection, 'out', comics, byTitle), null, 'a comic not in it');
+  assert.equal(nextInListedCollection(null, 'c1', comics, byTitle), null);
+});
+
+test('which collection a comic is read through: where it is opened, else how it was last opened here', () => {
+  const collections = [{ id: 'order', ordered: true, comicIds: ['a', 'b', 'c'] }, { id: 'hand', comicIds: ['b', 'd'] }, { id: 'order2', ordered: true, comicIds: ['d', 'e'] }, { id: 'order3', ordered: true, comicIds: ['x', 'e'] }];
+  const kept = new Map([['b', 'hand'], ['c', ''], ['f', 'gone']]);
+  const reading = { status: 'reading' }, finished = { status: 'finished' };
+  const through = (id, extra = {}) => readingThrough(id, { kept, collections, ...extra });
+  assert.equal(through('b', { shown: 'order' }), 'order', 'opened from a collection: that one');
+  assert.equal(through('b', { shown: 'hand' }), 'hand');
+  assert.equal(through('b'), 'hand', 'opened elsewhere: the way it was last opened');
+  assert.equal(through('c', { progress: { a: finished, b: finished, c: reading } }), '', 'last opened from its folder: its folder');
+  assert.equal(through('f', { progress: { f: reading } }), '', 'that collection is gone: its folder');
+  assert.equal(through('a', { shown: 'hand' }), '', 'a screen that does not have it does not count');
+  // Nothing kept on this device (begun on another one, or before this version).
+  const fresh = (id, progress) => readingThrough(id, { collections, progress });
+  assert.equal(fresh('a', { a: reading }), 'order', 'being read where its reading order has got to: that one');
+  assert.equal(fresh('b', { a: finished, b: reading }), 'order');
+  assert.equal(fresh('c', { a: finished, c: reading }), '', 'one before it there is not read: its folder');
+  assert.equal(fresh('a', {}), '', 'not begun: its folder');
+  assert.equal(fresh('a', { a: finished }), '', 'read already: its folder');
+  assert.equal(fresh('d', { d: reading }), 'order2', 'only reading orders count (not collections made by hand)');
+  assert.equal(fresh('e', { d: finished, e: reading }), 'order2', 'where one order has got to, not the other');
+  assert.equal(fresh('e', { d: finished, x: finished, e: reading }), '', 'where two orders have got to: its folder');
+  assert.equal(readingThrough('a', { shown: 'order' }), '', 'no collections: its folder');
+  assert.equal(readingThrough('a', { shown: 'order', collections }), 'order', 'nothing else given');
+});
+
+test('how comics were opened is kept on the device, the latest first to stay', () => {
+  const kept = throughFromText(JSON.stringify({ a: 'order', b: '', c: 7, d: null, [`${'x'.repeat(181)}`]: 'order', e: 'y'.repeat(181) }));
+  assert.deepEqual([...kept], [['a', 'order'], ['b', '']], 'only well-formed entries come back');
+  for (const bad of ['', 'nonsense', '[1,2]', 'null', '"text"']) assert.equal(throughFromText(bad).size, 0);
+  keepThrough(kept, 'a', 'hand'); keepThrough(kept, 'c', 'order');
+  assert.deepEqual([...kept], [['b', ''], ['a', 'hand'], ['c', 'order']], 'kept again: moved to the end');
+  keepThrough(kept, 'b'); assert.equal(kept.has('b'), false, 'no collection: forgotten');
+  keepThrough(kept, '', 'order'); assert.equal(kept.has(''), false);
+  for (let n = 0; n < MAX_THROUGH + 5; n++) keepThrough(kept, `comic-${n}`, 'order');
+  assert.equal(kept.size, MAX_THROUGH); assert.equal(kept.has('a'), false, 'the oldest leave first'); assert.equal(kept.get(`comic-${MAX_THROUGH + 4}`), 'order');
+  const again = throughFromText(JSON.stringify(Object.fromEntries(kept)));
+  assert.deepEqual([...again], [...kept], 'saved and read back the same');
 });
 
 test('going on in a collection: its first comic not read yet', () => {

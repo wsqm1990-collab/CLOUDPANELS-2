@@ -11,7 +11,7 @@ import {clearArchiveListings} from './reader.js';
 import {aloudEvents,interruptedListening,noteAloud} from './aloud-log.js';
 import {assistantStore,buildLibraryIndex,libraryBrief,libraryTools,collectionTools,systemPrompt,askAssistant,friendlyError,speechInputAvailable,listen,speak,stopSpeaking} from './assistant.js';
 import {filterComics, sortComics, formatBytes, statusOf, publicError, catalogAnswer, folderContents, isInsideFolder, comicFolderParts, upNextComics, nextComicInFolder, coverPicks} from './app-helpers.js';
-import {collectionItems, nextInCollection, continueInCollection} from './collection-order.js';
+import {collectionItems, nextInCollection, continueInCollection, nextInListedCollection, readingThrough, throughFromText, keepThrough} from './collection-order.js';
 import {sagaWheelCard, openSagaWheel} from './saga-wheel-view.js';
 
 const copy = {
@@ -205,14 +205,22 @@ const coverRequests=new Map(),coverTargets=new Map(),coverURLs=new Set();
 const reader = createReaderController({
   store,
   onNextComic:async current=>{
-    // Opened from a collection in its own reading order: the next one of that
-    // collection (none after its last). Otherwise the next in its folder, as always.
-    const order=readingCollectionId&&store.state.collections.find(c=>c.id===readingCollectionId&&c.ordered&&c.comicIds.includes(current?.id));
-    const comic=order?nextInCollection(order,current.id,new Map(store.state.comics.map(c=>[c.id,c])),c=>readable.has(c.format)):nextComicInFolder(store.state.comics,current);
+    // Read through a collection (opened from it, or the way it was last opened):
+    // the next one of that collection, in its order (none after its last).
+    // Otherwise the next in its folder, as always. The next one is read the same
+    // way; the finished one is let go (opened again, where it is opened from decides).
+    const through=throughCollection(current),canOpen=c=>readable.has(c.format);
+    const comic=!through?nextComicInFolder(store.state.comics,current)
+      :through.ordered?nextInCollection(through,current.id,new Map(store.state.comics.map(c=>[c.id,c])),canOpen)
+      :nextInListedCollection(through,current.id,store.state.comics,list=>sortComics(list,store.state.progress,listedSort()),canOpen);
+    keepReadingThrough(current?.id);
     if(!comic)return null;
+    keepReadingThrough(comic.id,through?through.id:'');
     const source=await resolveSource(comic);
+    readingComicId=comic.id;
     return {comic,source};
   },
+  nextFrom:current=>throughCollection(current)?'collection':'folder',
   onChange:()=>{mainDirty=true;queueMainRefresh();scheduleSync();cloudState.dirty=true;scheduleCloudSync();},
   onActivity:({busy,open})=>{
     covers.setForegroundBusy(Boolean(busy||open));
@@ -773,12 +781,21 @@ async function resolveSource(comic){
   if(comic.id==='demo:reader-balloons:v1')throw new Error(store.state.settings.language==='pt-BR'?'Esta demonstração foi removida. Abra a demonstração atual em CBZ ou PDF.':store.state.settings.language==='es'?'Esta demostración fue retirada. Abre la demostración actual en CBZ o PDF.':'This demo has been retired. Open the current CBZ or PDF demo.');
   return demoSource(comic.format);
 }
-// The reading-order collection a comic was opened from ('' = the library or a folder).
+// The collection the open comic is read through ('' = its folder). How each
+// comic was last opened is kept on this device, so going on later from the
+// home screen, the reading list or after the app reopens keeps the same order.
 let readingCollectionId='';
-const orderedCollectionShown=()=>view==='collections'&&selectedCollection?store.state.collections.find(c=>c.id===selectedCollection&&c.ordered)||null:null;
+const THROUGH_KEY='cloudpanels.reading-through.v1';
+const readThrough=(()=>{try{return throughFromText(localStorage.getItem(THROUGH_KEY));}catch{return throughFromText('');}})();
+function keepReadingThrough(comicId,collectionId){keepThrough(readThrough,comicId,collectionId);try{localStorage.setItem(THROUGH_KEY,JSON.stringify(Object.fromEntries(readThrough)));}catch{}}
+// The collection the open comic is read through, while it still has that comic.
+function throughCollection(current){return readingCollectionId&&store.state.collections.find(c=>c.id===readingCollectionId&&c.comicIds.includes(current?.id))||null;}
+// A collection made by hand goes on in the order its screen lists it (by title
+// when listed by date: that order changes as comics are read).
+const listedSort=()=>['title','issue'].includes(filters.sort)?filters.sort:'title';
 async function openComic(comic) {
   if(opening)return;
-  const from=orderedCollectionShown(),fromCollection=from&&from.comicIds.includes(comic?.id)?from.id:'';
+  const shown=view==='collections'&&selectedCollection||'';
   if(!readable.has(comic.format)){toast(t('unsupported'));return;}
   opening=true;
   covers.setForegroundBusy(true);pauseCoverRequests();
@@ -787,7 +804,9 @@ async function openComic(comic) {
     if(comic.source==='local'&&!localFiles.has(comic.id)&&!offline.has(comic.id)){pendingLocalId=comic.id;toast(t('selectAgain'));document.querySelector('#file-input').click();return;}
     const source=await resolveSource(comic);
     if(modal.open)closeModal();
-    readingComicId=comic.id;readingCollectionId=fromCollection;
+    readingComicId=comic.id;
+    readingCollectionId=readingThrough(comic.id,{shown,kept:readThrough,collections:store.state.collections,progress:store.state.progress});
+    keepReadingThrough(comic.id,readingCollectionId);
     await reader.open(store.state.comics.find(c=>c.id===comic.id)||comic,source);
   }catch(error){diag('open-comic',error,{format:comic?.format,size:comic?.size});const message=publicError(error,t('connectionError'));if(message)toast(message);}
   finally{opening=false;refreshHeader();if(!document.querySelector('#reader').open){covers.setForegroundBusy(false);mainDirty=true;queueMainRefresh();}}
