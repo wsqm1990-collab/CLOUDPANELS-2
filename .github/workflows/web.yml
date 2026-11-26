@@ -61,6 +61,14 @@ jobs:
           wc -l "$RUNNER_TEMP/published.shape" "$RUNNER_TEMP/built.shape"
           echo "shape diff lines: $(diff "$RUNNER_TEMP/published.shape" "$RUNNER_TEMP/built.shape" | wc -l)"
           diff -u "$RUNNER_TEMP/published.shape" "$RUNNER_TEMP/built.shape" | cut -c1-300 | head -1500 || true
+      - name: Browser check with a fake MEGA (diagnosis only)
+        run: |
+          ls -la dist/app.js
+          npm install --no-save --no-audit --no-fund playwright@1 > /dev/null
+          npx playwright install --with-deps chromium > /dev/null 2>&1
+          (cd dist && nohup python3 -m http.server 8099 > /dev/null 2>&1 &)
+          sleep 2
+          CLOUDPANELS_URL=http://127.0.0.1:8099/index.html node test/e2e/mega-library.e2e.cjs
       - name: Publish on GitHub Pages
         if: inputs.publish
         run: |
