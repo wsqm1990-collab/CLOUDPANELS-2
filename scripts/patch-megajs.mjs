@@ -8,10 +8,14 @@ import { fileURLToPath } from 'node:url';
 const directory = new URL('../node_modules/megajs/', import.meta.url);
 const sourcePath = new URL('dist/main.browser-es.mjs', directory);
 const outputPath = new URL('dist/cloudpanels.browser-es.mjs', directory);
-const expectedHash = '57987252115acc4200cb6b9e4d8bb24cef467d2c52ede8954920e1d70e2da287';
+// The browser build published with MEGAJS 1.3.10 (what npm installs), and the
+// copy built from the same version's source that the app used up to 0.9.55.
+// The patch below fits both exactly; the tests run against the one installed.
+const expectedHashes = new Set(['2198bb5e17bd71eb0da7a4ec4483f55fa4f927aef9680b33e1411e21e4235ff0', '57987252115acc4200cb6b9e4d8bb24cef467d2c52ede8954920e1d70e2da287']);
 const metadata = JSON.parse(await readFile(new URL('package.json', directory), 'utf8'));
 const original = await readFile(sourcePath, 'utf8');
-if (metadata.version !== '1.3.10' || createHash('sha256').update(original).digest('hex') !== expectedHash) {
+const sourceHash = createHash('sha256').update(original).digest('hex');
+if (metadata.version !== '1.3.10' || !expectedHashes.has(sourceHash)) {
   throw new Error('MEGAJS browser source changed. Review the lifecycle patch before building.');
 }
 let patched = original;
@@ -69,4 +73,4 @@ replaceOnce(
 const banner = '// CloudPanels: reviewed lifecycle-only patch of MEGAJS 1.3.10 (MIT).\n';
 await writeFile(outputPath, banner + patched);
 console.log(JSON.stringify({ sdk: 'megajs', version: metadata.version, lifecyclePatch: true,
-  sourceSHA256: expectedHash, output: fileURLToPath(outputPath) }));
+  sourceSHA256: sourceHash, output: fileURLToPath(outputPath) }));
